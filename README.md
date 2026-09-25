@@ -3,51 +3,59 @@
 **[中文](README.zh.md) | English**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![DSH](https://img.shields.io/badge/DSH-%3E%3D0.1.7--rc.2-5965d8)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH](https://img.shields.io/badge/DSH-0.1.7--rc.2-5965d8)](https://github.com/deepseek-ai/deepseek-harness)
 
-A [DSH](https://github.com/deepseek-ai/deepseek-harness) (DeepSeek Harness) plugin that replaces the sidebar's **Workspace** browser with a flat conversation list, collecting every session into one **Ungrouped** bucket.
+A [DSH](https://github.com/deepseek-ai/deepseek-harness) plugin that owns the sidebar's **Workspace** browser so project-grouping logic can be layered onto the real UI — instead of a reimplementation that drifts from it.
 
-It is the first layer (L0) of a project-grouping plugin built for **full-permission workflows**, where workspaces tied to directories get in the way.
+> **Status: groundwork only.** This revision vendors the official implementation and changes **no behaviour**. The plugin is a drop-in replacement for the official package: same UI, same actions, same data. Project-group logic lands on top in the next revision.
 
 ---
 
-## Why
+## Why this exists
 
 DSH's Workspace is a **directory ownership** record, not a grouping label:
 
 - A session belongs to a workspace because its immutable `cwd` equals the workspace's `path` — membership is *derived on every read*, never stored as a relation.
-- There is no RPC to move a session between workspaces, and `cwd` is frozen by design (`deepFreeze`, no writer anywhere in the harness).
+- There is no RPC to move a session between workspaces, and `cwd` is frozen by design (`deepFreeze`; no writer anywhere in the harness).
 - Creating a workspace forces a directory picker, and its initial title is the folder's basename.
 
-So a workspace can never answer "which of my projects is this conversation part of". This plugin takes the sidebar over for that answer, while leaving every byte of the official data untouched.
+So a workspace can never answer "which of my projects is this conversation part of".
 
-## What it does (L0)
+## Why it vendors instead of wrapping
 
-- **Takes over the browsing region.** Registers into the sidebar's `sidebar.workspaces` slot at a lower priority than the official workspace browser. The slot is `single`, so the lowest priority renders and the official entry simply stays unrendered on the ledger.
-- **Collects everything into one bucket.** Every visible conversation is listed flat under a single *Ungrouped* header. Sessions that officially live in different workspaces appear side by side.
-- **Keeps the official list rules.** Subagent sessions, blank placeholders, and archived sessions follow the same visibility rules the official browser uses, so replacing it does not change which conversations you see.
-- **Fully reversible.** Nothing is written. Disable or uninstall the plugin and the official workspace browser returns exactly as it was — including any workspace you renamed.
+The obvious approach — keep the official UI and swap its data source — is not available. Every seam is closed by an explicit invariant, and `scripts/probe-approach-b.mjs` reproduces each one against the shipped machinery:
 
-## What it does *not* do (yet)
+| Seam | Why it is closed |
+|---|---|
+| Replace the root `useWorkspaces` hook | `ctx.slots.provideRoot` rejects a duplicate root standard prop name — it is a union with a uniqueness invariant, not a merge point |
+| Replace the `workspaces` service | `ctx.provide` refuses a second provider; `ctx.set` refuses a cross-fiber write |
+| Re-declare the official child slots | registering a child another entry already declared throws; and `renderSlot` is authorised per entry, so a replacement cannot render the official actions either |
 
-L0 is the first of six planned layers. Deliberately absent for now:
+Keeping the UI 1:1 therefore requires owning a copy of it.
 
-- project records and drag-to-assign (**L1–L2**)
-- session actions the takeover displaces — archive, pin, rename, fork, search (**L3**)
-- default-workspace creation for new sessions (**L4**)
-- per-project work documents and their injection into new sessions (**L5**)
+## What it does
 
-Until **L3**, use the plugin with the understanding that those row actions are not available while it owns the sidebar. Turning it off restores them immediately.
+Everything the official sidebar workspace browser does, under this plugin's own bundle id:
+
+- the grouped / tree / flat conversation list, search, view options and archived filter;
+- session row actions — rename, fork, pin, archive, unarchive — and their dialogs;
+- the workspace picker in the conversation empty state;
+- the `uiWorkspace` service that the sidebar shell and the directory pickers inject;
+- the `workspaces` root hook the browsing region reads.
+
+The official `@deepseek-ai/dsh-client-ui-workspace` row is **disabled** by this plugin's `cordis.patch.yml`, because two claimants of the single slot (and two providers of those services) would be a hard startup error rather than a merge.
 
 ## Install
 
-Requires DSH **≥ 0.1.7-rc.2**.
+Requires DSH **0.1.7-rc.2** — the vendored source is copied from that tag, and the two must not drift.
 
 ```bash
 dsh plugin add dsh-project-groups
 ```
 
-Or install from a local checkout:
+Restart DSH afterwards. The plugin's `cordis.patch.yml` inserts its row and disables the official one.
+
+To install from a local checkout:
 
 ```bash
 git clone https://github.com/ThinkofRain1213/dsh-project-groups.git
@@ -56,81 +64,58 @@ pnpm install && pnpm build
 dsh plugin add .
 ```
 
-Restart DSH afterwards. The plugin ships a `cordis.patch.yml` that inserts its row into the web profile's client roster.
-
 ### Verifying
 
-1. The sidebar's Workspaces section is replaced by **Ungrouped**, listing your conversations flat.
-2. Clicking a row opens that conversation; **New session** still creates one.
-3. Disable the plugin → the official Workspaces section returns unchanged.
+The sidebar should be **indistinguishable from stock DSH** — same grouping, same actions, same dialogs. That is the acceptance criterion for this revision.
 
-## How it works
+## How the replacement works
 
-The plugin registers into a slot the DSH shell declares:
+```jsonc
+// cordis.patch.yml
+- id: ui-workspace
+  name: "@deepseek-ai/dsh-client-ui-workspace"
+  disabled: true
 
-```ts
-ctx.slots.inject('sidebar.workspaces', () => ctx.slots.register(
-  { name: 'sidebar.workspaces', priority: -100, locale: NS, inject: () => ({ startSession, open }) },
-  ProjectGroups,
-))
+- insert:
+    - id: project-groups
+      name: dsh-project-groups
 ```
 
-`sidebar.workspaces` is a `single` slot: exactly one entry renders per priority cell, the **lowest** priority wins, and a losing entry stays registered. Priority `-100` therefore displaces the official browser (registered at the default `0`) without destroying it — disposing this registration restores the official one with no further work.
+Bundle patches apply in `dsh.profile.bundles` order, and the official row is declared by the web-app bundle layer, which applies first — so the disable lands on a row that already exists. `scripts/verify-patch.mjs` runs this through the Loader's real patch algorithm (`applyEntryPatches`) and asserts nothing was skipped, since a patch naming an unknown id warns and continues instead of failing loudly.
 
-Conversation data comes from the framework's global standard hooks (`useSessions`, `useWorkspaces`), which official plugins provide at root. Nothing is persisted, so L0 carries no host-side behaviour.
+The bundle is built to satisfy the same module-edge rules upstream uses:
 
-### Reversibility is the design constraint
+- shell-provided platform modules (`react`, `@deepseek-ai/cordis`, the slot registry, the UI primitives) stay `require()`d, so React and the slot registry are shared rather than duplicated;
+- wire and pure-fold layers (`dsh-util-values`, `dsh-util-workspace-path`, `dsh-api-workspace-controller/default-workspace`) inline, which is what upstream's own bundle does;
+- any other cross-plugin value import is a **build error** rather than a silently duplicated runtime instance.
 
-Everything is display-layer:
-
-| | |
-|---|---|
-| Session `cwd` / header | never written |
-| Official `archivedSessionIds` | read only |
-| Session logs and directories | never touched |
-| Official workspace registry | never written |
-
-## Compatibility
-
-- **DSH:** ≥ 0.1.7-rc.2
-- **Platform:** web (`dsh.client.platform: web`)
-- **Host:** no host-side behaviour at L0
-
-The plugin restates the slot contract locally instead of importing the official packages, so it is not pinned to one DSH release line. It declares the official packages only as optional dev-time peer dependencies for type-checking.
+`scripts/compare-bundle.mjs` asserts the result resolves *exactly* the same externals as the official bundle, read out of the installed `app.asar`.
 
 ## Development
 
 ```bash
 pnpm install
-pnpm typecheck   # tsc --noEmit
-pnpm build       # tsdown → lib/index.js + lib/client.js
-pnpm watch       # rebuild on change
+pnpm typecheck        # tsc --noEmit over src (including the vendored tree)
+pnpm build            # tsdown -> lib/index.js + lib/client.js
+pnpm check            # typecheck + build + bundle + patch verification
 ```
-
-`lib/` is committed so the plugin can be installed straight from a git clone.
 
 Source layout:
 
 | Path | Role |
 |---|---|
-| `src/index.ts` | Host half (no behaviour at L0) |
-| `src/client/index.ts` | Browser apply: the slot registration |
-| `src/client/ProjectGroups.tsx` | The flat list component |
-| `src/client/format.ts` | Visibility rules and relative-time labels |
-| `src/client/locales.ts` | zh/en dictionaries |
-| `src/client/sidebar-contract.ts` | Local type-only slot contract |
-| `DESIGN.md` | Full architecture, verified harness facts, L0–L5 plan |
+| `src/index.ts` | Host half (no behaviour yet) |
+| `src/client/index.ts` | Browser entry — the seam where project logic lands next |
+| `src/vendored/` | Verbatim copy of the official client source (see its [README](src/vendored/README.md)) |
+| `scripts/` | Probes and verification; `DESIGN.md` explains what each proves |
+| `DESIGN.md` | Architecture, verified harness facts, and the layer plan |
 
-## Design notes
+## Maintaining the fork
 
-`DESIGN.md` records the harness facts this plugin depends on, each verified against the shipped `app.asar`:
+`src/vendored/` is byte-identical to upstream `packages/client/ui-workspace/src/` at `dsh-v0.1.7-rc.2`. Re-syncing is a copy plus re-applying the short adaptation table in [`src/vendored/README.md`](src/vendored/README.md); nothing else in the tree has been edited.
 
-- workspace membership is derived from `cwd` and `cwd` is immutable (no writer anywhere);
-- deleting a workspace permanently drops its session accounting — re-importing the same directory yields an empty workspace;
-- only `workspaceId` on `session/create` accounts a session; passing `cwd` leaves it Ungrouped;
-- the official `initializeDefault` refuses to run outside a completely empty install;
-- shadowing a `single` slot also suppresses its declared child slots, which is why the displaced row actions return in **L3**.
+A DSH upgrade is the signal to re-sync: the official package ships at the same version as the harness line, and this plugin's `devDependencies` pin the version the copy came from.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The vendored source is MIT-licensed, from the same project.

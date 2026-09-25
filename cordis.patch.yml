@@ -1,5 +1,24 @@
 # dsh-project-groups — DSH installable bundle patch
-# Registers the plugin row into the web profile's client roster.
+#
+# Two jobs, and the order in the file does not matter (patches apply by id):
+#
+#   1. Disable the official workspace browser. This plugin vendors that
+#      package's source so it can own the sidebar region while keeping the
+#      official UI 1:1; both cannot be mounted at once, because they would
+#      both claim the single `sidebar.workspaces` slot and both provide the
+#      `workspaces` / `uiWorkspace` services (a duplicate provider is a hard
+#      error in cordis, and a duplicate root standard hook is a hard error in
+#      the slot registry — see scripts/probe-approach-b.mjs).
+#
+#   2. Mount this plugin.
+#
+# The official row's id is `ui-workspace`; it is declared by the web-app bundle
+# layer, which applies before this one ("Bundle, profile, home, and CLI layers
+# apply in that order"), so the disable below lands on an existing row.
+- id: ui-workspace
+  name: "@deepseek-ai/dsh-client-ui-workspace"
+  disabled: true
+
 - insert:
     - id: project-groups
       name: dsh-project-groups

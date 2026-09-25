@@ -1,22 +1,46 @@
 # DSH 项目分组插件 — 架构设计
 
-> 状态：设计定案（分层实现）
-> 版本：v1.1 · 2026-09-26
+> 状态：设计定案（已转向 **fork 官方组件** 路线）
+> 版本：v2.0 · 2026-09-26
 > 适用 DSH：0.1.7-rc.2（运行时实测版本）
 > 定位：可发布的社区插件（`dsh-project-groups`）
 > 交付方式：分 6 层（L0–L5），每层独立可交付、可回退（见 §5）
 
 ---
 
+## 0. 重要变更：路线改为 fork 官方组件
+
+**v1.1 曾主张"只换数据源、官方界面 1:1 保留"（B 方案）。该主张已被证伪。**
+
+用发行版真实的 `SlotCore` 与 `cordis` 跑了探针，B 的三条实现路径全部被显式不变式封死
+（复现脚本：`scripts/probe-approach-b.mjs`、`probe-slots.mjs`、`probe-service.mjs`）：
+
+| 路径 | 结果 |
+|---|---|
+| 替换 root hook `useWorkspaces` | ❌ `provideRoot` 用 `copyUnique` 拒绝重复的 root standard 属性名（`useWorkspaces`） |
+| 替换 `workspaces` 服务 | ❌ `provide "has been registered at <official>"`；`set "cannot set property in multiple fibers"` |
+| 遮蔽主槽位后再声明官方子槽位 | ❌ `slot "…session.menu.item" is already declared`；且 `renderSlot` 逐 entry 授权，替代者也无权渲染 |
+
+**因此 v2.0 改为：把官方 client 源码整个 vendor 进来，禁用官方插件行，自己持有这份界面。**
+这样官方 UI 真正 1:1，且后续改动落在我们自己的代码里。
+
+- vendor 来源：`dsh-v0.1.7-rc.2`（`477b4f420`），`packages/client/ui-workspace/src/`
+- vendor 内容：22 个文件，**与上游逐字节一致**（哈希比对已验证）
+- 适配全部在 vendor 之外（`src/client/index.ts` 再导出、`tsdown.config.ts` 打包规则、`cordis.patch.yml` 禁用官方行）
+- 维护方式：DSH 升级时重新复制，见 `src/vendored/README.md`
+
+---
+
 ## 1. 一句话定义
 
-**显示层插件。** 启用时用"项目分组"视图替换官方工作区视图，并接管"新建"入口；关闭时一切还原官方逻辑。
+**界面所有权 + 项目分组叠加。** 插件持有官方侧栏工作区浏览器（vendor），
+在它之上叠加"项目分组"能力；关闭插件即还原官方（官方行重新启用）。
 
 底层数据一律走官方；插件只额外维护一份"会话 → 项目"归属表和一份工作文档。
 
 ```
-官方负责：会话的 cwd、归档、删除、沙箱根、日志目录
-插件负责：前端分组显示、工作文档绑定与注入
+官方（经 vendor，由本插件持有）：会话的 cwd、归档、删除、沙箱根、日志目录、完整界面
+插件新增：项目分组、项目归属表、工作文档绑定与注入
 ```
 
 ---
@@ -26,11 +50,12 @@
 | 原则 | 含义 |
 |---|---|
 | **不碰底层** | 不改任何会话的 `cwd`，不碰官方归档集合，不移动日志文件 |
-| **显示可逆** | 所有效果通过 slot 注册达成，注销即还原官方逻辑 |
+| **界面 1:1** | 官方 UI 原样保留（vendor），不重写、不近似 |
+| **可逆** | `cordis.patch.yml` 只做 disable + insert；撤销即回到原版 DSH |
 | **归档归官方** | 归档 / 取消归档 / 删除一律调官方 RPC，插件不存状态 |
 | **单一落脚点** | 插件内新建的会话全部落在官方**默认工作区** |
 | **双账分离** | 官方账（cwd 归属）只读；插件账（项目归属）独占 |
-| **标准合规** | 数据用 `ctx.storageDomain`，配置用 schemastery，遵循 DSH 插件规范 |
+| **vendor 不提改动** | `src/vendored/` 永不编辑，所有改动放在 `src/client/` |
 
 ---
 
@@ -92,17 +117,19 @@ const cwd = workspace?.path ?? request.cwd ?? this.defaultCwd   // defaultCwd = 
 
 → **补建默认工作区必须用普通 `workspace/create`。**
 
-### 3.6 `sidebar.workspaces` 是 single 槽位，但有 priority shadowing
+### 3.6 `sidebar.workspaces` 是 single 槽位（双占用是硬错误）
 
 ```js
-// ui-slots: 同 priority 抛错；不同 priority 则最低者渲染
+// ui-slots: 同一 priority 已有人占用 → 直接抛错
 if (occupant) throw new Error(`single slot "${options.name}" already has a registration ... 
   — register at a different priority to shadow it (lowest renders)`)
 ```
 
-官方注册时**未指定 priority**（默认 0）。输的 entry 留在 ledger 上，注销自己的注册后官方**自动恢复**。
+同 priority 双注册**抛错**；不同 priority 则最低者渲染（shadowing）。
 
-→ **这是"可逆显示接管"的实现基础。**
+→ **v2.0 的取舍**：既然 shadow 会连带屏蔽官方动作（§3.10），就不走 shadow，
+而是**禁用官方行**让本插件成为唯一占用者。这样不必依赖 priority 语义，
+也不会出现"两个 entry 抢一个槽位"的隐性耦合。
 
 ### 3.7 客户端可调用的 workspace RPC 全集（7 个）
 
@@ -140,17 +167,11 @@ Windows 上 `directory` = `[Environment]::GetFolderPath(MyDocuments)`。
 
 → 所有会话落在默认工作区时，`default-workspace\AGENTS.md` 会被自动注入。**零代码。**
 
-### 3.10 shadow 会连带屏蔽官方的子槽位渲染（关键约束）
+### 3.10 shadow 会连带屏蔽官方的子槽位渲染（→ 故改用 fork）
 
-`entriesOfSlot` 只跳过 **abdicated** 的 entry；shadow 只是"排序后不被选中"：
+**这是 v1.1 让位给 v2.0 的关键事实。**
 
-```js
-for (const entry of rec.entries) {
-  if (this.abdicated.has(entry)) continue;   // shadow 不走这里
-  // 仅按 priority 取第一个作为 winner
-}
-```
-
+`entriesOfSlot` 只跳过 **abdicated** 的 entry；shadow 只是"排序后不被选中"。
 而 `releaseEntry`（唯一调用 `releaseChildren` 的地方）**只在注册被 dispose 时触发**。
 
 shadow 之后的状态：
@@ -162,23 +183,29 @@ shadow 之后的状态：
 | 官方组件的渲染 | ❌ 不再渲染 |
 | 那些子槽位上的注册 | ⚠️ 仍注册，但**没有渲染点** → 动作从界面消失 |
 
-**两个必须接受的后果：**
+实测还发现**第二条更硬的约束**（`scripts/probe-slots.mjs` 复现）：
 
-1. **我们的注册不能声明同名子槽位** —— `register` 会检查：
-   ```js
-   if (childRec?.spec) throw new Error(`slot "${childKey}" is already declared (by ${childRec.declaredBy})`)
-   ```
-   所以不能声明 `sidebar.workspaces.directoryFlow` 等已被官方占用为 children 的键。
+```
+register 声明已被占用的子槽位
+  → slot "sidebar.workspaces.session.menu.item" is already declared
+```
 
-2. **官方会话级操作在接管层会一起消失** —— 归档 / 置顶 / 重命名 / 分叉 都渲染在官方组件内部（`renderSlot('sidebar.workspaces.session.menu.item', …)`）。接管后这些动作没有渲染点，**必须在自己的会话行上重新实现**（直接调官方 RPC：`archiveSession` / `pinSession` / `renameSession` / `forkSession`）。
+且 `renderSlot` 是**逐 entry 授权**的（发行版 renderer：`const declared = entry.children?.[key]`），
+我们的 entry 不拥有那些 child，调用即抛 `SlotOwnershipError`。
 
-→ 这正是**分层实现**的核心理由：先落地接管机制，再逐层补齐被屏蔽的官方能力。
+**结论：shadow 路线既不能保留官方动作，也无法自行接管那些子槽位。**
+这就是 v2.0 改为 **vendor 官方组件 + 禁用官方行**的原因——这样官方 entry 由我们持有，
+子槽位由我们声明，一切照常。
 
-### 3.11 `sidebar.workspaces` 的 owner 契约较宽
+### 3.11 我们持有的那份 UI，其 owner 契约由官方原文定义
 
-官方 `WorkspaceBrowserProps` 需要一整套注入面（`startSession` / `open` / `searchSessions` / `renameSession` / `forkSession` / `renameWorkspace` / `deleteWorkspace` / `insertWorkspaceBefore` / `archiveSession` / `insertSessionBefore` / `createWorkspace` + `hooks`）。
+vendor 进来的 `contract/slots.ts` 完整保留了官方注入面
+（`startSession` / `open` / `searchSessions` / `renameSession` / `forkSession` /
+`renameWorkspace` / `deleteWorkspace` / `insertWorkspaceBefore` / `archiveSession` /
+`insertSessionBefore` / `createWorkspace` + `hooks`）。
 
-→ 我们的组件**不必实现全部**——只实现自己用到的；但凡是界面上暴露给用户的操作，都必须有真实实现，否则点了没反应。
+→ **不要删减**。项目分组逻辑是**叠加**在它之上的，不是替换；
+删掉任何一项都会让界面上某个已有功能静默失效。
 
 ---
 
@@ -209,19 +236,23 @@ shadow 之后的状态：
                               ↕ Remote
 ┌─ Client 侧 ────────────────────────────────────────────────────┐
 │                                                                 │
-│  ⑤ 主视图                                                         │
-│     注册 sidebar.workspaces @ priority < 0（shadow 官方）          │
-│     渲染项目分组 + "未分组"桶                                      │
+│  ⑤ 界面主体（vendor 自官方，由本插件持有）                          │
+│     src/vendored/ = 官方 client 源码原样副本                       │
+│     官方 ui-workspace 行由 cordis.patch.yml 禁用                   │
+│     → 分组树 / 搜索 / 视图选项 / 行内动作 / 对话框 全部原样          │
 │                                                                 │
-│  ⑥ 新建入口                                                       │
-│     "新建工作区"按钮 → 替换为"新建项目"（填标题，不选目录）          │
-│     项目内/未分组下"新会话" → workspaceId = 默认工作区              │
+│  ⑥ 项目分组叠加（在 vendor 之上）                                  │
+│     项目行与"未分组"桶：由 assignments 表重新派生分组              │
+│     新建项目入口：替换/隐藏"添加工作区"                            │
 │                                                                 │
 │  ⑦ 拖拽                                                           │
 │     会话从"未分组"拖进项目 → projectGroups/assign                 │
 │     · 完全不碰官方 cwd / attachSession                            │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+**分层要点**：⑤ 是**基线**（本版本已交付，行为与官方完全一致），
+⑥⑦ 是**叠加**——只改分组派生与入口，不动 vendor 内部。
 
 ---
 
@@ -232,24 +263,25 @@ shadow 之后的状态：
 每层都是一个**可独立发布、可独立回退**的完整插件版本。低层是高层的严格子集——后一层只在前一层之上增加能力，不改写前一层的行为。
 
 ```
-L0  接管 + 收拢          纯前端，无数据、无 host
-     ├─ shadow 官方 sidebar.workspaces
-     └─ 全部会话收进一个"未分组"列表
+L0  vendor 官方界面        本版本已交付 · 行为与官方完全一致
+     ├─ 复制官方 client 源码到 src/vendored/（逐字节一致）
+     ├─ cordis.patch.yml 禁用官方 ui-workspace 行 + 挂载本插件
+     └─ 同一套 slot / 服务 / root hook，只是 bundle id 换成我们的
                 │
 L1  新建项目              引入 host + 领域数据
      ├─ 领域表 projects
      ├─ Remote: create / rename / delete / follow
-     └─ "新建项目"入口（替换官方按钮）
+     └─ "新建项目"入口（替换官方"添加工作区"）
                 │
 L2  拖拽归类              引入归属映射
      ├─ 领域表 assignments
      ├─ Remote: assign / unassign
-     └─ 会话从"未分组"拖进项目
+     └─ 分组派生改为：项目 + "未分组"桶
                 │
-L3  会话操作补齐          补回被 shadow 屏蔽的官方能力
-     ├─ 归档 / 取消归档（调官方 RPC）
-     ├─ 重命名 / 分叉 / 置顶
-     └─ 会话行 hover 动作 + 菜单
+L3  行内动作适配          vendor 动作接到我们的分组上（无需重写）
+     ├─ 归档 / 取消归档（沿用官方实现）
+     ├─ 重命名 / 分叉 / 置顶（沿用）
+     └─ 仅处理"项目"这一新对象自身的重命名/删除
                 │
 L4  默认工作区与新会话     引入官方 workspace 交互
      ├─ 默认工作区守护（探测 + 补建）
@@ -261,54 +293,51 @@ L5  工作文档              引入文档绑定与注入
      └─ 文档模板与读写
 ```
 
+**与 v1.1 的关键差别**：L3 从"重写被屏蔽的官方能力"变成"把 vendor 的动作接到新分组上"——
+动作代码已经在我们手里，不需要重写。
+
 **为什么是这个顺序**
 
 | 顺序 | 理由 |
 |---|---|
-| 接管在最前 | 它是全部功能的前提；且能立刻暴露"哪些官方能力会消失"（§3.10） |
+| vendor 在最前 | 它是全部功能的前提；且必须先确认"替换官方行"能干净启动，再叠加任何逻辑 |
 | 项目早于归类 | 没有项目就无处可拖 |
-| 归类早于会话操作 | 归类是插件独有价值；会话操作只是补回官方已有能力（可后补） |
+| 归类早于动作适配 | 先有分组派生，动作才知道自己挂在哪个分组下 |
 | 新会话晚于归类 | 需要先有项目和归属表，才有"在项目里建会话"的语义 |
 | 文档最后 | 依赖项目表（docPath）与归属表（找到会话属主）；且是唯一的 host 注入逻辑 |
 
 ---
 
-### L0 — 接管 + 收拢
+### L0 — vendor 官方界面（已完成）
 
-**目标**：验证 shadow 机制可用，并把"全部会话收进未分组"这一最基础形态跑通。
+**目标**：把官方侧栏工作区浏览器变成"我们的"，行为与官方**完全一致**，作为后续叠加的基线。
 
 **交付物**
 
 | 项 | 内容 |
 |---|---|
-| 插件形态 | **纯 client 插件**（无 host half） |
-| slot 注册 | `sidebar.workspaces` @ priority `-100` |
-| 渲染 | 一个平铺列表：**全部会话**（不含归档） |
-| 数据来源 | `useSessions` 全局 hook（官方 ui-workspace 已在 root 提供） |
-| 交互 | 点击打开会话；"新会话"按钮透传官方 `startSession()` |
+| vendor 源码 | `src/vendored/client/`（22 文件）+ `css-modules.d.ts`，与上游 `dsh-v0.1.7-rc.2` **逐字节一致** |
+| 插件入口 | `src/client/index.ts` 仅 `export { apply, inject } from '../vendored/client/index.ts'` |
+| 打包 | `tsdown.config.ts`：平台模块保持 external，接线/纯折叠层内联，跨插件值导入报错 |
+| 配置 | `cordis.patch.yml`：`disabled: true` 官方行 + insert 本插件行 |
+| 校验 | `scripts/compare-bundle.mjs` + `scripts/verify-patch.mjs` |
 
 **技术要点**
 
-- 组件 props 的 `inject` 面**只实现用到的**：`startSession` / `open` / `hooks`
-- **不能声明** `sidebar.workspaces.directoryFlow` 等子槽位（已被官方声明，重复声明抛错，§3.10）
-- 归档过滤：L0 默认**不显示归档会话**（与官方"隐藏归档"默认一致），用 `workspaces.archivedSessionIds` 判断
-- 会话列表直接用 `list.ids` / `list.byId`，无需任何插件自有数据
-
-**已知收缩（L0 明确不提供）**
-
-- ❌ 官方工作区分组（这是接管的目的）
-- ❌ 归档 / 置顶 / 重命名 / 分叉 的行内动作（被 shadow 屏蔽，L3 补回）
-- ❌ 搜索、目录选择、工作区树
+- bundle id 换成 `dsh-project-groups`，但 **slot、服务、root hook 全部沿用官方**
+  （`sidebar.workspaces` / `uiWorkspace` / `workspaces`），所以侧栏壳与目录选择器无需改动
+- `sidebar.workspaces` 是 `single` 槽位，**双占用是硬错误** → 必须禁用官方行，不能共存
+- `uiWorkspace` 服务被 `ui-sidebar` 与两个目录选择器 `inject`，
+  所以 vendor 必须连 `navigation.ts`（服务实现）一起持有，否则整个侧栏起不来
+- 编译期规则：只有 5 个 external，与官方 bundle **完全一致**（`compare-bundle.mjs` 断言）
 
 **验收标准**
 
-1. 启用插件 → 侧栏显示全部会话的平铺列表，官方工作区分组消失
-2. 关闭插件 → 官方工作区分组完整恢复（含用户改过的名字）
-3. 点击会话能正常打开
-4. "新会话"能正常创建并打开
-5. 归档会话不出现
+1. 启用插件 → 侧栏与**原版 DSH 无法区分**（同样的分组、动作、对话框）
+2. `dsh --dump-config` 显示官方行 `disabled: true`、本插件行已挂载
+3. 关闭/卸载插件 → 官方行恢复，一切回到原版
 
-**回退**：卸载插件即完全还原，无残留数据。
+**回退**：删除本插件即还原；官方行一直保留在配置里，只是被 disable。
 
 ---
 
@@ -321,11 +350,11 @@ L5  工作文档              引入文档绑定与注入
 | 项 | 内容 |
 |---|---|
 | 插件形态 | 升级为 **host + client 双面** |
-| 领域声明 | `defineDomain({ name: 'projectGroups', version: 1, tables: { projects } })` |
+| 领域声明 | `defineDomain({ name: 'projectGroups', version: 1, tables: { projects, assignments } })` |
 | 领域记录 | `projects`: `{ title, docPath, createdAt, updatedAt }` |
 | Remote | `projectGroups/create` · `rename` · `delete` · `follow`(stream) |
 | Client 渲染 | 项目列表置于"未分组"桶**之上** |
-| 入口 | "新建项目"按钮（替换官方"新建工作区"）→ 弹标题输入框 |
+| 入口 | "新建项目"按钮（替换官方"添加工作区"）→ 弹标题输入框 |
 
 **技术要点**
 
@@ -375,34 +404,43 @@ L5  工作文档              引入文档绑定与注入
 
 ---
 
-### L3 — 会话操作补齐
+### L3 — 行内动作适配
 
-**目标**：补回被 shadow 屏蔽的官方会话级能力（§3.10）。
+**目标**：把 vendor 自带的官方行内动作接到我们的分组模型上。
+
+**与 v1.1 的关键差别**：这里**不需要重写任何官方动作**。动作代码随 vendor 一起在我们手里
+（`src/vendored/client/session-actions/`），它们已经调用官方 RPC 并渲染进官方声明的子槽位。
+本层的工作只是让它们在新分组下正常工作。
 
 **新增交付物**
 
-| 操作 | 实现方式 |
+| 项 | 内容 |
 |---|---|
-| 归档 / 取消归档 | 调官方 `workspace/archiveSession` / `unarchiveSession` |
-| 重命名 | `session/rename` |
-| 分叉 | 官方 `forkSession` |
-| 置顶 / 取消置顶 | `workspace/pinSession` / `unpinSession` |
-| 打开 / 复制标题 | 官方对应能力 |
+| 分组上下文 | 会话行知道自己属于哪个"项目"（供 hover 卡、菜单使用） |
+| 项目自身操作 | 项目行的重命名 / 删除 / 排序（新对象，需新实现） |
+| 动作回落 | 归档 / 取消归档后，从项目下消失并回到"未分组"或原项目 |
+
+**沿用官方实现、无需改写的**
+
+| 操作 | 位置 |
+|---|---|
+| 归档 / 取消归档 / 停止并归档 | `session-actions/ArchiveSession.tsx` |
+| 重命名 + 对话框 | `session-actions/RenameSession.tsx` |
+| 分叉 | `session-actions/ForkSession.tsx` |
+| 置顶 / 取消置顶 | `session-actions/PinSession.tsx` |
 
 **技术要点**
 
-- **一律调官方 RPC，插件不存状态**——这是"不乱"的前提（§2）
+- **动作一律调官方 RPC，插件不存状态**——这是"不乱"的前提（§2）
 - 归档后从列表消失；取消归档后回到原分组位置（归属表未动）
-- 会话行 hover 动作 + `...` 菜单，对齐官方交互
-- 置顶排序：可复用官方 `pinnedSessionIds`，或先用插件内部顺序
+- 项目是插件新对象，其"重命名/删除"走我们自己的 Remote，**不复用官方 workspace RPC**
 
 **验收标准**
 
-1. 归档一个会话 → 从列表消失；在官方视图（关插件后）也是已归档
+1. 归档一个会话 → 从列表消失；`archiveSession` 后官方数据一致
 2. 取消归档 → 回到原项目下
-3. 重命名生效且官方视图同步
-4. 分叉能创建子会话
-5. 插件与官方对"归档"的认知**永远一致**（同一份数据）
+3. 重命名 / 分叉 / 置顶与官方行为一致
+4. 项目重命名/删除只影响插件自己的表，不碰任何会话
 
 ---
 
@@ -477,28 +515,33 @@ L5  工作文档              引入文档绑定与注入
 
 | 层 | 依赖 | 主要风险 | 缓解 |
 |---|---|---|---|
-| L0 | 无 | shadow 机制失效（官方改契约） | 降级到 `sidebar.panellist` 并列入口 |
+| L0 | 无 | 官方升级改私有契约（vendor 漂移） | vendor 逐字节留存 + `compare-bundle.mjs` 断言 external 一致；升级时重新同步 |
+| L0 | 无 | 禁用官方行失败（id 变更） | `verify-patch.mjs` 断言无 patch 被跳过；id 变更时同步更新 |
 | L1 | L0 | 领域 schema 变更 | 用 `version` + `compatibleVersions` |
 | L2 | L1 | 拖拽交互复杂度 | 先做"菜单里选择项目"的后备路径 |
 | L3 | L0 | 官方 RPC 行为差异 | 全部走官方，不自己实现归档语义 |
 | L4 | L1 | 默认工作区被删/改名 | 按 path 探测 + 用到才补建 |
 | L5 | L1、L4 | 注入与官方预算冲突 | 独立消息 + 大小上限 |
 
-**每层都必须满足**：关闭插件后官方视图与数据完全不受影响。
+**每层都必须满足**：停用插件后，官方行重新启用即回到原版 DSH。
 
 ---
 
 ## 6. 关键流程
 
-### 6.1 插件启用（视图接管）
+### 6.1 插件启用（接管侧栏）
 
 ```
-1. client half 加载
-   → ctx.slots.inject('sidebar.workspaces', () =>
-       ctx.slots.register({ name: 'sidebar.workspaces', priority: -100, ... }))
-   → 官方 WorkspaceBrowser 被 shadow（entry 仍在 ledger，子槽位声明保留）
+1. cordis.patch.yml 生效（在 web-app bundle 层之后）
+   → ui-workspace 行 disabled: true
+   → project-groups 行挂载
 
-2. 读官方 workspace/follow 流（baseline + 增量）
+2. client bundle 加载，bundle id = dsh-project-groups
+   → 注册 sidebar.workspaces（此时无竞争者）
+   → 提供 uiWorkspace 服务（ui-sidebar / 目录选择器 inject 它）
+   → 提供 workspaces root hook
+
+3. 读官方 workspace/follow 流（baseline + 增量）
    → items（含 path/title/sessionIds）、archivedSessionIds
 
 3. 读会话列表 → ids + summaries
@@ -549,17 +592,20 @@ L5  工作文档              引入文档绑定与注入
 
 **双账结果**：官方看到它在默认工作区，插件看到它在项目 X。互不冲突。
 
-### 6.4 关闭插件（还原）
+### 6.4 停用插件（还原）
 
 ```
-client half 卸载 → 我们的 sidebar.workspaces 注册 dispose
-  → shadow 消失 → 官方 WorkspaceBrowser 自动恢复
+停用/卸载插件 → 其 cordis.patch.yml 不再生效
+  → ui-workspace 行恢复启用（官方行从未被删除，只是被 disable）
+  → official bundle 重新注册 sidebar.workspaces / uiWorkspace / workspaces
   → 用户在默认工作区改的名字照常显示（官方数据）
-  → 其他自建工作区的会话照常显示
   → 插件期间建的会话都在默认工作区里（因为用了 workspaceId）
 ```
 
-**关键**：因为插件期间的会话**真的**建在默认工作区（不是虚拟归属），关闭后它们是官方数据里名正言顺的一部分，**不需要任何迁移**。
+**关键**：因为插件期间的会话**真的**建在默认工作区（不是虚拟归属），停用后它们是官方数据里名正言顺的一部分，**不需要任何迁移**。
+
+**注意**：`disabled: true` 是"同一行的开关"，不是删除。因此还原是改一个布尔值，
+官方行、官方 bundle、官方数据自始至终都在原处。
 
 ### 6.5 文档注入
 
@@ -750,9 +796,10 @@ profileContext.home  →  $DSH_HOME  →  ~/.dsh
 | 2 | 补建时传不传标题 | **不传** | 自动取目录名 → 界面显示"默认工作区" |
 | 3 | 一个会话能否属多项目 | **否** | 语义清晰；用独立 assignments 表天然保证 |
 | 4 | 数据存哪 | **`ctx.storageDomain`** | 标准规范；可移植；schema 校验 + 原子写 |
-| 5 | shadow priority | **负数（-100）** | 与官方默认 0 拉开；最低者渲染 |
+| 5 | 界面获取方式 | **vendor 官方源码**（v2.0 改） | 所有"只换数据源"的接缝都被不变式封死（§0、§3.10） |
 | 6 | 项目文档位置 | **`$DSH_HOME/projects/<id>.md`** | 标准位置；用户可覆盖 docPath |
-| 7 | 交付方式 | **分 6 层（L0–L5）** | 每层可独立交付、可回退；先验证接管机制 |
+| 7 | 交付方式 | **分 6 层（L0–L5）** | 每层可独立交付、可回退；先验证"替换官方行"能干净启动 |
+| 8 | 与官方如何共存 | **禁用官方行**（非共存） | `single` 槽位双占用、服务双提供都是硬错误 |
 
 ---
 
@@ -760,55 +807,61 @@ profileContext.home  →  $DSH_HOME  →  ~/.dsh
 
 | 风险 | 对策 |
 |---|---|
-| 官方升级改 `sidebar.workspaces` 契约 | shadow 依赖公开文档化的 priority 行为。失败时降级到 `sidebar.panellist` 并列入口 |
-| shadow 连带屏蔽官方会话动作 | L3 全部补回（调官方 RPC，不自己实现语义） |
+| DSH 升级导致 vendor 漂移 | vendor 逐字节留存；升级时按 `src/vendored/README.md` 重新同步；`compare-bundle.mjs` 断言 external 一致 |
+| 官方行 id 改名导致 disable 失效 | `verify-patch.mjs` 断言"无 patch 被跳过"；id 变更会立刻红灯 |
 | 用户手删领域数据 | 领域文件在 `$DSH_HOME/storages`，与官方 workspace 同级。可加备份导出 |
 | 默认工作区被用户删除 | **下一个新会话时自动补建**（§6.3） |
-| 用户重命名默认工作区 | 查 path 不查 title，不受影响；关闭插件后名字照常显示 |
+| 用户重命名默认工作区 | 查 path 不查 title，不受影响；停用插件后名字照常显示 |
 | 注入与官方 AGENTS.md 预算冲突 | 官方 64 KB 预算独立计算；插件注入设大小上限 |
 | 两套账不一致 | 属正常（各记各的）。"未分组"按"全部会话 − 已认领"算，天然自洽 |
 | 多进程写领域 | 官方领域层文档明确"无跨进程写锁"；插件数据写入频率低，可接受 |
 
 ---
 
-## 13. 与 0.1.5 旧设计的区别
+## 13. 与早期设计的区别
 
-| | 旧设计（2026-09-22 讨论） | 本设计 |
-|---|---|---|
-| 范围 | 会话管理 + 项目跟踪 + 知识图谱 | 仅显示层分组 + 工作文档 |
-| 状态 | 五级状态机 + 四态台账 | **零状态**（全交官方） |
-| 数据 | 想解析会话内容 / 自动分类 | **零解析**（只要会话 id） |
-| 图谱 | 独立全屏面板 | 不做 |
-| 改动面 | 深（碰归档、血缘、LLM） | 浅（一个 shadow 注册 + 一个领域） |
+| | 0.1.5 讨论（2026-09-22） | v1.1（shadow） | 本设计（v2.0 fork） |
+|---|---|---|---|
+| 范围 | 会话管理 + 项目跟踪 + 知识图谱 | 显示层分组 + 工作文档 | 同左 |
+| 界面 | 自建 | 自建（平铺列表） | **官方原文** |
+| 状态 | 五级状态机 + 四态台账 | 零状态 | 零状态 |
+| 数据 | 解析会话内容 / 自动分类 | 零解析 | 零解析 |
+| 图谱 | 独立全屏面板 | 不做 | 不做 |
+| 改动面 | 深（碰归档、血缘、LLM） | 浅（一个 shadow 注册） | 中（一份 vendor 副本 + 叠加逻辑） |
 
-**核心简化：把"会话管理"整块让给官方，插件只做"给会话起中文项目名 + 绑定一份文档"。**
+**核心：界面所有权归插件，能力归属仍归官方；插件只做"给会话起中文项目名 + 绑定一份文档"。**
 
 ---
 
-## 14. 待实现清单（按层）
+## 14. 实现状态（按层）
 
-### L0 — 接管 + 收拢
-- [ ] client 插件骨架（`package.json` / `dsh.client.platform: web`）
-- [ ] `sidebar.workspaces` shadow 注册（priority -100）
-- [ ] 平铺会话列表组件（含归档过滤）
-- [ ] 点击打开 / 新会话透传
+### L0 — vendor 官方界面 ✅ 已完成（2026-09-26）
+
+- [x] vendor 官方 client 源码 22 文件（与上游 `dsh-v0.1.7-rc.2` 逐字节一致）
+- [x] 浏览器入口再导出（`src/client/index.ts`）
+- [x] 打包规则：平台模块 external / 接线层内联 / 跨插件值导入报错
+- [x] `cordis.patch.yml`：禁用官方 `ui-workspace` 行 + 挂载本插件
+- [x] `dsh.client.inject` 与官方一致
+- [x] 校验脚本：`compare-bundle.mjs`（8 项）、`verify-patch.mjs`（6 项）
+- [x] **实测**：`dsh --profile <test> --dump-config` 显示
+      官方行 `disabled: true`、插件行已挂载
 
 ### L1 — 新建项目
 - [ ] host half 与领域声明 + `ctx.storageDomain` 打开
 - [ ] Remote：`create` / `rename` / `delete` / `follow`
-- [ ] 项目列表渲染 + "新建项目"输入框
+- [ ] 项目列表渲染（叠加在 vendor 分组之上）+ "新建项目"输入框
 - [ ] 项目重命名 / 删除
 
 ### L2 — 拖拽归类
 - [ ] `assignments` 表启用
 - [ ] Remote：`assign` / `unassign`
-- [ ] 拖拽交互 + 放置目标
-- [ ] 未分组桶计算（全部 − 已认领）
+- [ ] 分组派生改为：项目 + "未分组"桶
+- [ ] 拖拽交互 + 放置目标（复用 vendor 的拖拽基建或新增）
 
-### L3 — 会话操作补齐
-- [ ] 归档 / 取消归档（官方 RPC）
-- [ ] 重命名 / 分叉 / 置顶
-- [ ] 会话行 hover 动作 + `...` 菜单
+### L3 — 行内动作适配
+- [ ] 会话行感知所属项目（hover 卡 / 菜单上下文）
+- [ ] 项目自身的重命名 / 删除 / 排序（新对象）
+- [ ] 归档 / 取消归档在项目分组下的回落行为
 
 ### L4 — 默认工作区与新会话
 - [ ] 默认工作区探测（按 path）
@@ -821,7 +874,26 @@ profileContext.home  →  $DSH_HOME  →  ~/.dsh
 - [ ] 文档模板与大小上限
 
 ### 通用
-- [ ] 构建配置（tsdown + `cordis.patch.yml`）
-- [ ] 测试（domain / RPC / 注入 / 补建逻辑 / 开关还原）
-- [ ] 每层的"关闭插件后官方视图无损"回归测试
+- [x] 构建配置（tsdown + `cordis.patch.yml`）
+- [ ] 单元测试（domain / RPC / 注入 / 补建逻辑）
+- [ ] 每层的"停用插件后回到原版 DSH"回归测试
+- [ ] vendor 重新同步流程演练（升到下一个 DSH 版本时）
+
+---
+
+## 15. 本轮（L0）验证结果
+
+| 验证项 | 手段 | 结果 |
+|---|---|---|
+| vendor 与上游一致 | 22 文件 SHA256 逐字节比对 | ✅ 0 差异 |
+| 产物 external 与官方一致 | `compare-bundle.mjs` 读安装版 `app.asar` | ✅ 5 个完全相同 |
+| bundle id / apply / inject | 同上 | ✅ |
+| 无构建机路径泄漏 | 同上 | ✅ 0 处 |
+| CSS 已内联 | 同上 | ✅ |
+| 禁用 patch 生效 | `verify-patch.mjs` 跑真实 `applyEntryPatches` | ✅ 无 patch 被跳过 |
+| 真实组装配置 | `dsh --profile pg-test --dump-config` | ✅ 官方行 disabled、插件行挂载 |
+| 依赖自动入 roster | `dsh plugin --profile pg-test add` | ✅ 自动加入 bundles |
+| 宿主启动（端到端） | 未做——避免与运行中的桌面实例争用 `$DSH_HOME` | ⏸ 待确认 |
+
+**下一轮（用户确认后）**：按 L1 开始叠加项目分组逻辑。
 

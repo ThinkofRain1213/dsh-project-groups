@@ -1,7 +1,7 @@
 {
   "name": "dsh-project-groups",
   "version": "0.1.0",
-  "description": "DSH plugin: replace the sidebar workspace browser with a flat project-group view — every conversation collected into one Ungrouped bucket, fully reversible on uninstall.",
+  "description": "DSH plugin: owns the sidebar workspace browser (vendored from the official plugin) so project-grouping logic can be layered onto the real UI instead of a reimplementation.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -30,7 +30,20 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "platform": "web"
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-api-workspace-controller",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-shortcuts",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
     }
   },
   "files": [
@@ -45,34 +58,42 @@
     "build": "tsdown",
     "watch": "tsdown --watch",
     "typecheck": "tsc -p tsconfig.json --pretty false",
-    "smoke": "node scripts/smoke.mjs",
-    "verify": "node scripts/verify-apply.mjs",
-    "check": "pnpm typecheck && pnpm build && pnpm smoke && pnpm verify"
+    "probe": "node scripts/probe-approach-b.mjs && node scripts/probe-slots.mjs && node scripts/probe-service.mjs",
+    "verify:bundle": "node scripts/compare-bundle.mjs",
+    "verify:patch": "node scripts/verify-patch.mjs",
+    "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm probe"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-client-locale": "*",
-    "@deepseek-ai/dsh-client-ui-renderer": "*",
-    "@deepseek-ai/dsh-client-ui-slots": "*",
     "react": "^18.2.0"
-  },
-  "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-client-locale": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-client-ui-renderer": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-client-ui-slots": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/cordis-plugin-include": "1.0.9",
+    "@deepseek-ai/dsh-agent": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-api-remotes": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-api-session-controller": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-api-workspace-controller": "0.1.7-rc.2",
     "@deepseek-ai/dsh-client-locale": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-shortcuts": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-store": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-layout": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-renderer": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-session": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-jobs": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-schedule": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-session": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-subagent": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-util-values": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-util-workspace-path": "0.1.7-rc.2",
     "@types/react": "~18.3.1",
+    "clsx": "^2.1.1",
+    "js-yaml": "^4.3.2",
+    "lightningcss": "^1.33.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "tsdown": "^0.22.14",
