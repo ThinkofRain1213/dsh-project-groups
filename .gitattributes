@@ -1,0 +1,19 @@
+# Normalise every text file to LF in the working tree.
+#
+# This repository commits a built artifact (lib/) so the plugin can be
+# installed straight from a git clone. That artifact must be byte-identical to
+# what a rebuild produces on any machine, and two things break that on Windows
+# with core.autocrlf=true:
+#
+#  1. git reports lib/client.js as modified on a clean checkout — same size,
+#     same content, differing only in the EOL it would apply next checkout;
+#  2. lib/client.js.map embeds the sources verbatim in `sourcesContent`, so a
+#     CRLF working tree produces a map an LF checkout can never reproduce.
+#
+# Forcing LF everywhere makes the checkout — and therefore the artifact —
+# platform-independent.
+* text=auto eol=lf
+
+# Media is binary; keep git from inspecting or converting it.
+*.png binary
+*.ico binary

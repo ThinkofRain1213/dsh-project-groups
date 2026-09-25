@@ -1,0 +1,140 @@
+/*
+ * dsh-project-groups — browsing region styles.
+ *
+ * Deliberately built from the shell's design tokens (`--dsw-alias-*`,
+ * `--dsw-radius-*`) rather than hard-coded colors, so the list follows the
+ * app's light/dark theme and any future token change without a rebuild.
+ */
+
+.dpg-root {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  color: var(--dsw-alias-label-primary);
+}
+
+.dpg-header {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 36px;
+  margin-bottom: 4px;
+  padding-left: 4px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow: hidden;
+}
+
+.dpg-header-title {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 20px;
+}
+
+.dpg-header-count {
+  flex: none;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dpg-new-session {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: none;
+  width: 100%;
+  height: 34px;
+  margin-bottom: 6px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.dpg-new-session:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.dpg-scroll {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: var(--dsh-sidebar-inline-padding, 12px);
+}
+
+.dpg-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: var(--dsw-radius-md);
+  cursor: pointer;
+  user-select: none;
+}
+
+.dpg-row:hover,
+.dpg-row:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.dpg-row:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+/* The running indicator keeps its cell even when idle, so titles align. */
+.dpg-running {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-business-primary, currentColor);
+  opacity: 0;
+}
+
+.dpg-row[data-running='true'] .dpg-running {
+  opacity: 1;
+}
+
+.dpg-row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.dpg-row-time {
+  flex: none;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dpg-empty {
+  margin: 8px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}

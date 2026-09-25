@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+
+# Pack output (pnpm pack / npm pack) — released via npm, never committed.
+*.tgz

@@ -1,0 +1,5 @@
+# dsh-project-groups — DSH installable bundle patch
+# Registers the plugin row into the web profile's client roster.
+- insert:
+    - id: project-groups
+      name: dsh-project-groups

@@ -1,0 +1,92 @@
+{
+  "name": "dsh-project-groups",
+  "version": "0.1.0",
+  "description": "DSH plugin: replace the sidebar workspace browser with a flat project-group view — every conversation collected into one Ungrouped bucket, fully reversible on uninstall.",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ThinkofRain1213/dsh-project-groups.git"
+  },
+  "homepage": "https://github.com/ThinkofRain1213/dsh-project-groups#readme",
+  "bugs": {
+    "url": "https://github.com/ThinkofRain1213/dsh-project-groups/issues"
+  },
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./src/client/index.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "watch": "tsdown --watch",
+    "typecheck": "tsc -p tsconfig.json --pretty false",
+    "smoke": "node scripts/smoke.mjs",
+    "verify": "node scripts/verify-apply.mjs",
+    "check": "pnpm typecheck && pnpm build && pnpm smoke && pnpm verify"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-locale": "*",
+    "@deepseek-ai/dsh-client-ui-renderer": "*",
+    "@deepseek-ai/dsh-client-ui-slots": "*",
+    "react": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-locale": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-renderer": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-slots": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-client-locale": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.7-rc.2",
+    "@types/react": "~18.3.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tsdown": "^0.22.14",
+    "typescript": "^5.6.0"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "sidebar",
+    "workspace",
+    "session-groups"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  }
+}
