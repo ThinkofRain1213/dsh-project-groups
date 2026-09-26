@@ -28,7 +28,7 @@ globalThis.window = { __ModuleLoader__: { load: () => {} } }
 
 const { ProjectModel } = await import('../src/client/projects.ts')
 const { deriveGroups, UNGROUPED_KEY } = await import('../src/vendored/client/tree.ts')
-const { clientGrouping, installProjectModel } = await import('../src/client/grouping.ts')
+const { clientExpansions, clientGrouping, installProjectModel } = await import('../src/client/grouping.ts')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -60,13 +60,19 @@ const groupsOf = (model, expanded = []) => deriveGroups(
  * model's read path, its unwrapping and its change notification are all real.
  */
 function fakeRemote({ failOn } = {}) {
-  const state = { projects: [], assignments: {} }
+  const state = { projects: [], assignments: {}, expansions: {} }
   const calls = []
   const ok = value => Promise.resolve({ ok: true, value })
   const guard = name => {
     if (failOn === name) return Promise.resolve({ ok: false, error: { message: `${name} refused by host` } })
     return undefined
   }
+  // Stream subscribers, woken on every landed write. The real Host re-projects a
+  // full baseline after each one, and that is what confirms or corrects an
+  // optimistic local value — a fake that only ever sends its opening baseline
+  // would leave an optimistic write looking like a bug.
+  const watchers = new Set()
+  const landed = () => { for (const notify of [...watchers]) notify() }
   return {
     state,
     calls,
@@ -81,6 +87,7 @@ function fakeRemote({ failOn } = {}) {
         createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
       }
       state.projects.push(project)
+      landed()
       return ok({ project })
     },
     async rename({ projectId, title }) {
@@ -90,6 +97,7 @@ function fakeRemote({ failOn } = {}) {
       const project = state.projects.find(p => p.projectId === projectId)
       if (project === undefined) return { ok: false, error: { message: 'unknown project' } }
       project.title = title
+      landed()
       return ok({ project })
     },
     async delete({ projectId }) {
@@ -100,7 +108,17 @@ function fakeRemote({ failOn } = {}) {
       for (const [sessionId, owner] of Object.entries(state.assignments)) {
         if (owner === projectId) delete state.assignments[sessionId]
       }
+      delete state.expansions[projectId]
+      landed()
       return ok(undefined)
+    },
+    async setExpanded({ projectId, expanded }) {
+      calls.push(['setExpanded', projectId, expanded])
+      const refused = guard('setExpanded')
+      if (refused !== undefined) return refused
+      state.expansions[projectId] = expanded
+      landed()
+      return ok({ projectId, expanded })
     },
     async reorder({ projectId, beforeId }) {
       calls.push(['reorder', projectId, beforeId])
@@ -111,6 +129,7 @@ function fakeRemote({ failOn } = {}) {
       const rest = state.projects.filter(p => p.projectId !== projectId)
       const index = beforeId === undefined ? rest.length : rest.findIndex(p => p.projectId === beforeId)
       state.projects = [...rest.slice(0, index), moving, ...rest.slice(index)]
+      landed()
       return ok({ projectIds: state.projects.map(p => p.projectId) })
     },
     async assign({ sessionId, projectId }) {
@@ -118,6 +137,7 @@ function fakeRemote({ failOn } = {}) {
       const refused = guard('assign')
       if (refused !== undefined) return refused
       state.assignments[sessionId] = projectId
+      landed()
       return ok({ sessionId, projectId })
     },
     async unassign({ sessionId }) {
@@ -126,14 +146,31 @@ function fakeRemote({ failOn } = {}) {
       if (refused !== undefined) return refused
       const removed = Object.hasOwn(state.assignments, sessionId)
       delete state.assignments[sessionId]
+      landed()
       return ok({ sessionId, removed })
     },
     follow(signal) {
-      // One baseline then nothing: the model's stream consumption is exercised
-      // without a Host. The live stream was verified against a running Host.
-      const frames = [{ type: 'baseline', value: structuredClone(state) }]
+      // An opening baseline, then one fresh projection per landed write — the
+      // shape the real Host's `follow` has.
+      const queue = [{ type: 'baseline', value: structuredClone(state) }]
+      let wake
+      const notify = () => {
+        queue.push({ type: 'baseline', value: structuredClone(state) })
+        const pending = wake
+        wake = undefined
+        pending?.()
+      }
+      watchers.add(notify)
+      signal.addEventListener('abort', () => { watchers.delete(notify); wake?.() }, { once: true })
       return (async function* () {
-        for (const frame of frames) if (!signal.aborted) yield frame
+        while (!signal.aborted) {
+          if (queue.length === 0) await new Promise(resolve => { wake = resolve })
+          while (queue.length > 0) {
+            const frame = queue.shift()
+            if (signal.aborted) return
+            yield frame
+          }
+        }
       })()
     },
   }
@@ -163,20 +200,34 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   stop()
 }
 
-// 2. Every verb reaches the namespace, and stays out of the local state until
-//    the Host's projection says otherwise.
+// 2. Every verb reaches the namespace, and the view follows the Host rather than
+//    the call.
 {
   const { model, remote, stop } = await started()
   await model.create('项目一')
   check('create reached the namespace', remote.calls.some(c => c[0] === 'create' && c[1] === '项目一'),
     JSON.stringify(remote.calls))
-  check('create did not invent local state', model.list().length === 0,
-    'the sidebar must not show a project the Host has not accepted')
+  check('the Host projection is what carries the new project',
+    model.list().map(p => p.title).join(',') === '项目一',
+    JSON.stringify(model.list().map(p => p.title)))
+  stop()
+}
 
-  // The Host's projection is what updates the view.
-  await model.start()
-  const remoteState = remote.state
-  check('the projection carries the Host state', remoteState.projects.length === 1)
+// 2b. A refused write leaves the view untouched: the projection is the only
+//     source, so nothing is shown that the Host did not accept.
+{
+  const { model, stop } = await started({ failOn: 'create' })
+  let threw = false
+  try {
+    await model.create('never accepted')
+  } catch {
+    threw = true
+  }
+  check('a refused create rejects', threw)
+  check('and invents no local project', model.list().length === 0,
+    JSON.stringify(model.list().map(p => p.title)))
+  check('and claims no group for it', groupsOf(model).length === 1,
+    groupsOf(model).map(g => g.key).join(','))
   stop()
 }
 
@@ -310,21 +361,42 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   stop()
 }
 
-// 10. Early subscribers are woken when the model arrives.
+// 10. Early subscribers on both seats are woken when the model arrives.
+//
+//     The browser registers its hooks during the vendored `apply`, which can
+//     precede the Remote baseline, so both observables must hold their early
+//     listeners and hand them to the model on install. This is the one place the
+//     install happens, so both seats are exercised together — a later install
+//     would replace the module-level model and leave a subscriber bound to the
+//     old one.
 {
-  const seen = []
-  const unsubscribe = clientGrouping.subscribe(() => { seen.push(clientGrouping.getSnapshot().length) })
+  const seenGroups = []
+  const seenExpansions = []
+  const unsubscribeGroups = clientGrouping.subscribe(() => { seenGroups.push(clientGrouping.getSnapshot().length) })
+  const unsubscribeExpansions = clientExpansions.subscribe(() => { seenExpansions.push(clientExpansions.getSnapshot()) })
   check('a snapshot read before install is the empty override',
     clientGrouping.getSnapshot().length === 0)
+  check('and the expansion seat reads empty before install',
+    Object.keys(clientExpansions.getSnapshot()).length === 0)
+
   const { model, stop } = await started()
   await model.create('early')
   await model.start()
+  const projectId = model.list()[0].projectId
+  await model.setExpanded(projectId, true)
   installProjectModel(model)
-  check('installing the model wakes an early subscriber', seen.length > 0,
-    `notified ${seen.length}x`)
+
+  check('installing the model wakes an early grouping subscriber', seenGroups.length > 0,
+    `notified ${seenGroups.length}x`)
   check('and its next read sees the Host state', clientGrouping.getSnapshot().length === 1,
     String(clientGrouping.getSnapshot().length))
-  unsubscribe()
+  check('installing the model wakes an early expansion subscriber', seenExpansions.length > 0,
+    `notified ${seenExpansions.length}x`)
+  check('and its next read sees the recorded expansion',
+    clientExpansions.getSnapshot()[projectId] === true,
+    JSON.stringify(clientExpansions.getSnapshot()))
+  unsubscribeGroups()
+  unsubscribeExpansions()
   stop()
 }
 
@@ -338,6 +410,83 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   const ids = model.list().map(p => p.projectId)
   check('same-titled projects get distinct ids', ids[0] !== ids[1], ids.join(','))
   check('both render as separate rows', groupsOf(model).length === 3, `groups=${groupsOf(model).length - 1}`)
+  stop()
+}
+
+// 12. Expansion state: the plugin's own, and the absent/false distinction the
+//     browser's auto-open rule depends on.
+{
+  const { model, remote, stop } = await started()
+  await model.create('abc')
+  await model.start()
+  const projectId = model.list()[0].projectId
+
+  check('a fresh project has no expansion entry',
+    model.expansions.getSnapshot()[projectId] === undefined,
+    JSON.stringify(model.expansions.getSnapshot()))
+
+  await model.setExpanded(projectId, true)
+  check('the write reached the namespace',
+    remote.calls.some(c => c[0] === 'setExpanded' && c[1] === projectId && c[2] === true),
+    JSON.stringify(remote.calls))
+  check('the expansion is locally visible immediately',
+    model.expansions.getSnapshot()[projectId] === true,
+    JSON.stringify(model.expansions.getSnapshot()))
+
+  await model.setExpanded(projectId, false)
+  check('an explicit false is stored as false',
+    model.expansions.getSnapshot()[projectId] === false,
+    JSON.stringify(model.expansions.getSnapshot()))
+
+  // The snapshot must change identity on a real change, or the browser's
+  // selector would not re-render.
+  const settled = model.expansions.getSnapshot()
+  await model.setExpanded(projectId, false)
+  check('recording the same state again is a no-op',
+    model.expansions.getSnapshot() === settled)
+
+  // A reconnect baseline carries it, which is what makes it survive a restart.
+  await model.start()
+  check('the Host projection carries the expansion',
+    model.expansions.getSnapshot()[projectId] === false,
+    JSON.stringify(model.expansions.getSnapshot()))
+  stop()
+}
+
+// 13. An optimistic write reverts when the Host refuses it, so a refusal does
+//     not leave the row showing a state that was never stored.
+{
+  const { model, stop } = await started({ failOn: 'setExpanded' })
+  await model.create('abc')
+  await model.start()
+  const projectId = model.list()[0].projectId
+
+  let threw = false
+  try {
+    await model.setExpanded(projectId, true)
+  } catch {
+    threw = true
+  }
+  check('a refused expansion write rejects', threw)
+  check('and the optimistic value was rolled back',
+    model.expansions.getSnapshot()[projectId] === undefined,
+    JSON.stringify(model.expansions.getSnapshot()))
+  stop()
+}
+
+// 14. Deleting a project takes its expansion with it, so nothing unreachable
+//     lingers in the map.
+{
+  const { model, stop } = await started()
+  await model.create('gone')
+  await model.start()
+  const projectId = model.list()[0].projectId
+  await model.setExpanded(projectId, true)
+  await model.remove(projectId)
+  await model.start()
+  check('the deleted project leaves no expansion behind',
+    model.expansions.getSnapshot()[projectId] === undefined,
+    JSON.stringify(model.expansions.getSnapshot()))
   stop()
 }
 

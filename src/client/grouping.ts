@@ -32,6 +32,9 @@ import type { ProjectModel } from './projects.ts'
 /** The override with no projects: one Ungrouped bucket. */
 const EMPTY: readonly GroupSource[] = Object.freeze([])
 
+/** No project row has been touched yet. */
+const EMPTY_EXPANSIONS: Readonly<Record<string, boolean>> = Object.freeze({})
+
 /**
  * The live model, or `undefined` before the Remote namespace has answered.
  *
@@ -42,6 +45,8 @@ const EMPTY: readonly GroupSource[] = Object.freeze([])
 let model: ProjectModel | undefined
 /** Listeners attached before the model existed, handed to it on install. */
 const pending = new Set<() => void>()
+/** The same, for {@link clientExpansions}; the two observables have separate seats. */
+const pendingExpansions = new Set<() => void>()
 
 /** @returns the live model, once its baseline has landed. */
 export function projectModel(): ProjectModel | undefined {
@@ -65,6 +70,11 @@ export function installProjectModel(started: ProjectModel): void {
   // The snapshot these listeners last read was the empty override; the model now
   // has the Host's, so one notification is a real change rather than a no-op.
   for (const notify of early) notify()
+
+  const earlyExpansions = [...pendingExpansions]
+  pendingExpansions.clear()
+  for (const notify of earlyExpansions) started.expansions.subscribe(notify)
+  for (const notify of earlyExpansions) notify()
 }
 
 /**
@@ -83,5 +93,25 @@ export const clientGrouping: HostObservable<readonly GroupSource[] | undefined> 
       return () => { pending.delete(listener) }
     }
     return live.grouping.subscribe(listener)
+  },
+}
+
+/**
+ * The recorded expansion of each project row, handed to the vendored browser.
+ *
+ * A separate observable from {@link clientGrouping} because it is a separate
+ * seat in the inject face: the region reads it with its own hook. It carries the
+ * plugin's own Host state rather than the browser's view store, which the
+ * official plugin shares and prunes — see `src/vendored/README.md`.
+ */
+export const clientExpansions: HostObservable<Readonly<Record<string, boolean>>> = {
+  getSnapshot: () => model?.expansions.getSnapshot() ?? EMPTY_EXPANSIONS,
+  subscribe: (listener) => {
+    const live = model
+    if (live === undefined) {
+      pendingExpansions.add(listener)
+      return () => { pendingExpansions.delete(listener) }
+    }
+    return live.expansions.subscribe(listener)
   },
 }

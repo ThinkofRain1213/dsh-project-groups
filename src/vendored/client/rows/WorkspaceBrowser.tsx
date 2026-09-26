@@ -14,7 +14,7 @@
  * are slot entries with their own behavior, so this component threads no
  * action callbacks and hosts no action surface.
  */
-import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import {
   Button, IconArchiveCheckOutlineRegular, IconArchiveOffOutlineRegular, IconArchiveOutlineRegular,
@@ -266,6 +266,16 @@ type SessionTreeProps = Pick<
   groupExpansion: Readonly<Record<string, boolean>>
   /** Persist one Workspace group's expansion. */
   setGroupExpanded: (key: string, expanded: boolean) => void
+  /**
+   * Expansion the caller owns, keyed by group key; absent when it does not.
+   *
+   * These keys are the caller's, not this browser's: writing them to the view
+   * store would put them where the official plugin's mount prunes them, so a
+   * caller that needs them kept supplies both this and `setProjectExpanded`.
+   */
+  projectExpansion?: Readonly<Record<string, boolean>> | undefined
+  /** Record one caller-owned group's expansion. */
+  setProjectExpanded?: ((key: string, expanded: boolean) => Promise<void>) | undefined
   /** Save a drag order and select Manual. */
   setSessionOrder: (accountKey: string, order: readonly string[]) => void
   /** Registry-global pin and archive sets plus the archived-visibility choice. */
@@ -322,6 +332,7 @@ function SessionTree({
   renderSlot,
   insertWorkspaceBefore,
   nestWorkspaces, groupExpansion, setGroupExpanded,
+  projectExpansion, setProjectExpanded,
   setSessionOrder, home, t,
   revealSessionId, onSessionRevealed, shortcuts,
 }: SessionTreeProps) {
@@ -353,10 +364,45 @@ function SessionTree({
     : groupingOverride === undefined
       ? owningGroupKey(workspaces, current)
       : owningSourceKey(groupingOverride, current)
+  // Expansion has two possible owners, and which one applies depends on the key.
+  //
+  // A caller-supplied project key is the caller's: it is written to their store
+  // through `setProjectExpanded`, and read back from `projectExpansion`. Every
+  // other key — a Workspace id, and the Ungrouped bucket — is this browser's, and
+  // keeps using the view store exactly as upstream. The split exists because the
+  // view store is shared with the official plugin, whose mount prunes every key
+  // that is not a Workspace id, so a project's expansion kept there is lost as
+  // soon as the official sidebar mounts.
+  const projectKeys = useMemo(
+    () => new Set(groupingOverride?.map(group => group.key) ?? []),
+    [groupingOverride],
+  )
+  const isCallerOwned = useCallback(
+    (key: string): boolean => setProjectExpanded !== undefined && projectKeys.has(key),
+    [setProjectExpanded, projectKeys],
+  )
+  /** Whether a key has ever been recorded, by whichever owner applies. */
+  const hasExpansion = useCallback(
+    (key: string): boolean => (isCallerOwned(key)
+      ? Object.hasOwn(projectExpansion ?? {}, key)
+      : Object.hasOwn(groupExpansion, key)),
+    [isCallerOwned, projectExpansion, groupExpansion],
+  )
+  /** Record one key's expansion with its owner. */
+  const recordExpansion = useCallback((key: string, expanded: boolean): void => {
+    if (!isCallerOwned(key)) {
+      setGroupExpanded(key, expanded)
+      return
+    }
+    // The caller's store is remote, so the write is fire-and-forget here: their
+    // model applies it optimistically and its own state drives the re-render.
+    // A rejection is their concern to surface, not a render-time throw.
+    void setProjectExpanded?.(key, expanded).catch(() => {})
+  }, [isCallerOwned, setGroupExpanded, setProjectExpanded])
   useEffect(() => {
-    if (current === undefined || currentGroup === undefined || Object.hasOwn(groupExpansion, currentGroup)) return
-    setGroupExpanded(currentGroup, true)
-  }, [current, currentGroup, setGroupExpanded, groupExpansion])
+    if (current === undefined || currentGroup === undefined || hasExpansion(currentGroup)) return
+    recordExpansion(currentGroup, true)
+  }, [current, currentGroup, hasExpansion, recordExpansion])
   const parents = useMemo(() => {
     if (!nestWorkspaces) return new Map<string, WorkspaceId | undefined>()
     const keysByPath = new Map(workspaces.map(workspace => [workspace.path, workspace.workspaceId]))
@@ -382,9 +428,12 @@ function SessionTree({
     const keys = groupingOverride === undefined
       ? workspaces.map(workspace => workspace.workspaceId)
       : groupingOverride.map(group => group.key)
+    // The two records cannot collide: `projectExpansion` holds only keys the
+    // caller owns, and a caller-owned key is never written to the view store.
+    const expansion = { ...groupExpansion, ...projectExpansion }
     return [...keys, UNGROUPED_KEY]
-      .filter(key => groupExpansion[key] ?? ancestorKeys.has(key))
-  }, [groupExpansion, parents, workspaces, groupingOverride])
+      .filter(key => expansion[key] ?? ancestorKeys.has(key))
+  }, [groupExpansion, projectExpansion, parents, workspaces, groupingOverride])
   const groups = useMemo(
     () => deriveGroups(list, workspaces, rowState, statuses, {
       expandedGroups,
@@ -394,11 +443,12 @@ function SessionTree({
   )
   useEffect(() => {
     for (let key = revealGroup; key !== undefined; key = parents.get(key)) {
-      if (groupExpansion[key] === false || (key === revealGroup && groupExpansion[key] !== true)) {
-        setGroupExpanded(key, true)
+      const recorded = isCallerOwned(key) ? projectExpansion?.[key] : groupExpansion[key]
+      if (recorded === false || (key === revealGroup && recorded !== true)) {
+        recordExpansion(key, true)
       }
     }
-  }, [groupExpansion, parents, revealGroup, setGroupExpanded])
+  }, [groupExpansion, projectExpansion, parents, revealGroup, isCallerOwned, recordExpansion])
   useEffect(() => {
     if (revealSessionId === undefined || revealGroup === undefined) return
     const group = groups.find(candidate => candidate.key === revealGroup)
@@ -584,12 +634,12 @@ function SessionTree({
             if (group.expanded) {
               setSessionLimits(limits => ({ ...limits, [group.key]: COLLAPSED_SESSION_LIMIT }))
             }
-            setGroupExpanded(group.key, !group.expanded)
+            recordExpansion(group.key, !group.expanded)
           }}
           onCreate={() => {
             // Expand even when no Session ends up created: a collapsed group
             // would swallow the new row and read as "the click did nothing".
-            setGroupExpanded(group.key, true)
+            recordExpansion(group.key, true)
             // A project row files what it creates under itself; every other row
             // only creates it. Ungrouped means precisely "filed under nothing",
             // so filing there would be a contradiction, and a real Workspace row
@@ -980,6 +1030,8 @@ export function WorkspaceBrowser({
   deleteProject,
   reorderProject,
   assignSession,
+  setProjectExpanded,
+  useExpansions,
   renderSlot,
   t,
 }: WorkspaceBrowserProps) {
@@ -1000,6 +1052,10 @@ export function WorkspaceBrowser({
   // picker, drag targets and the phase/archive reads below all stay official
   // either way — only the group headings change.
   const groupingOverride = useGrouping(groups => groups)
+  // Expansion the caller owns, keyed by their own group keys. A composition with
+  // no such state supplies an observable answering an empty record, and with no
+  // `setProjectExpanded` verb every key resolves to this browser's view store.
+  const projectExpansion = useExpansions(expansion => expansion)
   // The resolved name, not `t`, is the memo dependency: the bound seat keeps
   // its identity across a language switch.
   const defaultWorkspaceName = t('workspace.defaultName')
@@ -1094,28 +1150,14 @@ export function WorkspaceBrowser({
     [UNGROUPED_KEY, orderedUngroupedSessionIds] as const,
     [FLAT_SESSION_ORDER_KEY, orderedFlatSessionIds] as const,
   ]), [orderedFlatSessionIds, orderedUngroupedSessionIds, orderedWorkspaces])
-  // Whether the grouping override can name the keys it owns.
-  //
-  // An empty caller-supplied override is ambiguous: it means either "no projects
-  // exist" or "the caller's model has not answered yet", and nothing in the value
-  // distinguishes them. Retention below prunes every key it is not handed, so
-  // reading an unanswered override as "owns nothing" deletes a live project's
-  // expansion — and by the time the model answers, the record is already gone, so
-  // the re-run cannot bring it back. Pruning therefore waits until the override
-  // can name its keys. Without an override there is nothing to wait for: that is
-  // upstream's own case, and it prunes as it always did.
-  const overrideAnswered = groupingOverride === undefined || groupingOverride.length > 0
   useEffect(() => {
-    if (workspacePhase !== 'ready' || !overrideAnswered) return
+    if (workspacePhase !== 'ready') return
     actions.retainAccountKeys([
       UNGROUPED_KEY,
       FLAT_SESSION_ORDER_KEY,
       ...workspaces.map(workspace => workspace.workspaceId),
-      // The override's keys are ours, and retention must know them or it prunes
-      // them: a project's remembered expansion lives under its project id.
-      ...(groupingOverride?.map(group => group.key) ?? []),
     ])
-  }, [actions.retainAccountKeys, workspacePhase, workspaces, groupingOverride])
+  }, [actions.retainAccountKeys, workspacePhase, workspaces])
   useEffect(() => {
     if (list.phase !== 'ready' || workspaceReady || orderBy !== 'manual' || currentBlank === undefined) return
     // A first prompt can end blank pinning before the Workspace baseline arrives.
@@ -1640,6 +1682,8 @@ export function WorkspaceBrowser({
                 animationResetKey={`${groupBy}/${orderBy}/${archivedFilter}`}
                 groupExpansion={groupExpansion}
                 setGroupExpanded={actions.setGroupExpanded}
+                projectExpansion={projectExpansion}
+                setProjectExpanded={setProjectExpanded}
                 setSessionOrder={saveSessionOrder}
                 rowState={rowState}
                 onLeaveArchivedOnly={leaveArchivedOnly}

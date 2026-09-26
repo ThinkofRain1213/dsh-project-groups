@@ -37,6 +37,7 @@ export interface ProjectRemote {
   reorder(request: { projectId: string; beforeId?: string }): Promise<RemoteOutcome<unknown>>
   assign(request: { sessionId: string; projectId: string }): Promise<RemoteOutcome<unknown>>
   unassign(request: { sessionId: string }): Promise<RemoteOutcome<unknown>>
+  setExpanded(request: { projectId: string; expanded: boolean }): Promise<RemoteOutcome<unknown>>
 }
 
 /** Minimal result shape the mounted namespace answers with. */
@@ -51,9 +52,19 @@ interface ProjectState {
   readonly projects: readonly ProjectValue[]
   /** Session id → owning project id. */
   readonly assignments: Readonly<Record<string, string>>
+  /**
+   * Project id → whether its row is open. An **absent** entry means the user has
+   * never touched that row, which is a different state from `false`; the browser
+   * opens the group holding the current Session only while the entry is absent.
+   */
+  readonly expansions: Readonly<Record<string, boolean>>
 }
 
-const EMPTY_STATE: ProjectState = Object.freeze({ projects: Object.freeze([]), assignments: Object.freeze({}) })
+const EMPTY_STATE: ProjectState = Object.freeze({
+  projects: Object.freeze([]),
+  assignments: Object.freeze({}),
+  expansions: Object.freeze({}),
+})
 
 /** Unwrap one Remote outcome, turning a failure into a thrown error. */
 function unwrap<T>(outcome: RemoteOutcome<T>, what: string): T {
@@ -85,6 +96,25 @@ export class ProjectModel {
    */
   readonly grouping: HostObservable<readonly GroupSource[] | undefined> = {
     getSnapshot: () => this.groupingSnapshot(),
+    subscribe: (listener) => {
+      this.listeners.add(listener)
+      return () => { this.listeners.delete(listener) }
+    },
+  }
+
+  /**
+   * The recorded expansion of each project row.
+   *
+   * Served from this plugin's own Host domain rather than the browser's view
+   * store, because that store is shared with the official plugin and its mount
+   * prunes every non-Workspace key — which is what losing the state on a plugin
+   * switch actually was.
+   *
+   * Only touched rows appear. The browser reads absence as "never opened", which
+   * is what lets it auto-open the group holding the current Session once.
+   */
+  readonly expansions: HostObservable<Readonly<Record<string, boolean>>> = {
+    getSnapshot: () => this.state.expansions,
     subscribe: (listener) => {
       this.listeners.add(listener)
       return () => { this.listeners.delete(listener) }
@@ -168,6 +198,35 @@ export class ProjectModel {
     unwrap(await this.remote.unassign({ sessionId }), 'unassign session')
   }
 
+  /**
+   * Record whether one project row is open.
+   *
+   * Optimistic: the local map moves first so a click lands in the same frame, and
+   * the Host is still authoritative — `follow` re-projects on every landed write,
+   * so a refusal is corrected by the next frame rather than left wrong. The
+   * rejection is rethrown so a caller that wants to surface it can, and the
+   * revert happens regardless.
+   * @param projectId - target project.
+   * @param expanded - new state.
+   */
+  async setExpanded(projectId: string, expanded: boolean): Promise<void> {
+    const previous = this.state.expansions
+    if (previous[projectId] === expanded) return
+    this.state = Object.freeze({ ...this.state, expansions: Object.freeze({ ...previous, [projectId]: expanded }) })
+    for (const listener of [...this.listeners]) listener()
+    try {
+      unwrap(await this.remote.setExpanded({ projectId, expanded }), 'set project expansion')
+    } catch (error: unknown) {
+      // Only revert when the Host has not already answered with something newer:
+      // a frame that arrived meanwhile is more current than this rollback.
+      if (this.state.expansions[projectId] === expanded) {
+        this.state = Object.freeze({ ...this.state, expansions: previous })
+        for (const listener of [...this.listeners]) listener()
+      }
+      throw error
+    }
+  }
+
   private acceptFrame(frame: ProjectFollowFrame): void {
     if (frame.type === 'baseline') {
       this.accept(frame.value)
@@ -182,13 +241,18 @@ export class ProjectModel {
   private accept(baseline: ProjectBaseline): void {
     const projects = Object.freeze(baseline.projects.map(project => Object.freeze({ ...project })))
     const assignments = Object.freeze({ ...baseline.assignments })
+    const expansions = Object.freeze({ ...baseline.expansions })
     // Compare by value: the Host re-projects on every change, and a frame that
     // carries the same state must not invalidate the snapshot the browser
     // compares by identity.
-    if (sameProjects(this.state.projects, projects) && sameAssignments(this.state.assignments, assignments)) {
+    if (
+      sameProjects(this.state.projects, projects)
+      && sameAssignments(this.state.assignments, assignments)
+      && sameExpansions(this.state.expansions, expansions)
+    ) {
       return
     }
-    this.state = Object.freeze({ projects, assignments })
+    this.state = Object.freeze({ projects, assignments, expansions })
     this.derived = undefined
     for (const listener of [...this.listeners]) listener()
   }
@@ -230,6 +294,22 @@ function sameProjects(left: readonly ProjectValue[], right: readonly ProjectValu
 function sameAssignments(
   left: Readonly<Record<string, string>>,
   right: Readonly<Record<string, string>>,
+): boolean {
+  const leftKeys = Object.keys(left)
+  if (leftKeys.length !== Object.keys(right).length) return false
+  return leftKeys.every(key => left[key] === right[key])
+}
+
+/**
+ * Value equality over the expansion map.
+ *
+ * An absent key and a `false` value are different states, so the comparison is
+ * over entries rather than over a defaulted value: folding a row the user had
+ * never touched is a real change and must notify.
+ */
+function sameExpansions(
+  left: Readonly<Record<string, boolean>>,
+  right: Readonly<Record<string, boolean>>,
 ): boolean {
   const leftKeys = Object.keys(left)
   if (leftKeys.length !== Object.keys(right).length) return false

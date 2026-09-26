@@ -37,6 +37,15 @@ export interface ProjectBaseline {
   readonly projectIds: readonly string[]
   /** Session id → owning project id, for every assignment. */
   readonly assignments: Readonly<Record<string, string>>
+  /**
+   * Project id → whether its row is open.
+   *
+   * An **absent** entry means the user has never touched that row, which is a
+   * different state from `false` (folded deliberately) and is what lets the
+   * browser open the group holding the current Session once. The record carries
+   * that distinction; a default-filled map would erase it.
+   */
+  readonly expansions: Readonly<Record<string, boolean>>
 }
 
 /** One ordered change after a generation's baseline. */
@@ -104,4 +113,20 @@ export interface ProjectUnassignValue {
   readonly sessionId: string
   /** Whether an assignment existed and was removed. */
   readonly removed: boolean
+}
+
+/**
+ * `setExpanded` request: record one project row's open/closed state.
+ *
+ * This is the plugin's own state, not the browser's view store: that store is
+ * shared with the official plugin, whose mount prunes non-Workspace keys.
+ */
+export interface ProjectSetExpandedRequest {
+  readonly projectId: string
+  readonly expanded: boolean
+}
+/** `setExpanded` result. */
+export interface ProjectExpansionValue {
+  readonly projectId: string
+  readonly expanded: boolean
 }

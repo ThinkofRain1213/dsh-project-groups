@@ -252,11 +252,63 @@ function bench() {
 {
   const descriptor = descriptorOf(projectDomainSpec)
   check('the domain descriptor names the snake_case unit', descriptor.name === PROJECT_DOMAIN_NAME)
-  check('the descriptor declares both tables',
-    descriptor.tables.slice().sort().join(',') === 'assignments,projects',
+  check('the descriptor declares every table',
+    descriptor.tables.slice().sort().join(',') === 'assignments,expansions,projects',
     descriptor.tables.join(','))
   check('the descriptor declares a global', descriptor.hasGlobal === true)
-  check('the descriptor version matches the spec', descriptor.version === 1)
+  // Version 1 is load-bearing: a `single`-layout unit rejects a stored version
+  // that differs from the spec's and has no migration step, so bumping it for an
+  // added table would make every existing file unreadable. An added table needs
+  // no bump — a unit predating it reads that table as empty.
+  check('the descriptor version stays 1 so existing units still open',
+    descriptor.version === 1, String(descriptor.version))
+}
+
+// 10b. Expansion state: recorded per project, distinguishable from absent, and
+//      taken with the project when it is deleted.
+{
+  const { controller, backend } = bench()
+  const kept = (await controller.create({ title: 'kept' })).project.projectId
+  const doomed = (await controller.create({ title: 'doomed' })).project.projectId
+
+  check('a project starts with no expansion record',
+    (await controller.baseline()).expansions[kept] === undefined,
+    JSON.stringify((await controller.baseline()).expansions))
+
+  await controller.setExpanded({ projectId: kept, expanded: false })
+  const collapsed = await controller.baseline()
+  // `false` must survive as `false`: "folded deliberately" and "never touched"
+  // are different states, and only the latter lets the browser auto-open.
+  check('an explicit false is recorded as false, not dropped',
+    collapsed.expansions[kept] === false, JSON.stringify(collapsed.expansions))
+
+  await controller.setExpanded({ projectId: kept, expanded: true })
+  check('an explicit true is recorded',
+    (await controller.baseline()).expansions[kept] === true)
+
+  await controller.setExpanded({ projectId: doomed, expanded: true })
+  check('two projects hold separate records',
+    Object.keys((await controller.baseline()).expansions).length === 2,
+    JSON.stringify((await controller.baseline()).expansions))
+
+  await controller.remove({ projectId: doomed })
+  const afterDelete = await controller.baseline()
+  check('deleting a project takes its expansion with it',
+    afterDelete.expansions[doomed] === undefined && afterDelete.expansions[kept] === true,
+    JSON.stringify(afterDelete.expansions))
+
+  check('the durable unit holds the expansion table',
+    Object.keys(backend.units.get(PROJECT_DOMAIN_NAME).tables.expansions ?? {}).length === 1,
+    JSON.stringify(backend.units.get(PROJECT_DOMAIN_NAME).tables.expansions))
+
+  let message = ''
+  try {
+    await controller.setExpanded({ projectId: 'nope', expanded: true })
+    message = '(no throw)'
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error)
+  }
+  check('setExpanded refuses an unknown project', message.includes('unknown project'), message)
 }
 
 // 11. Tearing the controller down and building a new one over the same medium

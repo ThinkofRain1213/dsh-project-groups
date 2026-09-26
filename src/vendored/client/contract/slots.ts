@@ -234,6 +234,22 @@ export type WorkspaceBrowserInjected = {
      * into the region's own Ungrouped bucket.
      */
     grouping: HostObservable<readonly GroupSource[] | undefined>
+    /**
+     * Expansion of caller-supplied groups, keyed by group key.
+     *
+     * Mandatory as a hook, like `grouping`: the renderer binds hooks from the
+     * observable's identity, so a composition without one supplies an observable
+     * that answers an empty record. What varies is the value, and whether the
+     * companion `setProjectExpanded` verb exists at all.
+     *
+     * An **absent** key means the group has never been touched, which the region
+     * reads as "open the group holding the current Session, once"; a `false`
+     * value means the user folded it and nothing may reopen it. Omitted by the
+     * caller, every group's expansion lives in this browser's own view store,
+     * exactly as upstream — which is why a caller that needs it to survive the
+     * official plugin mounting must supply both this and the verb.
+     */
+    expansions: HostObservable<Readonly<Record<string, boolean>>>
   }
   /** Open the browser search and focus its input. */
   requestSearch: () => void
@@ -262,6 +278,13 @@ export type WorkspaceBrowserInjected = {
    * leaves it unfiled, which is the behaviour before project rows existed.
    */
   assignSession?: ((sessionId: SessionId, projectId: string) => Promise<void>) | undefined
+  /**
+   * Record one caller-supplied project's open/closed state.
+   *
+   * Supplied together with the `expansions` hook: a composition that owns this
+   * state supplies both, so the region never has to guess where to write.
+   */
+  setProjectExpanded?: ((projectId: string, expanded: boolean) => Promise<void>) | undefined
   /** Request the existing directory picker. */
   requestAddWorkspace: () => void
   /** Consume the directory-picker opening request. */

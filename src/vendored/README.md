@@ -86,14 +86,14 @@ source with a comment naming the seam.
 | `rows/WorkspaceBrowser.tsx` | consumes `useGrouping`, threads `groupingOverride` into `SessionTree`, uses it for `ungroupedMemberIds` / `expandedGroups` / the two `owningGroupKey` call sites | re-apply the same six edits |
 | `rows/WorkspaceBrowser.tsx` | `onCreate` drops its `if (group.workspaceId !== undefined)` guard and always expands (**behaviour change**, see below) | remove the guard again |
 | `rows/WorkspaceBrowser.tsx` | `onCreate` also files what a project row created, through the optional `assignSession` verb and the `beforeOpen` callback | re-apply the dispatch |
-| `rows/WorkspaceBrowser.tsx` | `retainAccountKeys` is handed the override's own keys, and skips pruning while the override is empty (see below) | re-apply the key list and the guard |
+| `rows/WorkspaceBrowser.tsx` | expansion is routed by key ownership: caller-supplied keys go through `setProjectExpanded` / `projectExpansion`, every other key through the view store (see below) | re-apply `isCallerOwned` / `recordExpansion` / `hasExpansion` and the merge in `expandedGroups` |
 | `navigation.ts` | `startSession` takes an optional `beforeOpen` callback and threads it into `openWorkspace`, so a caller can act on the Session that lands (a project row files it). Omitted, the flow is unchanged | re-add the parameter and the pass-through |
 | `rows/WorkspaceBrowser.tsx` | rename/delete dialogs and the group drag take a `kind`-tagged row (`RowRequest`), so a caller-supplied project row drives the same affordances as a Workspace row; the header's add control runs `createProject` when the composition supplies one, and the dialog titles/labels switch on that kind | re-apply the dispatch, the two dialog blocks, and the drag wiring |
 | `rows/Rows.tsx` | labels the Ungrouped bucket by **empty label** rather than missing `workspaceId` | one-line change; a caller-supplied group has no Workspace id but does have a label |
 | `rows/Rows.tsx` | the row menu's delete label and the menu's aria-label follow `group.kind` | small change; a project's delete removes a record, not a registry entry |
 | `locales.ts` | project copy (`project.add`, `project.create.*`, `rename.project.title`, `delete.project*`, `field.projectName`, `create`, `actions.project.aria`) in both dictionaries | add the keys |
 | `navigation.ts` | `startSession` without a target resolves the Host's default Workspace instead of guessing (**behaviour change**, see below) | restore the shipped guess, or re-apply |
-| `index.ts` | `apply` takes an optional `groupingOverride` and an optional `ProjectActions`, forwarding both into the inject face | re-add the parameters and the hook/verb fields |
+| `index.ts` | `apply` takes an optional `groupingOverride`, an optional `ProjectActions`, and an optional `expansionsOverride`, forwarding all three into the inject face | re-add the parameters and the hook/verb fields |
 
 Two invariants keep these patches honest:
 
@@ -135,31 +135,33 @@ than a decision — and one upstream test pins the inert behaviour
 Consequence for re-sync: that upstream test asserts the opposite of what this
 copy does. Expect it to fail against our tree; it is not a regression.
 
-**3. State retention is told about the override's keys.**
+**3. A caller-owned group's expansion is stored by the caller, not here.**
 
-Shipped: `retainAccountKeys` is handed the Workspace ids and the two
-browser-local accounts, and it prunes every key it is not handed — correct, and
-how a deleted Workspace's remembered state stops accumulating. A
-caller-supplied group's key was therefore pruned on every run, so a project's
-remembered expansion never survived a reload. The call now also passes the
-override's own keys.
+Shipped: every group's expansion lives in this browser's view store, which is
+persisted to `dsh.workspace.view.v5`. The official plugin persists to the **same
+key**, and its mount calls `retainAccountKeys` with the Workspace ids and the two
+browser-local accounts — pruning every key it is not handed. That pruning is
+correct for the official plugin's own data; it is fatal for a caller-supplied
+group, whose key is not a Workspace id. A project's remembered expansion was
+therefore deleted the first time the official sidebar mounted, which is exactly
+what switching this plugin off does. Reloading alone did not lose it, which is
+why the symptom looked intermittent.
 
-The second half is a guard, not a key list: an empty caller-supplied override
-means either "no projects exist" or "the caller's model has not answered yet",
-and the value cannot distinguish them. The Workspace registry is ready long
-before a Remote baseline is, so retention used to run against the unanswered
-case and delete a live project's record before the model could name it — a race,
-which is why the same build sometimes kept the record and sometimes did not.
-Pruning now waits until the override can name its keys.
+The region now routes expansion by key ownership: a key the caller supplies goes
+to the caller through `setProjectExpanded` and is read back from the `expansions`
+hook, while every other key keeps using the view store exactly as upstream. The
+two records cannot collide, because a caller-owned key is never written here.
 
-Cost, measured rather than assumed (`scripts/probe-empty-override-cost.mjs`):
-with genuinely zero projects, the last deleted project's key can linger until
-the next create prunes it. At most one key, self-healing.
+This is why `expansions` is a **mandatory** hook with a default rather than an
+optional one: the renderer binds hooks from the observable's identity, so a
+composition without this state supplies an observable answering an empty record,
+and with no verb alongside it every key resolves to the view store — upstream
+behaviour, unchanged.
 
-Verified end to end in a browser by `scripts/probe-prune-race.mjs`, which seeds
-a project key and reloads three times: 0/3 survived before, 3/3 after, and a key
-for a project that no longer exists is still pruned. `scripts/probe-retention.mjs`
-states the same rule at unit level.
+An earlier attempt kept the key in the view store and taught retention about it.
+That was reverted: it left the caller's state in the official plugin's key space,
+which is the coupling this design exists to remove. The measured account of that
+attempt is in `DESIGN.md` under L2c.
 
 Nothing else inside `src/vendored/` should be edited. A behaviour change that is
 not one of the seams above belongs in `src/client/`.
@@ -181,3 +183,34 @@ Re-sync procedure:
 
 Because the tree is unedited, a failed re-sync surfaces as a build or
 verification error rather than as a silent behavioural drift.
+
+## Verifying the deviations
+
+Three of them are behavioural and cannot be seen from a unit test, so they have
+browser probes that drive a live instance. They are run by hand rather than by
+`pnpm check`, because each needs a booted server:
+
+| Probe | What it drives | Why it is not in `check` |
+|---|---|---|
+| `scripts/probe-browser-console.mjs` | loads the UI and fails on any page error | needs a booted instance |
+| `scripts/probe-browser-flow.mjs` | creates a project, files a Session, reloads, deletes | needs a booted instance |
+| `scripts/probe-plugin-toggle.mjs` | boots **both** profiles itself and switches between them | spawns servers on a fixed port |
+
+`probe-plugin-toggle.mjs` owns its lifecycle deliberately: localStorage is scoped
+to an origin, and an origin includes the port, so running the two profiles on
+different ports would give them separate storage and the probe would pass whether
+or not the bug existed. It boots each profile in turn on one fixed port with a
+single browser context open across all three phases.
+
+Usage (it needs the executable, the asar root, and an isolated home):
+
+```
+node scripts/probe-plugin-toggle.mjs \
+  "C:\...\DeepSeek Harness.exe" \
+  "C:\...\resources\app.asar" \
+  "C:\...\.agent\temp\toggle-home"
+```
+
+The home must already have the two profiles prepared — `pg` with this plugin
+added, and `official` without it. `probe-plugin-toggle.mjs` switches between them
+and asserts that a project's expansion survives the round trip.

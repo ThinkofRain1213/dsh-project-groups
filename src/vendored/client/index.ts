@@ -98,6 +98,9 @@ export const inject = [
   'slots', 'sessions', 'workspaces', 'locale', 'remote', 'remote.directoryPicker', 'layout', 'shortcuts',
 ]
 
+/** No caller-owned group has been touched: the default `expansions` snapshot. */
+const EMPTY_EXPANSIONS: Readonly<Record<string, boolean>> = Object.freeze({})
+
 /**
  * The caller's project verbs, threaded into the browsing region's inject face.
  * Absent, the region keeps the shipped directory flow and a caller-supplied
@@ -110,6 +113,8 @@ export interface ProjectActions {
   reorderProject: (id: string, beforeId?: string) => Promise<void>
   /** File one Session under one project; a project row's ＋ uses this. */
   assignSession: (sessionId: SessionId, projectId: string) => Promise<void>
+  /** Record one project row's open/closed state in the caller's own store. */
+  setProjectExpanded: (projectId: string, expanded: boolean) => Promise<void>
 }
 
 /**
@@ -126,11 +131,17 @@ export interface ProjectActions {
  * @param projectActions - optional verbs behind the region's project rows.
  * Omitted, the header keeps the directory flow and caller-supplied groups have
  * no row actions.
+ * @param expansionsOverride - optional record of caller-supplied groups'
+ * expansion, keyed by group key. Omitted, every group's expansion lives in this
+ * browser's own view store, exactly as upstream. Supplied, the caller owns that
+ * state and this browser only reads and reports it — which is what lets a
+ * caller keep it somewhere the official plugin's mount cannot prune.
  */
 export function apply(
   ctx: Context,
   groupingOverride?: HostObservable<readonly GroupSource[] | undefined>,
   projectActions?: ProjectActions,
+  expansionsOverride?: HostObservable<Readonly<Record<string, boolean>>>,
 ): void {
   const sessions = ctx.get('sessions') as ISessions
   const workspaces = ctx.get('workspaces') as IWorkspaces
@@ -170,6 +181,14 @@ export function apply(
   // renderer binds hooks from the observable's identity.
   const grouping: HostObservable<readonly GroupSource[] | undefined> = groupingOverride ?? {
     getSnapshot: () => undefined,
+    subscribe: () => () => {},
+  }
+  // Same shape as `grouping`: the hook is mandatory and its identity is what the
+  // renderer binds, so a composition that does not own expansion state supplies
+  // an observable that answers an empty record. With no verb alongside it, every
+  // key resolves to this browser's own view store — upstream behaviour.
+  const expansions: HostObservable<Readonly<Record<string, boolean>>> = expansionsOverride ?? {
+    getSnapshot: () => EMPTY_EXPANSIONS,
     subscribe: () => () => {},
   }
   const hostInfo: HostObservable<RemoteHostFacts> = {
@@ -294,8 +313,16 @@ export function apply(
       deleteProject: projectActions.deleteProject,
       reorderProject: projectActions.reorderProject,
       assignSession: projectActions.assignSession,
+      setProjectExpanded: projectActions.setProjectExpanded,
     }),
-    hooks: { directoryFlow: browserFlowSource, hostInfo, workspaceShortcuts: shortcutControls.state, shortcuts: ctx.shortcuts.catalog, grouping },
+    hooks: {
+      directoryFlow: browserFlowSource,
+      hostInfo,
+      workspaceShortcuts: shortcutControls.state,
+      shortcuts: ctx.shortcuts.catalog,
+      grouping,
+      expansions,
+    },
   })
   const pickerInjected = (): WorkspacePickerInjected => ({
     createWorkspace: input => workspaces.create(input),

@@ -1014,9 +1014,12 @@ L2 定策略（倾向"最后点的赢"）。
 于是这个断言恒真——是假阳性。现在未分组的**存在性**与**计数**分开断言，
 且反向测试（未分组 ＋ 不归类）**先跑**，因为那是唯一能证伪"无条件 assign"的用例。
 
-### L2c — 展开状态记忆 ✅ 已完成（2026-09-26）
+### L2c — 展开状态记忆（方案错误，已回滚）❌
 
-**现象**：插件下项目展开状态刷新即丢；官方工作区能记住。
+> **这一节保留作为失败记录。** 它修的是**另一个**问题，且方案本身引入了
+> 不该有的耦合。真正的修复是 L2d。
+
+**当时观察到的现象**：项目展开状态**刷新即丢**。
 
 **先回答"官方默认展开还是折叠"**（查上游源码 + 上游测试，非推断）：
 
@@ -1043,34 +1046,93 @@ setGroupExpanded(currentGroup, true)     // 无记录时展开一次
 
 `Object.hasOwn` 是"只自动展开一次，之后完全听用户的"。
 
-**根因（插桩探针确定性证明）**：`retainAccountKeys` 把不在名单里的 key
-**全部删除**。官方调用处只传工作区 id，项目 id 不在其中 → 每次被当过期键清除。
-
-```
-展开项目: groupExpansion = {"":true, "<项目id>":true}   ← 记录成功
-刷新后:   groupExpansion = {"":true}                    ← 被清除
-```
-
-**关键**：`retainAccountKeys` 在工作区就绪时（~250ms）就跑，而远程 baseline
-要到 ~12s。此刻 `groupingOverride` 是空数组 → 项目 key 被删。等 baseline 到达、
-effect 重跑，**记录已丢，救不回来**。这解释了为什么同一产物有时保住有时丢
-——是**竞态**。
+**当时找到的根因（真实，但不是用户遇到的那个）**：`retainAccountKeys`
+把不在名单里的 key **全部删除**，而它在本浏览器就绪时（~250ms）就跑，
+远程 baseline 要到 ~12s —— 空数组无法区分"没有项目"与"模型未应答"，
+于是把活项目的 key 当过期键删了。**这是竞态**，同一产物有时保住有时丢。
 
 - [x] `retainAccountKeys` 传入 override 自己的 key
-- [x] **空 override 时跳过清理**（无法区分"没有项目"与"模型未应答"）
-- [x] 校验：`probe-retention.mjs`（7 项，真实 store）进入 `pnpm check`
-- [x] **实测**：`probe-prune-race.mjs` 播种项目 key 后连刷 3 次
-      —— **修复前 0/3 存活，修复后 3/3 存活**；且已删除项目的 key **仍被清理**
+- [x] 空 override 时跳过清理
+- [x] 实测：`probe-prune-race.mjs` 连刷 3 次，修复前 0/3、修复后 3/3
 
-**我第一版修复是错的**：只加了 key、没加守卫，两次实测结果相反（竞态），
-被探针证伪。**是插桩探针（记录每次写入）把根因钉死的，不是读代码推断的。**
+**为什么仍然回滚**：用户报的是**开关插件**丢状态，不是刷新丢。真正的根因是
+**官方挂载会清掉共享 store 里的非工作区 key**（见 L2d）。L2c 把项目状态
+**继续留在官方插件的 key 空间里**，只是教会了官方清理逻辑认识它——这正是
+"官方就官方，我们就我们"要消除的耦合。方案 A 从根上分开，L2c 因此多余。
 
-**代价（实测，非假设）**：项目数为 0 时，最后被删项目的 key 会残留到下次
-建项目才清理。**最多 1 个，自愈**（`probe-empty-override-cost.mjs`：3 轮
-create/expand/delete，残留恒为 1）。
+**代价（当时实测）**：项目数为 0 时，最后被删项目的 key 会残留到下次建项目
+才清理（最多 1 个，自愈）。
 
-**行为与官方一致**：折叠默认、记忆、当前会话所在组自动展开一次。
-新建项目**默认折叠**——这与官方对工作区的处理相同。
+**行为结论仍然成立且已并入 L2d**：官方 = 折叠默认 + 记忆 + 当前会话所在组
+自动展开一次。
+
+### L2d — 展开状态存进我们自己的领域 ✅ 已完成（2026-09-26）
+
+**用户现象**（原话）："开启/关闭插件，插件侧无法记忆（开启则加载插件页面这里
+无记忆，关闭回到官方界面是正常记忆展开收起状态的）。"
+
+**根因（实测证明）**：
+
+官方和我们的 vendored 副本**共用同一个 localStorage key**：
+
+```
+官方 ui-workspace : persist: 'dsh.workspace.view.v5'
+我们 vendored     : persist: 'dsh.workspace.view.v5'   ← 同一个
+```
+
+官方挂载时跑 `retainAccountKeys([未分组, flat, ...工作区id])`，**删除名单外
+所有 key**。项目 id 不在名单 → **每次官方挂载都被删**。
+
+用**只装官方**的实例验证：
+
+```
+塞入:   {"<工作区id>":true, "project-seeded-by-probe":true}
+刷新后: {"<工作区id>":true}
+→ project-shaped key: PRUNED by the official mount
+→ real Workspace key: kept (expected)
+```
+
+**这解释了"关闭回官方则正常"**：官方自己的 key 在名单里，所以正常记忆；
+我们的被删。
+
+**方案 A**：展开状态是我们的数据，存到**我们的**领域（`project_groups`）。
+
+- [x] `spec.ts`：加 `expansions` 表，**version 保持 1**
+      （`single` 布局版本不符直接 `version-mismatch` 且无迁移，加表读为空即可）
+- [x] `protocol.ts`：`setExpanded` + `baseline.expansions`
+      （**缺席 ≠ false**，前者才允许"自动展开一次"）
+- [x] host：`@Remote('setExpanded')` + baseline + 删项目时级联清理
+- [x] client `remote.ts`：加 1 个 descriptor
+- [x] client `projects.ts`：`expansions` 可观察量 + **乐观更新**（失败回滚）
+- [x] `grouping.ts`：`clientExpansions`（**独立席位**，有自己的早期订阅者集合）
+- [x] vendored：按 **key 归属**分派读写；`expansions` 是**必需 hook + 默认值**
+      （renderer 按 observable 身份绑定 hook，可选会退化成 `never`）
+- [x] 回滚 L2c 的两处改动
+- [x] 校验：`pnpm check` **218 项全绿**；新增 host 11 项 + client 13 项
+
+**决定性验证（含反向对照）**
+
+`probe-plugin-toggle.mjs` —— **自己启动服务器**，同一端口、顺序启动
+（plugin on → official → plugin on）：
+
+| | 旧 bundle (L2c) | 新 bundle (L2d) |
+|---|---|---|
+| 项目 key 在共享 store | `["", "<项目id>"]` ← **在里面** | `[""]` ← **不在** |
+| 关插件再开后 | **`aria-expanded=false`** ← 用户报的现象 | `aria-expanded=true` ✅ |
+
+**第一版探针是假阳性，被反向对照抓住**：我最初用两个不同端口的实例，
+但 **localStorage 按 origin 隔离，origin 含端口** → 官方实例根本看不到项目
+key → 探针恒过。用**旧 bundle** 跑也"通过"，才暴露这一点。改成同端口顺序启动
+后，旧 bundle 如期失败、新 bundle 通过。
+
+**落盘位置**（实测）：`$DSH_HOME/storages/project_groups.json`
+
+```json
+"expansions": { "<项目id>": { "expanded": true } }
+```
+
+**行为与官方一致**：折叠默认、记忆、当前会话所在组自动展开一次；
+新建项目默认折叠。
 
 ### L2b — 拖拽归类
 - [ ] **会话跨组拖拽**（官方无此逻辑：官方不允许会话离开工作区，需新写）

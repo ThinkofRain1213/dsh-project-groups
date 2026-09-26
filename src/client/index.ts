@@ -44,12 +44,12 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol'
 import { apply as applyVendored, inject as vendoredInject } from '../vendored/client/index.ts'
 import type { ProjectActions } from '../vendored/client/index.ts'
-import { clientGrouping, installProjectModel, projectModel } from './grouping.ts'
+import { clientExpansions, clientGrouping, installProjectModel, projectModel } from './grouping.ts'
 import { ProjectModel } from './projects.ts'
 import { projectGroupsRemote } from './remote.ts'
 import { PROJECT_NAMESPACE } from '../protocol.ts'
 
-export { clientGrouping, projectModel } from './grouping.ts'
+export { clientExpansions, clientGrouping, projectModel } from './grouping.ts'
 export type { GroupSource } from '../vendored/client/tree.ts'
 export type { ProjectRemote } from './projects.ts'
 
@@ -70,6 +70,7 @@ const projectActions: ProjectActions = {
   deleteProject: async (id) => { await requireModel().remove(id) },
   reorderProject: async (id, beforeId) => { await requireModel().reorder(id, beforeId) },
   assignSession: async (sessionId, projectId) => { await requireModel().assign(sessionId, projectId) },
+  setProjectExpanded: async (projectId, expanded) => { await requireModel().setExpanded(projectId, expanded) },
 }
 
 /** @returns the started model, or throws when the Remote namespace is absent. */
@@ -89,7 +90,7 @@ export function apply(ctx: Context): void {
   // sidebar then renders one Ungrouped bucket and the project verbs refuse
   // loudly, which is better than a dead sidebar.
   void mountProjects(ctx)
-  applyVendored(ctx, clientGrouping, projectActions)
+  applyVendored(ctx, clientGrouping, projectActions, clientExpansions)
 }
 
 /**

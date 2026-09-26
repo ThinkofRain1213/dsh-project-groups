@@ -31,9 +31,10 @@ import { PROJECT_DOMAIN_NAME, projectDomainSpec, type ProjectRecord } from './sp
 import {
   PROJECT_NAMESPACE, PROJECT_SERVICE_KEY,
   type ProjectAssignRequest, type ProjectAssignmentValue, type ProjectBaseline,
-  type ProjectCreateRequest, type ProjectDeleteRequest, type ProjectFollowFrame,
-  type ProjectOrderValue, type ProjectRenameRequest, type ProjectRenameValue,
-  type ProjectReorderRequest, type ProjectUnassignRequest, type ProjectUnassignValue,
+  type ProjectCreateRequest, type ProjectDeleteRequest, type ProjectExpansionValue,
+  type ProjectFollowFrame, type ProjectOrderValue, type ProjectRenameRequest,
+  type ProjectRenameValue, type ProjectReorderRequest, type ProjectSetExpandedRequest,
+  type ProjectUnassignRequest, type ProjectUnassignValue,
   type ProjectValue, type ProjectValueResult,
 } from './protocol.ts'
 
@@ -141,6 +142,11 @@ export class ProjectController extends TypertRemoteService {
       assignments: Object.fromEntries(
         [...assignments.entries()].map(([sessionId, record]) => [sessionId, record.projectId]),
       ),
+      // Only recorded rows appear: an absent entry means "never touched", which
+      // the browser needs to distinguish from an explicit `false`.
+      expansions: Object.fromEntries(
+        [...domain.table('expansions').entries()].map(([projectId, record]) => [projectId, record.expanded]),
+      ),
     }
   }
 
@@ -180,10 +186,11 @@ export class ProjectController extends TypertRemoteService {
   }
 
   /**
-   * Remove one project and every assignment onto it.
+   * Remove one project, every assignment onto it, and its expansion record.
    *
    * Sessions are not touched: an assignment is this plugin's own record, and a
-   * Session without one is simply Ungrouped.
+   * Session without one is simply Ungrouped. The expansion goes with the project
+   * because it is keyed by project id and would otherwise be unreachable state.
    * @param request - target project.
    */
   @Remote('delete')
@@ -193,6 +200,7 @@ export class ProjectController extends TypertRemoteService {
       if (record.projectId === request.projectId) await domain.table('assignments').delete(sessionId)
     }
     await domain.table('projects').delete(request.projectId)
+    await domain.table('expansions').delete(request.projectId)
     await domain.global.set({ projectIds: this.order().filter(id => id !== request.projectId) })
   }
 
@@ -242,6 +250,31 @@ export class ProjectController extends TypertRemoteService {
     const domain = await this.ready()
     const removed = await domain.table('assignments').delete(request.sessionId)
     return { sessionId: request.sessionId, removed }
+  }
+
+  /**
+   * Record one project row's open/closed state.
+   *
+   * Stored here rather than in the browser's view store because that store is
+   * shared with the official plugin, whose mount prunes every key that is not a
+   * Workspace id — so a project's expansion kept there is lost the first time the
+   * official sidebar mounts, which is precisely what switching this plugin off
+   * does.
+   *
+   * A write is always recorded, `false` included: "folded deliberately" and
+   * "never touched" must stay distinguishable, since only the latter lets the
+   * browser open the group holding the current Session.
+   * @param request - target project and its new state.
+   * @returns the recorded state.
+   */
+  @Remote('setExpanded')
+  async setExpanded(request: ProjectSetExpandedRequest): Promise<ProjectExpansionValue> {
+    const domain = await this.ready()
+    if (domain.table('projects').get(request.projectId) === undefined) {
+      throw new Error(`unknown project: ${request.projectId}`)
+    }
+    await domain.table('expansions').put(request.projectId, { expanded: request.expanded })
+    return { projectId: request.projectId, expanded: request.expanded }
   }
 
   /**

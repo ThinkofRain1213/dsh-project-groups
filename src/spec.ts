@@ -9,13 +9,21 @@
  * registry — parallel, never mixed, so disabling this plugin leaves the official
  * data exactly as it was.
  *
- * ## The two tables
+ * ## The three tables
  *
  * `projects` is keyed by project id and holds the display title. `assignments`
  * is keyed by **session id**, which is what makes "a session belongs to at most
  * one project" a structural fact rather than a rule to enforce: a key holds one
  * value, so a second assignment replaces the first. Moving a session between
  * projects is a single write, and removing it from its project is a delete.
+ *
+ * `expansions` is keyed by project id and holds whether the row is open. It is
+ * this plugin's own state rather than the browser's, because the browser's view
+ * store is **shared with the official plugin** — both persist to
+ * `dsh.workspace.view.v5`, and the official mount prunes every key that is not a
+ * Workspace id. A project's expansion kept there is deleted the first time the
+ * official sidebar mounts, which is exactly what happens when this plugin is
+ * switched off. See `src/vendored/README.md`.
  *
  * `global.projectIds` is the display order, mirroring how the official registry
  * keeps `workspaceIds`. It is declared at version 1 rather than added later, so
@@ -64,6 +72,23 @@ export const assignmentRecord = z.object({
 export type AssignmentRecord = z.infer<typeof assignmentRecord>
 
 /**
+ * Durable shape of one project's expansion state. The key is the project id.
+ *
+ * A record's **presence** carries meaning beyond its value: absent means "the
+ * user has never touched this row", which is what lets the browser open the
+ * group holding the current Session exactly once. A record with `expanded:
+ * false` means the user folded it deliberately, and nothing may reopen it. That
+ * distinction is why the state is a record per project rather than a boolean on
+ * the project itself — an absent field and a `false` field would be one value.
+ */
+export const expansionRecord = z.object({
+  expanded: z.boolean(),
+})
+
+/** One stored expansion record. */
+export type ExpansionRecord = z.infer<typeof expansionRecord>
+
+/**
  * Domain name. `UNIT_NAME_RE` (`/^[a-z][a-z0-9_]*$/`) makes this both the
  * backend unit name and the storage file-name segment, so it is snake_case
  * rather than the camelCase the wire namespace uses.
@@ -73,6 +98,12 @@ export const PROJECT_DOMAIN_NAME = 'project_groups'
 /**
  * The domain declaration. `defineDomain` validates the name, version and table
  * names at module load, before any medium is touched.
+ *
+ * `version` stays 1 while tables are added: a `single`-layout unit rejects a
+ * stored version that differs from the spec's, and has no migration step, so
+ * bumping it would make every existing file unreadable. An added table needs no
+ * bump — a unit that predates it simply reads that table as empty
+ * (`storage-json/src/format.ts`).
  */
 export const projectDomainSpec = defineDomain({
   name: PROJECT_DOMAIN_NAME,
@@ -84,5 +115,6 @@ export const projectDomainSpec = defineDomain({
   tables: {
     projects: domainTable<ProjectId, ProjectRecord>(projectRecord),
     assignments: domainTable<SessionId, AssignmentRecord>(assignmentRecord),
+    expansions: domainTable<ProjectId, ExpansionRecord>(expansionRecord),
   },
 })
