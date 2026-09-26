@@ -57,7 +57,8 @@ export interface UiWorkspace {
   /**
    * Start a New Session flow and navigate to its Session; a creation the Host
    * refuses is shown through the Workspace notice and leaves the selection as it was.
-   * @param workspaceId - explicit target; absent inherits the current or most recent Workspace.
+   * @param workspaceId - explicit target; absent targets the Host's default
+   * Workspace, and does nothing when there is no default to resolve.
    */
   startSession(workspaceId?: WorkspaceId): void
   /**
@@ -220,23 +221,48 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   }
 
   startSession(workspaceId?: WorkspaceId): void {
-    const workspace = this.workspaces.list.getSnapshot()
-    const sessions = this.sessions.list.getSnapshot()
-    const current = this.mainReference?.sessionId
-    const currentWorkspaceId = current === undefined
-      ? undefined
-      : workspace.items.find(item => item.sessionIds.includes(current))?.workspaceId
-    const recent = workspace.phase === 'ready' && sessions.phase === 'ready'
-      ? recentWorkspace(workspace.items, sessions.byId)
-      : undefined
-    const target = workspaceId ?? currentWorkspaceId ?? recent
-    if (target === undefined) {
-      this.clearMain()
+    // An explicit target is a real Workspace row asking for its own New
+    // Session: unchanged.
+    if (workspaceId !== undefined) {
+      this.openNewSessionIn(workspaceId)
       return
     }
-    void this.openWorkspace(target).catch(
+    // No target means every unscoped entry: the sidebar shell's New Session
+    // button and its shortcut, ui-schedule, ui-agent-preset, the Ungrouped
+    // bucket, and this plugin's own caller-supplied groups. They all resolve
+    // the Host's default Workspace. The shipped behaviour guessed instead —
+    // the current Session's Workspace, then the most recently used one — which
+    // made the destination depend on whatever the user last did.
+    void this.startSessionInDefaultWorkspace()
+  }
+
+  /** Open the New Session flow in one already-known Workspace. */
+  private openNewSessionIn(workspaceId: WorkspaceId): void {
+    void this.openWorkspace(workspaceId).catch(
       (reason: unknown) => { console.warn('new session failed:', reason) },
     )
+  }
+
+  /**
+   * Resolve the Host's default Workspace, then start a Session in it.
+   *
+   * `initializeDefault` is a pure read once the registry records a default: it
+   * returns the recorded entity before reaching any directory resolution, so
+   * this creates and relocates nothing in normal use.
+   *
+   * Resolved per click rather than cached: a cached id would outlive a deleted
+   * or replaced registration and then fail inside `connectWorkspace`, whereas a
+   * stale read here simply resolves again.
+   *
+   * With no default Workspace to resolve (a deleted registration, or an install
+   * ineligible for one) the click does nothing at all. It deliberately does not
+   * fall back to another Workspace, and does not clear the current selection
+   * the way the shipped guess did.
+   */
+  private async startSessionInDefaultWorkspace(): Promise<void> {
+    const prepared = await this.initializeDefaultWorkspace(this.lifetime.signal)
+    if (prepared === undefined) return
+    this.openNewSessionIn(prepared.workspaceId)
   }
 
   async archiveSession(sessionId: SessionId, options: { readonly stopActivity?: boolean } = {}): Promise<void> {

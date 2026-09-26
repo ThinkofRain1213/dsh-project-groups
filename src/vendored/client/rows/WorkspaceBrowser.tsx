@@ -526,10 +526,14 @@ function SessionTree({
             setGroupExpanded(group.key, !group.expanded)
           }}
           onCreate={() => {
-            if (group.workspaceId !== undefined) {
-              setGroupExpanded(group.key, true)
-              startSession(group.workspaceId)
-            }
+            // Expand even when no Session ends up created: a collapsed group
+            // would swallow the new row and read as "the click did nothing".
+            setGroupExpanded(group.key, true)
+            // A real Workspace row targets itself. The Ungrouped bucket and
+            // this plugin's caller-supplied groups carry no Workspace id, so
+            // they fall through to the default Workspace — the shipped code
+            // guarded this off and left their ＋ inert.
+            startSession(group.workspaceId)
           }}
           drag={workspaceDragProps}
           actions={group.workspaceId === undefined

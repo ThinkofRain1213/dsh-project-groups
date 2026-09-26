@@ -865,11 +865,43 @@ profileContext.home  →  $DSH_HOME  →  ~/.dsh
 实测（`probe-service-timing.mjs`）显示同 fiber 内 `ctx.get` 在 apply 未退出前
 读不到自己刚 provide 的值 → 会与 slot 声明顺序形成竞态。
 
+### L1b — 新建会话落点 ✅ 已完成（2026-09-26）
+
+**目标**：所有"新建会话"入口落到默认工作区；未分组/自有分组的 ＋ 可用。
+
+**背景**：上游把 ＋ 渲染出来但处理器被 `if (group.workspaceId !== undefined)` 挡住，
+未分组下点击无效。上游仓库**关闭了 Issues**（`has_issues: false`），且 master 最新代码
+仍是如此——同一组件对菜单/hover卡/拖拽都做了条件处理，唯独此处漏了，判定为**遗漏**
+而非设计（详见 `src/vendored/README.md` 的"刻意的行为偏离"）。
+
+- [x] `navigation.ts`：无目标 `startSession()` 改为解析**默认工作区**
+      （`initializeDefault`——注册表记有默认时是**纯读**）
+- [x] `navigation.ts`：无默认工作区时**静默不做**（选项 B：不猜、不清空选择）
+- [x] `rows/WorkspaceBrowser.tsx`：`onCreate` 去掉 guard，恒展开 + 透传
+- [x] `scripts/lib/ts-loader.mjs`：Node 无法 strip `navigation.ts` 的构造器参数属性，
+      故测试用 TS 转译加载；顺带 stub 掉仅由 shell 提供的 `dsh-client-store`
+- [x] 校验：`verify-new-session.mjs`（12 项，驱动真实 `UiWorkspaceService`）
+- [x] **实测**：`pnpm check` 共 **65 项断言全绿**；隔离实例启动干净，
+      产物含新方法、官方行 0 加载
+
+**三处入口改动后的行为**
+
+| 入口 | 插件层 | 底层调用 |
+|---|---|---|
+| 顶部"新会话" / Ctrl+N / schedule / preset | 不 assign | `initializeDefault()` → `create({ workspaceId })` |
+| 未分组 ＋ | 不 assign（= 未分组） | 同上 |
+| 项目 ＋（L1 接缝） | `assign(sessionId, projectId)` | 同上 |
+
+**已知待办（L2）**：`reuseOrCreateBlank` 会复用同一工作区里已有的空白会话，
+所以"未分组 ＋"后紧接着"项目 ＋"会拿到同一个空白会话。发过消息即固化；
+L2 定策略（倾向"最后点的赢"）。
+
 ### L1 — 新建项目
 - [ ] host half 与领域声明 + `ctx.storageDomain` 打开
 - [ ] Remote：`create` / `rename` / `delete` / `follow`
 - [ ] 项目列表渲染（把 `EMPTY_GROUPING` 换成项目派生的 `GroupSource[]`）
 - [ ] 项目重命名 / 删除
+- [ ] 项目行 ＋ 的 `assign(sessionId, projectId)` 接缝
 
 ### L2 — 拖拽归类
 - [ ] `assignments` 表启用

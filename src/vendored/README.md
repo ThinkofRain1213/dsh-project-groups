@@ -84,7 +84,9 @@ source with a comment naming the seam.
 | `tree.ts` | adds `GroupSource`, `owningSourceKey`, and `groupBySource` (a line-for-line twin of `groupByWorkspace`); `deriveGroups` takes an optional 6th `sources` parameter | re-apply on top of the new `groupByWorkspace` |
 | `contract/slots.ts` | adds a mandatory `grouping` hook to `WorkspaceBrowserInjected.hooks`, plus the `GroupSource` type import | re-add the one field + import |
 | `rows/WorkspaceBrowser.tsx` | consumes `useGrouping`, threads `groupingOverride` into `SessionTree`, uses it for `ungroupedMemberIds` / `expandedGroups` / the two `owningGroupKey` call sites | re-apply the same six edits |
+| `rows/WorkspaceBrowser.tsx` | `onCreate` drops its `if (group.workspaceId !== undefined)` guard and always expands (**behaviour change**, see below) | remove the guard again |
 | `rows/Rows.tsx` | labels the Ungrouped bucket by **empty label** rather than missing `workspaceId` | one-line change; a caller-supplied group has no Workspace id but does have a label |
+| `navigation.ts` | `startSession` without a target resolves the Host's default Workspace instead of guessing (**behaviour change**, see below) | restore the shipped guess, or re-apply |
 | `index.ts` | `apply` takes an optional `groupingOverride` and forwards it into the `grouping` hook | re-add the parameter and the hook field |
 
 Two invariants keep these patches honest:
@@ -95,6 +97,37 @@ Two invariants keep these patches honest:
    `scripts/verify-grouping.mjs` and `scripts/probe-grouping-seam.mjs`.
 2. **Grouping is a derivation, never data.** Nothing here writes Workspace
    membership, `cwd`, or archive state; the Host is untouched by construction.
+
+### Deliberate behaviour deviations
+
+These two are **not** structural seams: they change what the shipped code does.
+They are listed apart so a re-sync does not silently drop them, and so an
+upstream behavioural change is not mistaken for a merge conflict.
+
+**1. New Session without a target goes to the default Workspace.**
+
+Shipped: an unscoped `startSession()` guessed — the current Session's Workspace,
+then the most recently used one — and cleared the selection when neither
+existed. Now it resolves the Host's default Workspace through
+`initializeDefault` (a pure read once the registry records one), and with no
+default it does nothing: no guess, no cleared selection.
+
+Rationale: every Session this plugin creates lives in that one Workspace, so the
+destination should not depend on whatever the user last did.
+
+**2. The Ungrouped bucket's ＋ button works.**
+
+Shipped: `Rows.tsx` rendered the button unconditionally while
+`WorkspaceBrowser.tsx` guarded its handler with `group.workspaceId !== undefined`,
+so on the Ungrouped bucket (and on any group without a Workspace id) the button
+rendered and did nothing. The same component guards its row menu, hover card and
+drag wiring on that same field, so the missing guard reads as an oversight rather
+than a decision — and one upstream test pins the inert behaviour
+(`packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx`,
+"…its ＋ is inert"), which is why it has survived.
+
+Consequence for re-sync: that upstream test asserts the opposite of what this
+copy does. Expect it to fail against our tree; it is not a regression.
 
 Nothing else inside `src/vendored/` should be edited. A behaviour change that is
 not one of the seams above belongs in `src/client/`.
