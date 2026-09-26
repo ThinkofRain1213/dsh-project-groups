@@ -86,6 +86,7 @@ source with a comment naming the seam.
 | `rows/WorkspaceBrowser.tsx` | consumes `useGrouping`, threads `groupingOverride` into `SessionTree`, uses it for `ungroupedMemberIds` / `expandedGroups` / the two `owningGroupKey` call sites | re-apply the same six edits |
 | `rows/WorkspaceBrowser.tsx` | `onCreate` drops its `if (group.workspaceId !== undefined)` guard and always expands (**behaviour change**, see below) | remove the guard again |
 | `rows/WorkspaceBrowser.tsx` | `onCreate` also files what a project row created, through the optional `assignSession` verb and the `beforeOpen` callback | re-apply the dispatch |
+| `rows/WorkspaceBrowser.tsx` | `retainAccountKeys` is handed the override's own keys, and skips pruning while the override is empty (see below) | re-apply the key list and the guard |
 | `navigation.ts` | `startSession` takes an optional `beforeOpen` callback and threads it into `openWorkspace`, so a caller can act on the Session that lands (a project row files it). Omitted, the flow is unchanged | re-add the parameter and the pass-through |
 | `rows/WorkspaceBrowser.tsx` | rename/delete dialogs and the group drag take a `kind`-tagged row (`RowRequest`), so a caller-supplied project row drives the same affordances as a Workspace row; the header's add control runs `createProject` when the composition supplies one, and the dialog titles/labels switch on that kind | re-apply the dispatch, the two dialog blocks, and the drag wiring |
 | `rows/Rows.tsx` | labels the Ungrouped bucket by **empty label** rather than missing `workspaceId` | one-line change; a caller-supplied group has no Workspace id but does have a label |
@@ -105,7 +106,7 @@ Two invariants keep these patches honest:
 
 ### Deliberate behaviour deviations
 
-These two are **not** structural seams: they change what the shipped code does.
+These are **not** structural seams: they change what the shipped code does.
 They are listed apart so a re-sync does not silently drop them, and so an
 upstream behavioural change is not mistaken for a merge conflict.
 
@@ -133,6 +134,32 @@ than a decision — and one upstream test pins the inert behaviour
 
 Consequence for re-sync: that upstream test asserts the opposite of what this
 copy does. Expect it to fail against our tree; it is not a regression.
+
+**3. State retention is told about the override's keys.**
+
+Shipped: `retainAccountKeys` is handed the Workspace ids and the two
+browser-local accounts, and it prunes every key it is not handed — correct, and
+how a deleted Workspace's remembered state stops accumulating. A
+caller-supplied group's key was therefore pruned on every run, so a project's
+remembered expansion never survived a reload. The call now also passes the
+override's own keys.
+
+The second half is a guard, not a key list: an empty caller-supplied override
+means either "no projects exist" or "the caller's model has not answered yet",
+and the value cannot distinguish them. The Workspace registry is ready long
+before a Remote baseline is, so retention used to run against the unanswered
+case and delete a live project's record before the model could name it — a race,
+which is why the same build sometimes kept the record and sometimes did not.
+Pruning now waits until the override can name its keys.
+
+Cost, measured rather than assumed (`scripts/probe-empty-override-cost.mjs`):
+with genuinely zero projects, the last deleted project's key can linger until
+the next create prunes it. At most one key, self-healing.
+
+Verified end to end in a browser by `scripts/probe-prune-race.mjs`, which seeds
+a project key and reloads three times: 0/3 survived before, 3/3 after, and a key
+for a project that no longer exists is still pruned. `scripts/probe-retention.mjs`
+states the same rule at unit level.
 
 Nothing else inside `src/vendored/` should be edited. A behaviour change that is
 not one of the seams above belongs in `src/client/`.

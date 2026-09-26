@@ -34,20 +34,28 @@ export function createSnapshotStore(initial) {
 }
 
 /**
- * Minimal store handle. The vendored browser's *viewing store* only needs a
- * handle whose \`create()\` yields the initial state plus action functions bound
- * to a draft. Nothing under test here reads or persists view state; the
- * Navigation service only ever calls \`view.pinSessionOrder\`, which the test
- * supplies directly.
+ * Minimal store handle. The vendored browser's viewing store needs a handle
+ * whose create() yields an instance exposing the state, the draft-bound action
+ * table, and the observer face (getSnapshot / subscribe). Nothing under test
+ * here reads or writes localStorage; assertions are about which keys the action
+ * table keeps, so the draft has to be the live state object rather than a copy.
  */
 export function defineStore(spec) {
   const create = () => {
     const state = spec.init()
+    const listeners = new Set()
+    const notify = () => { for (const fn of [...listeners]) fn() }
     const actions = {}
     for (const [name, fn] of Object.entries(spec.actions ?? {})) {
-      actions[name] = (...args) => fn(state, ...args)
+      actions[name] = (...args) => { fn(state, ...args); notify() }
     }
-    return { state, actions, spec }
+    return {
+      state,
+      actions,
+      spec,
+      getSnapshot: () => state,
+      subscribe(fn) { listeners.add(fn); return () => { listeners.delete(fn) } },
+    }
   }
   return { spec: { persist: spec.persist }, create }
 }

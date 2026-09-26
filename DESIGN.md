@@ -1014,6 +1014,64 @@ L2 定策略（倾向"最后点的赢"）。
 于是这个断言恒真——是假阳性。现在未分组的**存在性**与**计数**分开断言，
 且反向测试（未分组 ＋ 不归类）**先跑**，因为那是唯一能证伪"无条件 assign"的用例。
 
+### L2c — 展开状态记忆 ✅ 已完成（2026-09-26）
+
+**现象**：插件下项目展开状态刷新即丢；官方工作区能记住。
+
+**先回答"官方默认展开还是折叠"**（查上游源码 + 上游测试，非推断）：
+
+上游 `WorkspaceBrowser.tsx:331-335`：
+
+```tsx
+.filter(key => groupExpansion[key] ?? ancestorKeys.has(key))
+```
+
+- 默认值 = `ancestorKeys.has(key)`
+- `nestWorkspaces: false`（默认）→ `parents` 空 Map → `ancestorKeys` 空
+  → **所有组默认折叠**
+- 上游测试**每个**断言展开的用例都必须显式 `setGroupExpanded(key, true)`
+  （:175, :210, :248, :340…），**没有一处**假设默认展开
+
+所以**官方 = 折叠默认 + 记忆 + 一次性自动展开**。那条"自动展开"在
+`:356-359`：
+
+```tsx
+if (current === undefined || currentGroup === undefined
+    || Object.hasOwn(groupExpansion, currentGroup)) return
+setGroupExpanded(currentGroup, true)     // 无记录时展开一次
+```
+
+`Object.hasOwn` 是"只自动展开一次，之后完全听用户的"。
+
+**根因（插桩探针确定性证明）**：`retainAccountKeys` 把不在名单里的 key
+**全部删除**。官方调用处只传工作区 id，项目 id 不在其中 → 每次被当过期键清除。
+
+```
+展开项目: groupExpansion = {"":true, "<项目id>":true}   ← 记录成功
+刷新后:   groupExpansion = {"":true}                    ← 被清除
+```
+
+**关键**：`retainAccountKeys` 在工作区就绪时（~250ms）就跑，而远程 baseline
+要到 ~12s。此刻 `groupingOverride` 是空数组 → 项目 key 被删。等 baseline 到达、
+effect 重跑，**记录已丢，救不回来**。这解释了为什么同一产物有时保住有时丢
+——是**竞态**。
+
+- [x] `retainAccountKeys` 传入 override 自己的 key
+- [x] **空 override 时跳过清理**（无法区分"没有项目"与"模型未应答"）
+- [x] 校验：`probe-retention.mjs`（7 项，真实 store）进入 `pnpm check`
+- [x] **实测**：`probe-prune-race.mjs` 播种项目 key 后连刷 3 次
+      —— **修复前 0/3 存活，修复后 3/3 存活**；且已删除项目的 key **仍被清理**
+
+**我第一版修复是错的**：只加了 key、没加守卫，两次实测结果相反（竞态），
+被探针证伪。**是插桩探针（记录每次写入）把根因钉死的，不是读代码推断的。**
+
+**代价（实测，非假设）**：项目数为 0 时，最后被删项目的 key 会残留到下次
+建项目才清理。**最多 1 个，自愈**（`probe-empty-override-cost.mjs`：3 轮
+create/expand/delete，残留恒为 1）。
+
+**行为与官方一致**：折叠默认、记忆、当前会话所在组自动展开一次。
+新建项目**默认折叠**——这与官方对工作区的处理相同。
+
 ### L2b — 拖拽归类
 - [ ] **会话跨组拖拽**（官方无此逻辑：官方不允许会话离开工作区，需新写）
 - [ ] 拖拽到项目行/未分组桶 → `assign` / `unassign`

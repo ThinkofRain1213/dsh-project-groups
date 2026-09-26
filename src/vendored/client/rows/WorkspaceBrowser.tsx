@@ -1094,14 +1094,28 @@ export function WorkspaceBrowser({
     [UNGROUPED_KEY, orderedUngroupedSessionIds] as const,
     [FLAT_SESSION_ORDER_KEY, orderedFlatSessionIds] as const,
   ]), [orderedFlatSessionIds, orderedUngroupedSessionIds, orderedWorkspaces])
+  // Whether the grouping override can name the keys it owns.
+  //
+  // An empty caller-supplied override is ambiguous: it means either "no projects
+  // exist" or "the caller's model has not answered yet", and nothing in the value
+  // distinguishes them. Retention below prunes every key it is not handed, so
+  // reading an unanswered override as "owns nothing" deletes a live project's
+  // expansion — and by the time the model answers, the record is already gone, so
+  // the re-run cannot bring it back. Pruning therefore waits until the override
+  // can name its keys. Without an override there is nothing to wait for: that is
+  // upstream's own case, and it prunes as it always did.
+  const overrideAnswered = groupingOverride === undefined || groupingOverride.length > 0
   useEffect(() => {
-    if (workspacePhase !== 'ready') return
+    if (workspacePhase !== 'ready' || !overrideAnswered) return
     actions.retainAccountKeys([
       UNGROUPED_KEY,
       FLAT_SESSION_ORDER_KEY,
       ...workspaces.map(workspace => workspace.workspaceId),
+      // The override's keys are ours, and retention must know them or it prunes
+      // them: a project's remembered expansion lives under its project id.
+      ...(groupingOverride?.map(group => group.key) ?? []),
     ])
-  }, [actions.retainAccountKeys, workspacePhase, workspaces])
+  }, [actions.retainAccountKeys, workspacePhase, workspaces, groupingOverride])
   useEffect(() => {
     if (list.phase !== 'ready' || workspaceReady || orderBy !== 'manual' || currentBlank === undefined) return
     // A first prompt can end blank pinning before the Workspace baseline arrives.
