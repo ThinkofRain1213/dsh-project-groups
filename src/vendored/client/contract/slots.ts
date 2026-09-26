@@ -52,6 +52,7 @@ import type { SessionActivity, WorkspaceId, WorkspaceView } from '@deepseek-ai/d
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ShortcutCatalogEntry } from '@deepseek-ai/dsh-client-shortcuts/client'
 import type { WorkspaceShortcutState } from '../shortcuts.ts'
+import type { GroupSource } from '../tree.ts'
 import type { createWorkspaceViewStore } from '../stores.ts'
 
 /**
@@ -223,6 +224,16 @@ export type WorkspaceBrowserInjected = {
     hostInfo: HostObservable<RemoteHostFacts>
     workspaceShortcuts: HostObservable<WorkspaceShortcutState>
     shortcuts: HostObservable<readonly ShortcutCatalogEntry[]>
+    /**
+     * Grouping-model override. The snapshot is the caller's group list while
+     * the override is active, and `undefined` while it is not — in which case
+     * the region groups by the Host Workspace registry exactly as upstream.
+     *
+     * An empty array is meaningful and distinct from `undefined`: it is an
+     * active override that claims no Session, so every visible Session falls
+     * into the region's own Ungrouped bucket.
+     */
+    grouping: HostObservable<readonly GroupSource[] | undefined>
   }
   /** Open the browser search and focus its input. */
   requestSearch: () => void

@@ -846,10 +846,29 @@ profileContext.home  →  $DSH_HOME  →  ~/.dsh
 - [x] **实测**：`dsh --profile <test> --dump-config` 显示
       官方行 `disabled: true`、插件行已挂载
 
+### L1a — 全部收进未分组 ✅ 已完成（2026-09-26）
+
+**目标**：验证"分组来源可注入"，并把所有会话收进未分组桶（官方底层不动）。
+
+- [x] `tree.ts`：`GroupSource` 类型 + `owningSourceKey` + `groupBySource`
+      （`groupByWorkspace` 的逐行对称版）
+- [x] `tree.ts`：`deriveGroups` 加**可选**第 6 参数 `sources`
+- [x] `contract/slots.ts`：注入面加 `grouping` hook
+- [x] `rows/WorkspaceBrowser.tsx`：消费 `useGrouping`，贯穿到 `SessionTree`
+- [x] `rows/Rows.tsx`：未分组桶改按"空 label"判别（不再看 `workspaceId`）
+- [x] `index.ts`：`apply(ctx, groupingOverride?)` 可选参数
+- [x] `src/client/grouping.ts`：本轮注入**空源**（`[]` = 活跃但不认领任何会话）
+- [x] 校验：`verify-grouping.mjs`（19 项）、`probe-grouping-seam.mjs`（5 项）
+- [x] **实测**：`pnpm check` 共 **55 项断言全绿**
+
+**收口的关键结论**：注入必须走**参数**，不能走 `ctx.provide` 服务。
+实测（`probe-service-timing.mjs`）显示同 fiber 内 `ctx.get` 在 apply 未退出前
+读不到自己刚 provide 的值 → 会与 slot 声明顺序形成竞态。
+
 ### L1 — 新建项目
 - [ ] host half 与领域声明 + `ctx.storageDomain` 打开
 - [ ] Remote：`create` / `rename` / `delete` / `follow`
-- [ ] 项目列表渲染（叠加在 vendor 分组之上）+ "新建项目"输入框
+- [ ] 项目列表渲染（把 `EMPTY_GROUPING` 换成项目派生的 `GroupSource[]`）
 - [ ] 项目重命名 / 删除
 
 ### L2 — 拖拽归类

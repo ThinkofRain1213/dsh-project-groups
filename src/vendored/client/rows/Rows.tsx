@@ -231,8 +231,12 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
   t: RowTranslate
 }) {
   const row = group
-  // The ungrouped bucket has no workspace title: its label is dictionary copy.
-  const label = row.workspaceId === undefined ? t('group.ungrouped') : row.label
+  // The ungrouped bucket is the one group the derivation builds with an empty
+  // label (every real group carries a Workspace title or a caller-supplied
+  // one). Keying off the label rather than `workspaceId` keeps the localized
+  // "Ungrouped" copy on that bucket alone: caller-supplied groups also have no
+  // Workspace id, but they do have a label of their own.
+  const label = row.label === '' ? t('group.ungrouped') : row.label
   const active = containsCurrentDescendant || (group.expanded && group.containsCurrent)
   const [menuOpen, setMenuOpen] = useState(false)
   const workspaceMenuItems = [

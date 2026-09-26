@@ -43,6 +43,7 @@ import {
 import { createWorkspaceShortcutControls, installWorkspaceShortcuts } from './shortcuts.ts'
 import { UiWorkspaceService } from './navigation.ts'
 import { createWorkspaceViewStore } from './stores.ts'
+import type { GroupSource } from './tree.ts'
 import { WorkspaceBrowser } from './rows/WorkspaceBrowser.tsx'
 import { ArchiveSessionMenuItem, ArchiveSessionRowButton, SessionArchiveConfirmDialog } from './session-actions/ArchiveSession.tsx'
 import { derive } from './session-actions/derived.ts'
@@ -54,6 +55,7 @@ import { WorkspacePicker } from './WorkspacePicker.tsx'
 import { en, zh, type WorkspaceKey } from './locales.ts'
 
 export type { UiWorkspace } from './navigation.ts'
+export type { GroupSource } from './tree.ts'
 export type {
   DirectoryFlowOwnerProps, DirectoryFlowSlotName, DirectoryPickingHooks, DirectoryPickingInjected,
   MenuOpenState, RowToast, SessionRenameTarget, SessionRowOwnerProps, UseMenuOpenState, WorkspaceBrowserInjected,
@@ -101,8 +103,17 @@ export const inject = [
  * ledger. Inject factories return plain callbacks; data reads use the
  * framework's global hooks.
  * @param ctx - client root context.
+ * @param groupingOverride - optional grouping model. Omitted — how the loader
+ * calls this on an unmodified composition — the region groups by the Host
+ * Workspace registry exactly as upstream. Supplied, the region renders those
+ * groups instead, while Sessions keep their real Workspace account, `cwd`, and
+ * archive state; see `contract/slots.ts` `grouping` and `tree.ts`
+ * `GroupSource`.
  */
-export function apply(ctx: Context): void {
+export function apply(
+  ctx: Context,
+  groupingOverride?: HostObservable<readonly GroupSource[] | undefined>,
+): void {
   const sessions = ctx.get('sessions') as ISessions
   const workspaces = ctx.get('workspaces') as IWorkspaces
   // One viewing-store instance, created here as ui-layout does for its layout
@@ -134,6 +145,15 @@ export function apply(ctx: Context): void {
     subscribe: listener => ctx.slots.subscribe(hole, listener),
   })
   const browserFlowSource = flowSource('sidebar.workspaces.directoryFlow')
+  // Grouping model override. Omitted (the one-argument call the loader makes on
+  // an unmodified composition) leaves `undefined` as the active state, so the
+  // region groups by the Host Workspace registry exactly as upstream. The
+  // observable is mandatory and the value inside it is what varies because the
+  // renderer binds hooks from the observable's identity.
+  const grouping: HostObservable<readonly GroupSource[] | undefined> = groupingOverride ?? {
+    getSnapshot: () => undefined,
+    subscribe: () => () => {},
+  }
   const hostInfo: HostObservable<RemoteHostFacts> = {
     getSnapshot: () => ctx.remote.$host,
     subscribe: listener => ctx.on('connection/reset', listener),
@@ -246,7 +266,7 @@ export function apply(ctx: Context): void {
     closeAddWorkspace: shortcutControls.closeAdd,
     setDirectoryBusy: shortcutControls.directoryBusy,
     dismissForkError: shortcutControls.dismissForkError,
-    hooks: { directoryFlow: browserFlowSource, hostInfo, workspaceShortcuts: shortcutControls.state, shortcuts: ctx.shortcuts.catalog },
+    hooks: { directoryFlow: browserFlowSource, hostInfo, workspaceShortcuts: shortcutControls.state, shortcuts: ctx.shortcuts.catalog, grouping },
   })
   const pickerInjected = (): WorkspacePickerInjected => ({
     createWorkspace: input => workspaces.create(input),

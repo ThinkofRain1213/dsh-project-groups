@@ -31,9 +31,12 @@ import { workspaceDisplayTitle } from '@deepseek-ai/dsh-api-workspace-controller
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { WorkspaceBrowserProps } from '../contract/slots.ts'
-import type { ArchivedFilter, GroupNode, SessionNode, SessionOrderBy, SessionRowState } from '../tree.ts'
+import type {
+  ArchivedFilter, GroupNode, GroupSource, SessionNode, SessionOrderBy, SessionRowState,
+} from '../tree.ts'
 import {
   deriveFlat, deriveGroups, deriveSearchResults, orderByRecency, owningGroupKey, owningParentFolder,
+  owningSourceKey,
   pinCurrentBlank, reconcileManualOrder, sessionMemberIds, UNGROUPED_KEY,
 } from '../tree.ts'
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './Rows.tsx'
@@ -231,6 +234,12 @@ type SessionTreeProps = Pick<
   home?: string | undefined
   /** Workspaces in Host group order with browser-projected Session order. */
   workspaces: readonly WorkspaceView[]
+  /**
+   * Active grouping-model override, or `undefined` to group by `workspaces`.
+   * Group headings and the Ungrouped bucket follow this; row presentation,
+   * drag targets and the Workspace dialogs keep using `workspaces`.
+   */
+  groupingOverride: readonly GroupSource[] | undefined
   /** Browser-projected order for Sessions outside every Workspace. */
   ungroupedSessionIds: readonly SessionId[]
   /** Whether the current Workspace stream has a complete Host baseline. */
@@ -279,7 +288,7 @@ function EmptySessions({ rowState, onLeaveArchivedOnly, t }: Pick<SessionTreePro
 
 /** The scrolling session tree; unmounting drops the sessions subscription and local row limits. */
 function SessionTree({
-  list, useSessionStatus, startSession, open, workspaces, ungroupedSessionIds,
+  list, useSessionStatus, startSession, open, workspaces, groupingOverride, ungroupedSessionIds,
   rowState, onLeaveArchivedOnly,
   workspaceReady, animationResetKey, usePanelInfo,
   onRenameRequest, onDeleteRequest, onSessionRenameRequest,
@@ -296,7 +305,9 @@ function SessionTree({
     : Object.values(list.byId).find(session => (session.retainedBy.mainView ?? 0) > 0)?.id
   const revealGroup = revealSessionId === undefined || !workspaceReady
     ? undefined
-    : owningGroupKey(workspaces, revealSessionId)
+    : groupingOverride === undefined
+      ? owningGroupKey(workspaces, revealSessionId)
+      : owningSourceKey(groupingOverride, revealSessionId)
   const [sessionLimits, setSessionLimits] = useState<Readonly<Record<string, number>>>({})
   // Transient drag marker state; the selected mode owns the resulting order.
   const [drag, setDrag] = useState<DragState | null>(null)
@@ -307,7 +318,9 @@ function SessionTree({
   useNativeDragAcceptance(nativeDragActive)
   const currentGroup = current === undefined || !workspaceReady
     ? undefined
-    : owningGroupKey(workspaces, current)
+    : groupingOverride === undefined
+      ? owningGroupKey(workspaces, current)
+      : owningSourceKey(groupingOverride, current)
   useEffect(() => {
     if (current === undefined || currentGroup === undefined || Object.hasOwn(groupExpansion, currentGroup)) return
     setGroupExpanded(currentGroup, true)
@@ -330,15 +343,22 @@ function SessionTree({
   }, [currentGroup, parents])
   const expandedGroups = useMemo(() => {
     const ancestorKeys = new Set<string | undefined>(parents.values())
-    return [...workspaces.map(workspace => workspace.workspaceId), UNGROUPED_KEY]
+    // Under an override the group keys are the caller's, not Workspace ids;
+    // nesting still keys off `parents` (Workspace paths) and so contributes
+    // only when the caller's keys happen to match — which they do not, leaving
+    // the explicit expansion record in charge, exactly as in flat mode.
+    const keys = groupingOverride === undefined
+      ? workspaces.map(workspace => workspace.workspaceId)
+      : groupingOverride.map(group => group.key)
+    return [...keys, UNGROUPED_KEY]
       .filter(key => groupExpansion[key] ?? ancestorKeys.has(key))
-  }, [groupExpansion, parents, workspaces])
+  }, [groupExpansion, parents, workspaces, groupingOverride])
   const groups = useMemo(
     () => deriveGroups(list, workspaces, rowState, statuses, {
       expandedGroups,
       ungroupedOrder: ungroupedSessionIds,
-    }),
-    [list, workspaces, rowState, statuses, expandedGroups, ungroupedSessionIds],
+    }, groupingOverride),
+    [list, workspaces, rowState, statuses, expandedGroups, ungroupedSessionIds, groupingOverride],
   )
   useEffect(() => {
     for (let key = revealGroup; key !== undefined; key = parents.get(key)) {
@@ -840,6 +860,7 @@ export function WorkspaceBrowser({
   useSessions,
   useSessionStatus,
   useWorkspaces,
+  useGrouping,
   useStore,
   actions,
   startSession,
@@ -873,6 +894,11 @@ export function WorkspaceBrowser({
   // Ordering remains live while the rail or search replaces the list body.
   const list = useSessions(state => state)
   const storedWorkspaces = useWorkspaces(state => state.items)
+  // Grouping override: `undefined` keeps the Host Workspace registry as the
+  // grouping model (the whole point of the default). The Workspace rows, the
+  // picker, drag targets and the phase/archive reads below all stay official
+  // either way — only the group headings change.
+  const groupingOverride = useGrouping(groups => groups)
   // The resolved name, not `t`, is the memo dependency: the bound seat keeps
   // its identity across a language switch.
   const defaultWorkspaceName = t('workspace.defaultName')
@@ -914,9 +940,14 @@ export function WorkspaceBrowser({
     ? mainSessionId
     : undefined
   const ungroupedMemberIds = useMemo(() => {
-    const accounted = new Set(workspaces.flatMap(workspace => workspace.sessionIds))
-    return list.ids.filter(id => list.byId[id] !== undefined && !accounted.has(id))
-  }, [list, workspaces])
+    // Under an override, "ungrouped" means unclaimed by the override rather
+    // than unaccounted by a Workspace; the two differ as soon as the caller
+    // groups Sessions the Workspace registry already accounts for.
+    const claimed = groupingOverride === undefined
+      ? new Set(workspaces.flatMap(workspace => workspace.sessionIds))
+      : new Set(groupingOverride.flatMap(group => group.sessionIds))
+    return list.ids.filter(id => list.byId[id] !== undefined && !claimed.has(id))
+  }, [list, workspaces, groupingOverride])
   const orderState = useMemo(
     () => ({ pinnedSessionIds, archivedSessionIds }),
     [archivedSessionIds, pinnedSessionIds],
@@ -1387,6 +1418,7 @@ export function WorkspaceBrowser({
                 onSessionRenameRequest={requestSessionRename}
                 renderSlot={renderSlot}
                 workspaces={orderedWorkspaces}
+                groupingOverride={groupingOverride}
                 ungroupedSessionIds={orderedUngroupedSessionIds}
                 workspaceReady={workspaceReady}
                 nestWorkspaces={groupBy === 'workspace-tree'}

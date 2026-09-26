@@ -58,10 +58,11 @@
     "build": "tsdown",
     "watch": "tsdown --watch",
     "typecheck": "tsc -p tsconfig.json --pretty false",
-    "probe": "node scripts/probe-approach-b.mjs && node scripts/probe-slots.mjs && node scripts/probe-service.mjs",
+    "probe": "node scripts/probe-approach-b.mjs && node scripts/probe-slots.mjs && node scripts/probe-service.mjs && node scripts/probe-grouping-seam.mjs",
     "verify:bundle": "node scripts/compare-bundle.mjs",
     "verify:patch": "node scripts/verify-patch.mjs",
-    "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm probe"
+    "verify:grouping": "node scripts/verify-grouping.mjs",
+    "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm probe"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

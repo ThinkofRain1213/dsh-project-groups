@@ -31,6 +31,20 @@ export function owningGroupKey(
     ?.workspaceId as string | undefined) ?? UNGROUPED_KEY
 }
 
+/**
+ * Resolve the caller-supplied group that owns one Session, the {@link GroupSource}
+ * counterpart of {@link owningGroupKey}.
+ * @param sources - caller-supplied grouping model.
+ * @param sessionId - Session whose group is required.
+ * @returns owning group key, or {@link UNGROUPED_KEY} when no group claims it.
+ */
+export function owningSourceKey(
+  sources: readonly GroupSource[],
+  sessionId: SessionId,
+): string {
+  return sources.find(source => source.sessionIds.includes(sessionId))?.key ?? UNGROUPED_KEY
+}
+
 /** Pending interaction kinds with dedicated Workspace-row presentation. */
 export type SessionPendingInteractionStatus = 'approval' | 'plan-review' | 'question'
 type SessionStatuses = SessionStatusSnapshot
@@ -64,7 +78,30 @@ export interface SessionNode {
 /** Session order selected by the Workspace browser. */
 export type SessionOrderBy = 'manual' | 'updated'
 
-/** One workspace group section: header row facts + visible top-level session rows. */
+/**
+ * One caller-supplied group, the injection currency of {@link groupBySource}.
+ *
+ * This is deliberately *not* a Workspace: the browsing region renders group
+ * headings from whatever this describes, so a consumer can group Sessions by
+ * an entirely different model (project labels, tags) while every row keeps its
+ * real Workspace account, `cwd`, and archive state in the Host.
+ */
+export interface GroupSource {
+  /** Stable identity for expansion state and per-account manual order. */
+  key: string
+  /** Heading text as rendered; the caller localizes it. */
+  label: string
+  /** Members in caller order; rows are still filtered by ordinary visibility. */
+  sessionIds: readonly SessionId[]
+  /** Directory shown on the row hover card; absent renders no path. */
+  path?: string | undefined
+  /** Sort time in epoch ms; absent sorts after dated groups. */
+  createdAt?: number | undefined
+}
+
+/**
+ * One workspace group section: header row facts + visible top-level session rows.
+ */
 export interface GroupNode {
   /** Group key: the workspace id or {@link UNGROUPED_KEY}. */
   key: string
@@ -374,6 +411,69 @@ function groupByWorkspace(
   return groups
 }
 
+/**
+ * Group Sessions by a caller-supplied source instead of the Host Workspace
+ * registry, using the exact rules {@link groupByWorkspace} applies: the same
+ * visibility test, the same Ungrouped fallback for unclaimed Sessions, and the
+ * same group shape. An empty source therefore puts every visible Session under
+ * Ungrouped, and a populated one renders the caller's groups with the
+ * expansion, ordering, archive filtering, and row presentation a Workspace
+ * gets — the downstream derivation cannot tell the two apart.
+ * @param list - current Session list state.
+ * @param sources - caller-ordered groups; membership is by Session id.
+ * @param archived - registry-global archive set.
+ * @param archivedFilter - archived-row visibility choice.
+ * @param ungroupedOrder - stored order for Sessions in no group.
+ * @returns groups in source order, with the Ungrouped bucket last when non-empty.
+ */
+function groupBySource(
+  list: SessionListState,
+  sources: readonly GroupSource[],
+  archived: ReadonlySet<SessionId>,
+  archivedFilter: ArchivedFilter,
+  ungroupedOrder: readonly string[] | undefined,
+): Group[] {
+  const current = mainSessionId(list)
+  const groups: Group[] = []
+  const accounted = new Set<SessionId>()
+  for (const source of sources) {
+    const members: SessionSummary[] = []
+    for (const id of source.sessionIds) {
+      const summary = list.byId[id]
+      if (summary === undefined) continue // account may lead the list pull; the row appears when the summary lands
+      accounted.add(id)
+      if (!sessionVisible(summary, current, archived, archivedFilter)) continue
+      members.push(summary)
+    }
+    // The archived-only view lists archives, not the group inventory, so a
+    // group without archived Sessions contributes no group.
+    if (archivedFilter === 'only' && members.length === 0) continue
+    // `workspaceId` stays undefined: it means "a real Host Workspace row", and
+    // these are not. That is what withholds the Workspace rename/delete menu,
+    // workspace drag targets, and the startSession(workspaceId) button — none
+    // of which have a meaning for a caller-supplied group. The label still
+    // renders because it is non-empty (see `ProjectRowItem`).
+    groups.push(buildGroup(
+      source.key, undefined, source.path, source.createdAt, source.label, members,
+    ))
+  }
+  const stray = list.ids
+    .map(id => list.byId[id])
+    .filter((s): s is SessionSummary =>
+      s !== undefined && !accounted.has(s.id) && sessionVisible(s, current, archived, archivedFilter))
+  if (stray.length > 0) {
+    groups.push(buildGroup(
+      UNGROUPED_KEY,
+      undefined,
+      undefined,
+      undefined,
+      '',
+      orderedUngrouped(stray, ungroupedOrder, list.byId),
+    ))
+  }
+  return groups
+}
+
 /** Keep navigation presentation independent from domain-owned interaction objects. */
 function visiblePendingKind(kind: string | undefined): SessionPendingInteractionStatus | undefined {
   switch (kind) {
@@ -438,16 +538,26 @@ export function deriveGroups(
   rowState: SessionRowState,
   statuses: SessionStatuses,
   view: TreeView,
+  sources?: readonly GroupSource[],
 ): GroupNode[] {
   const archived = new Set(rowState.archivedSessionIds)
   const pinned = new Set(rowState.pinnedSessionIds)
   const expandedGroups = new Set(view.expandedGroups)
   const current = mainSessionId(list)
+  // The injection point: a caller-supplied source replaces the Workspace
+  // registry as the grouping model. Omitted means the official behaviour,
+  // byte for byte — that path is what keeps an unmodified composition identical
+  // to upstream.
+  const derived = sources === undefined
+    ? groupByWorkspace(list, workspaces, archived, rowState.archivedFilter, view.ungroupedOrder)
+    : groupBySource(list, sources, archived, rowState.archivedFilter, view.ungroupedOrder)
   const currentGroup = current === undefined
     ? undefined
-    : owningGroupKey(workspaces, current)
+    : sources === undefined
+      ? owningGroupKey(workspaces, current)
+      : owningSourceKey(sources, current)
   const groups: GroupNode[] = []
-  for (const g of groupByWorkspace(list, workspaces, archived, rowState.archivedFilter, view.ungroupedOrder)) {
+  for (const g of derived) {
     const expanded = expandedGroups.has(g.key)
     groups.push({
       key: g.key,
