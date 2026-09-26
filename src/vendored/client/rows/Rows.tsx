@@ -622,6 +622,10 @@ export function SessionNodeItem({
         : (e) => {
           if (!drag.active) return
           e.preventDefault()
+          // A row is the more specific target: without this the enclosing group
+          // section would also handle the event and replace the positional
+          // marker with a group-level "drop into" target.
+          e.stopPropagation()
           e.dataTransfer.dropEffect = 'move'
           drag.hover(rowHalf(e))
         }}
@@ -630,6 +634,7 @@ export function SessionNodeItem({
         : (e) => {
           if (!drag.active) return
           e.preventDefault()
+          e.stopPropagation()
           drag.drop(rowHalf(e))
         }}
     >

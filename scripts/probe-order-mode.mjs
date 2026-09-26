@@ -10,6 +10,11 @@
  * kept re-sorting itself by recency. This measures the store on both sides of the
  * switch, and the Host's own record.
  *
+ * **Needs an empty `dshHome`.** It asserts the arriving state — no order records,
+ * exactly one project — so pointing it at a profile another probe has already
+ * written reports failures that are the leftover data, not the code. Give it its
+ * own directory, or run it before anything else touches that one.
+ *
  * Usage: node probe-order-mode.mjs <dshExe> <asarRoot> <dshHome>
  */
 import { spawn } from 'node:child_process'

@@ -1202,11 +1202,62 @@ d.sessionOrderByAccount = ...filter(retained)   // ← 这个也剪
    → 第 2 行拖到第 1 行中心 = "放在第 1 行之后" = **它本来就在的位置**，
    于是"什么也没发生"，看着像功能坏了。改成落**目标行顶边**。
 
-### L2b-2 — 跨组归属（拖进 / 拖出 / 项目间互拖）
-- [ ] 路径 A：拖到**项目栏** = 放进项目（时间模式按时间落位；手动模式插最前）
-- [ ] 路径 B：拖到**会话行** = 官方落行逻辑 + 自动 assign 到目标项目
-- [ ] 拖出到未分组
-- [ ] 组级高亮 CSS
+### L2b-2 — 跨组归属（拖进 / 拖出 / 项目间互拖）✅ 已完成（2026-09-26）
+
+**用户确认的现象**：会话**不能跨组拖动**。
+
+**根因（读代码 + 反向对照实测）**：官方明确限制"会话拖拽不离开本组"：
+
+```tsx
+// :807  行只在同组时可接受
+const sameGroupDrag = drag !== null && drag.accountKey === group.key
+const compatibleTarget = sameGroupDrag && drag.pinned === node.pinned
+// → false 时 Rows.tsx 的 onDragOver 直接 return（不 preventDefault = 不接受）
+
+// :732  组容器只认"组拖拽"
+onDragOver={workspaceDrag === null ? undefined : (e) => {...}}
+// → 会话拖拽时组容器根本没有 onDragOver
+```
+
+**两条落点路径**（语义不同，反馈也不同）：
+
+| 落点 | 语义 | 时间模式 | 手动模式 |
+|---|---|---|---|
+| **会话行** | "放在这里"（位置） | 落位 + **切手动** | 落位 |
+| **组栏/组空白区** | "放进这个组"（归属） | **不写顺序**（recency 自然落位） | **插最前** |
+
+**关键实现点**：
+
+- `DragState.overGroupKey` 携带目标组；`over === null` 区分"落栏"和"落行"
+  → 所以 `commitSessionDrag` 第二个参数改成可空
+- `sessionDragOrder` **不能**复用：它从**目标组**的行里找被拖行，
+  跨组时必然 `undefined`。新写 `insertIntoTargetOrder`（8 行），**不碰**原函数
+- 归属走 `assignSession` / `unassignSession`；顺序走 L2b-1 的 key 归属分派
+- `Rows.tsx` 的 `dragover`/`drop` 加 `stopPropagation`：让行优先于组容器，
+  否则组容器会把位置指示线替换成组级目标
+- `canReceiveDrag` 为 false 时（通用组合没有动词）跨组完全不激活，**行为退回官方**
+
+**我发现的硬阻塞**：`groupBySource` 原本只在有游离会话时才渲染未分组桶。
+所有会话都归类后，**未分组行消失 → 拖出项目无处可落**（进去就出不来）。
+改为 **override 生效时始终渲染**；`groupByWorkspace` 保持原规则
+（工作区分组下没有"自建组"可离开），`only`（只显示归档）仍隐藏空桶。
+
+**校验**：`pnpm check` **257 项全绿**；`probe-cross-group.mjs` 覆盖
+落行/落栏 × 时间/手动 × 拖出 × 项目间互拖 × 刷新存活。
+
+**反向对照**：旧 bundle 上 **10 项失败**（含落栏路径）。
+
+**我修掉的探针缺陷**（重要）：
+
+1. 落栏路径的断言原来**只比数量**——"甲 2 个、乙 1 个"在拖动**失败**时
+   前后完全一样，于是**空转通过**。改成断言**具体是哪个会话**移动了。
+   旧 bundle 上这两条从 PASS 变成 FAIL，证明原断言是假信号。
+2. `seedSession` 用 `fill` + 固定等待，**flaky**：Lexical 编辑器未就绪时
+   消息没发出去，会话仍是空白，下一个 ＋ 会**复用它**，导致种子行数不足。
+   改成 `type` + 轮询"消息是否成为行标题"。
+3. `probe-order-mode.mjs` **需要空 `dshHome`**（它断言初始状态）。
+   我在同一次运行里先后跑两个探针共用 home，它报了 2 个假失败。
+   已在文件头写明。
 
 ### L3 — 行内动作适配
 - [ ] 会话行感知所属项目（hover 卡 / 菜单上下文）

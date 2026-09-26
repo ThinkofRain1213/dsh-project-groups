@@ -116,6 +116,8 @@ export interface ProjectActions {
   reorderProject: (id: string, beforeId?: string) => Promise<void>
   /** File one Session under one project; a project row's ＋ uses this. */
   assignSession: (sessionId: SessionId, projectId: string) => Promise<void>
+  /** Return one Session to Ungrouped; a drop on the Ungrouped bucket uses this. */
+  unassignSession: (sessionId: SessionId) => Promise<void>
   /** Record one project row's open/closed state in the caller's own store. */
   setProjectExpanded: (projectId: string, expanded: boolean) => Promise<void>
   /** Replace the manual order of every caller-supplied project at once. */
@@ -329,6 +331,7 @@ export function apply(
       deleteProject: projectActions.deleteProject,
       reorderProject: projectActions.reorderProject,
       assignSession: projectActions.assignSession,
+      unassignSession: projectActions.unassignSession,
       setProjectExpanded: projectActions.setProjectExpanded,
       setProjectOrders: projectActions.setProjectOrders,
     }),

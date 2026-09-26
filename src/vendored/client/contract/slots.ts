@@ -294,6 +294,14 @@ export type WorkspaceBrowserInjected = {
    */
   assignSession?: ((sessionId: SessionId, projectId: string) => Promise<void>) | undefined
   /**
+   * Return one Session to Ungrouped.
+   *
+   * The Ungrouped bucket is the drop target that takes a Session out of a
+   * caller-supplied group. Absent, a cross-group drag never activates, so the
+   * region behaves exactly as upstream.
+   */
+  unassignSession?: ((sessionId: SessionId) => Promise<void>) | undefined
+  /**
    * Record one caller-supplied project's open/closed state.
    *
    * Supplied together with the `expansions` hook: a composition that owns this

@@ -179,6 +179,42 @@ interface DragState {
   pinned: boolean
   /** Row the marker sits on and which half (insert above/below it). */
   over: { id: SessionNode['id']; half: 'before' | 'after' } | null
+  /**
+   * Group the pointer is currently over, when it differs from {@link accountKey}.
+   *
+   * Set while hovering another group's row (a positional drop) or its header
+   * (a drop into the group, which leaves `over` null). `undefined` means the drag
+   * has not left its own group, which is what keeps the shipped same-group
+   * reorder path unchanged.
+   */
+  overGroupKey?: string | undefined
+}
+
+/**
+ * Insert one Session at a drop position in a group it does not belong to yet.
+ *
+ * Distinct from {@link sessionDragOrder}, which reorders within one account: that
+ * function looks the dragged row up among the *target* group's rows and bails
+ * when it is not there, which is exactly the cross-group case.
+ * @param order - the target group's current order.
+ * @param moving - the Session being dropped.
+ * @param overId - the row the pointer released on.
+ * @param half - which side of that row.
+ * @returns the target order with `moving` inserted.
+ */
+function insertIntoTargetOrder(
+  order: readonly SessionId[],
+  moving: SessionId,
+  overId: SessionId,
+  half: 'before' | 'after',
+): SessionId[] {
+  const next = order.filter(id => id !== moving)
+  const index = next.indexOf(overId)
+  // An unknown anchor cannot place the row: the front is the one position that is
+  // always valid, and it matches a header drop.
+  if (index === -1) return [moving, ...next]
+  next.splice(index + (half === 'after' ? 1 : 0), 0, moving)
+  return next
 }
 
 /** Apply a visible drop to the complete account without removing hidden members. */
@@ -297,6 +333,16 @@ type SessionTreeProps = Pick<
    * a Session but leaves it unfiled; see the inject face's note.
    */
   assignSession?: ((sessionId: SessionId, projectId: string) => Promise<void>) | undefined
+  /**
+   * Return one Session to Ungrouped.
+   *
+   * Paired with {@link assignSession}: together they are what makes a cross-group
+   * drop possible. Absent either, a Session stays in the group it was dragged
+   * from and the region behaves exactly as upstream.
+   */
+  unassignSession?: ((sessionId: SessionId) => Promise<void>) | undefined
+  /** Current ordering mode; a positional cross-group drop switches it to manual. */
+  orderBy: 'manual' | 'updated'
   /** Open the rename dialog from a row title double-click. */
   onSessionRenameRequest: (sessionId: SessionNode['id'], currentTitle: string) => void
   /** One Session chosen from search that must be exposed and scrolled into view. */
@@ -329,6 +375,8 @@ function SessionTree({
   onRenameRequest, onDeleteRequest, onSessionRenameRequest,
   reorderProject,
   assignSession,
+  unassignSession,
+  orderBy,
   renderSlot,
   insertWorkspaceBefore,
   nestWorkspaces, groupExpansion, setGroupExpanded,
@@ -350,6 +398,11 @@ function SessionTree({
   // Transient drag marker state; the selected mode owns the resulting order.
   const [drag, setDrag] = useState<DragState | null>(null)
   const sessionDropCommitted = useRef(false)
+  // Same value as `drag`, read from drag handlers. A handler closes over the
+  // render that created it, so the state variable would be the value from that
+  // render — stale by the time a drop fires.
+  const dragRef = useRef<DragState | null>(null)
+  dragRef.current = drag
   const [workspaceDrag, setWorkspaceDrag] = useState<WorkspaceDragState | null>(null)
   // Same value as `workspaceDrag`, read from drag handlers. A handler closes
   // over the render that created it, so the state variable would be the value
@@ -381,6 +434,18 @@ function SessionTree({
     (key: string): boolean => setProjectExpanded !== undefined && projectKeys.has(key),
     [setProjectExpanded, projectKeys],
   )
+  /**
+   * Whether a group can take a Session dragged out of another group.
+   *
+   * A caller-supplied project is a real destination only when both verbs exist;
+   * the Ungrouped bucket needs the unassign verb and is this browser's own
+   * account, so it needs no project model. Without the verbs a cross-group drag
+   * never activates, and the region behaves exactly as upstream.
+   */
+  const canReceiveDrag = useCallback((key: string): boolean => key === UNGROUPED_KEY
+    ? unassignSession !== undefined
+    : isCallerOwned(key) && assignSession !== undefined,
+  [assignSession, isCallerOwned, unassignSession])
   /** Whether a key has ever been recorded, by whichever owner applies. */
   const hasExpansion = useCallback(
     (key: string): boolean => (isCallerOwned(key)
@@ -457,13 +522,35 @@ function SessionTree({
     setSessionLimits(limits => limits[revealGroup] === Infinity ? limits : { ...limits, [revealGroup]: Infinity })
   }, [groups, revealGroup, revealSessionId])
   const now = Date.now()
-  const commitSessionDrag = (activeDrag: DragState, over: NonNullable<DragState['over']>): void => {
+  /**
+   * Commit a Session drop.
+   * @param activeDrag - the drag being committed.
+   * @param over - the row under the pointer, or null when the drop landed on a
+   * group itself (its header or empty body) rather than on a row.
+   * @param targetKey - the group the pointer released on. Passed explicitly
+   * rather than read from `activeDrag.overGroupKey`, because a handler's closed
+   * state can predate the last `dragOver`.
+   */
+  const commitSessionDrag = (
+    activeDrag: DragState,
+    over: NonNullable<DragState['over']> | null,
+    targetKey: string = activeDrag.overGroupKey ?? activeDrag.accountKey,
+  ): void => {
     if (sessionDropCommitted.current) return
     sessionDropCommitted.current = true
     setDrag(null)
+    if (over !== null && over.id === activeDrag.sessionId) return
+
+    // A drop outside the source group moves the Session between groups. That is
+    // two decisions, not one: who owns it (the caller's assignment map) and where
+    // it sits (the target's order).
+    if (targetKey !== activeDrag.accountKey) {
+      commitCrossGroupDrag(activeDrag, targetKey, over)
+      return
+    }
+
     const group = groups.find(candidate => candidate.key === activeDrag.accountKey)
-    if (group === undefined) return
-    if (over.id === activeDrag.sessionId) return
+    if (group === undefined || over === null) return
     const accountSessionIds = activeDrag.accountKey === UNGROUPED_KEY
       ? ungroupedSessionIds
       : workspaces.find(workspace => workspace.workspaceId === activeDrag.accountKey)?.sessionIds
@@ -472,6 +559,59 @@ function SessionTree({
     const renderedSessions = collapsedSessionRows(group.sessions, sessionLimits[group.key]).rows
     const nextOrder = sessionDragOrder(accountSessionIds, renderedSessions, activeDrag, over)
     if (nextOrder !== undefined) setSessionOrder(activeDrag.accountKey, nextOrder)
+  }
+  /**
+   * Move one Session into another group, and place it.
+   *
+   * Two paths, distinguished by whether the pointer released on a row:
+   *
+   *  - **on a row** — a positional drop. The Session is filed, inserted at that
+   *    position, and the view switches to manual ordering, which is upstream's
+   *    rule for any sort gesture.
+   *  - **on the group itself** (its header or its empty body) — a drop *into* the
+   *    group. Under recency nothing is stored: the member has no saved position,
+   *    so `reconcileManualOrder` derives one from `updatedAt`, which is what
+   *    recency means. Under manual it goes to the front, the one position a
+   *    header drop can name.
+   *
+   * @param activeDrag - the drag being committed.
+   * @param targetKey - the group the pointer is over; never the source group.
+   * @param over - the row under the pointer, or null for a drop on the group.
+   */
+  const commitCrossGroupDrag = (
+    activeDrag: DragState,
+    targetKey: string,
+    over: NonNullable<DragState['over']> | null,
+  ): void => {
+    const target = groups.find(candidate => candidate.key === targetKey)
+    if (target === undefined) return
+    const moving = activeDrag.sessionId
+    // A caller-supplied group's order lives in the caller's store; the Ungrouped
+    // bucket's lives in the view store. `saveSessionOrder` dispatches on that.
+    const targetOrder = collapsedSessionRows(target.sessions, sessionLimits[targetKey]).rows.map(row => row.id)
+    const positional = over !== null
+
+    // The Session must leave its old group and join the new one. Ungrouped is the
+    // absence of an assignment rather than a project, so it takes the other verb.
+    const move = targetKey === UNGROUPED_KEY
+      ? unassignSession?.(moving)
+      : assignSession?.(moving, targetKey)
+    if (move === undefined) return
+    void move.catch((reason: unknown) => { console.warn('session move rejected:', reason) })
+
+    // Recency plus a header drop stores nothing: position comes from `updatedAt`.
+    if (!positional && orderBy === 'updated') {
+      recordExpansion(targetKey, true)
+      return
+    }
+    const next = positional
+      ? insertIntoTargetOrder(targetOrder, moving, over.id, over.half)
+      : [moving, ...targetOrder.filter(id => id !== moving)]
+    // A positional drop is a sort gesture, so it selects manual ordering; a
+    // header drop under manual already is manual. `setSessionOrder` writes the
+    // whole project map, which freezes every project in the same step.
+    setSessionOrder(targetKey, next)
+    recordExpansion(targetKey, true)
   }
   const commitWorkspaceDrag = (
     activeDrag: WorkspaceDragState,
@@ -585,6 +725,15 @@ function SessionTree({
         if (active === null) return
         commitWorkspaceDrag(active, { id: dragRowId, half })
       }
+    // A Session dragged out of another group can be dropped on the group itself —
+    // its header, or the empty space where its rows would be. That is a drop
+    // *into* the group, as opposed to the positional drop a row gives.
+    //
+    // The two drags are mutually exclusive, so `workspaceDrag === null` plus a
+    // live session drag is enough to tell them apart, and the shipped workspace
+    // handlers above are reached unchanged whenever a row drag is in flight.
+    const crossGroupTarget = drag !== null && drag.accountKey !== group.key
+      && canReceiveDrag(group.key)
     return (
     // Group section: header, descendant Workspaces, and own Session rows. The
     // inter-group breathing room is the section's own margin
@@ -596,9 +745,17 @@ function SessionTree({
           css.groupSection,
           workspaceMarker === 'before' && css.workspaceDropBefore,
           workspaceMarker === 'after' && css.workspaceDropAfter,
+          crossGroupTarget && drag.overGroupKey === group.key && drag.over === null && css.groupDropTarget,
         )}
         onDragOver={workspaceDrag === null
-          ? undefined
+          ? crossGroupTarget
+            ? (e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              e.dataTransfer.dropEffect = 'move'
+              setDrag(d => (d === null ? d : { ...d, over: null, overGroupKey: group.key }))
+            }
+            : undefined
           : (e) => {
             e.preventDefault()
             if (hoverWorkspace === undefined && parents.get(group.key) !== undefined) return
@@ -612,7 +769,14 @@ function SessionTree({
             }
           }}
         onDrop={workspaceDrag === null
-          ? undefined
+          ? crossGroupTarget
+            ? (e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              const active = dragRef.current
+              if (active !== null) commitSessionDrag(active, null, group.key)
+            }
+            : undefined
           : (e) => {
             e.preventDefault()
             if (dropWorkspace === undefined && parents.get(group.key) !== undefined) return
@@ -694,10 +858,13 @@ function SessionTree({
           </div>
         )}
         {sessions.map((node) => {
-        // Session drag never leaves its browser-local account, and pinned
-        // rows reorder only within their leading pinned block.
+        // A row reorders within its own browser-local account, and also accepts a
+        // Session dragged out of another group. Pinned rows stay in their leading
+        // block either way, so both paths require a matching pinned state.
           const sameGroupDrag = drag !== null && drag.accountKey === group.key
-          const compatibleTarget = sameGroupDrag && drag.pinned === node.pinned
+          const crossGroupDrag = drag !== null && drag.accountKey !== group.key
+            && canReceiveDrag(group.key)
+          const compatibleTarget = (sameGroupDrag || crossGroupDrag) && drag.pinned === node.pinned
           const normalizeHalf = (half: 'before' | 'after'): 'before' | 'after' =>
             node.blank ? 'after' : half
           const dragProps = {
@@ -706,21 +873,31 @@ function SessionTree({
               setDrag({ accountKey: group.key, sessionId: node.id, pinned: node.pinned, over: null })
             },
             active: compatibleTarget,
-            marker: sameGroupDrag && drag.over?.id === node.id ? drag.over.half : null,
+            marker: compatibleTarget && drag.over?.id === node.id ? drag.over.half : null,
             hover: (half: 'before' | 'after') => {
             /* v8 ignore next -- narrowing guard: Rows gates hover on `active`, which is false while the drag state is null. */
               setDrag(d => (d === null ? d : {
-                ...d, over: { id: node.id, half: normalizeHalf(half) },
+                ...d,
+                over: { id: node.id, half: normalizeHalf(half) },
+                // Hovering a row in the source group clears any group-level target
+                // a previous header hover left behind.
+                overGroupKey: group.key === d.accountKey ? undefined : group.key,
               }))
             },
             drop: (half: 'before' | 'after') => {
             /* v8 ignore next -- narrowing guard: Rows gates drop on `active`, which is false while the drag state is null. */
               if (drag === null) return
-              commitSessionDrag(drag, { id: node.id, half: normalizeHalf(half) })
+              commitSessionDrag(drag, { id: node.id, half: normalizeHalf(half) }, group.key)
             },
             end: () => {
-              if (drag?.over !== null && drag?.over !== undefined) commitSessionDrag(drag, drag.over)
-              else setDrag(null)
+              // Fallback for a release that produced no `drop` event; the
+              // commit guard makes a double commit a no-op.
+              if (drag === null) setDrag(null)
+              else if (drag.over !== null && drag.over !== undefined) {
+                commitSessionDrag(drag, drag.over, drag.overGroupKey ?? drag.accountKey)
+              } else if (drag.overGroupKey !== undefined) {
+                commitSessionDrag(drag, null, drag.overGroupKey)
+              } else setDrag(null)
               sessionDropCommitted.current = false
             },
           }
@@ -1031,6 +1208,7 @@ export function WorkspaceBrowser({
   deleteProject,
   reorderProject,
   assignSession,
+  unassignSession,
   setProjectExpanded,
   setProjectOrders,
   useExpansions,
@@ -1756,6 +1934,8 @@ export function WorkspaceBrowser({
                 startSession={startSession}
                 open={guardedOpen}
                 insertWorkspaceBefore={insertWorkspaceBefore}
+                unassignSession={unassignSession}
+                orderBy={orderBy}
                 revealSessionId={revealSessionId}
                 onSessionRevealed={acknowledgeSessionReveal}
                 home={home}

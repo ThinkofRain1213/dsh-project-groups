@@ -70,6 +70,7 @@ const projectActions: ProjectActions = {
   deleteProject: async (id) => { await requireModel().remove(id) },
   reorderProject: async (id, beforeId) => { await requireModel().reorder(id, beforeId) },
   assignSession: async (sessionId, projectId) => { await requireModel().assign(sessionId, projectId) },
+  unassignSession: async (sessionId) => { await requireModel().unassign(sessionId) },
   setProjectExpanded: async (projectId, expanded) => { await requireModel().setExpanded(projectId, expanded) },
   setProjectOrders: async (orders) => { await requireModel().setOrders(orders) },
 }

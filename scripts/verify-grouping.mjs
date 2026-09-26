@@ -121,6 +121,37 @@ check('an unselected blank Session stays hidden under an override',
 // 5. owningSourceKey mirrors owningGroupKey for the current-group highlight.
 check('owningSourceKey finds the claiming group', owningSourceKey(sources, 's3') === 'p1')
 check('owningSourceKey falls back to Ungrouped', owningSourceKey(sources, 's4') === UNGROUPED_KEY)
+
+// 6. Under an override the Ungrouped bucket always renders, empty included.
+//
+//    It is not only a container: it is the drop target that takes a Session back
+//    out of a caller-supplied group. Hiding it when every Session is filed would
+//    remove the only way out.
+const allClaimed = [
+  { key: 'p1', label: '项目一', sessionIds: ['s1', 's3', 's2', 's4'] },
+]
+const fullyGrouped = deriveGroups(list, workspaces, rowState, statuses, view, allClaimed)
+check('Ungrouped still renders when every Session is claimed',
+  fullyGrouped.length === 2 && fullyGrouped[1]?.key === UNGROUPED_KEY,
+  fullyGrouped.map(g => `${g.key}:${g.sessionCount}`).join(' '))
+check('and that empty Ungrouped bucket holds nothing', fullyGrouped[1]?.sessionCount === 0)
+check('the empty bucket is still the caller-localized one',
+  fullyGrouped[1]?.label === '' && fullyGrouped[1]?.workspaceId === undefined)
+
+// The shipped Workspace path keeps the original rule: it has no caller-supplied
+// group to leave, so an empty bucket there would be new UI for no reason.
+const upstreamAllClaimed = deriveGroups(list, workspaces, rowState, statuses, view)
+check('groupByWorkspace keeps the strays-only rule',
+  upstreamAllClaimed.every(g => g.key !== UNGROUPED_KEY || g.sessionCount > 0),
+  upstreamAllClaimed.map(g => `${g.key}:${g.sessionCount}`).join(' '))
+
+// The archived-only view lists archives rather than the group inventory, so an
+// empty bucket stays hidden there.
+const onlyArchived = { ...rowState, archivedFilter: 'only' }
+const onlyView = deriveGroups(list, workspaces, onlyArchived, statuses, view, allClaimed)
+check('the archived-only view hides the empty Ungrouped bucket',
+  onlyView.every(g => g.key !== UNGROUPED_KEY),
+  onlyView.map(g => `${g.key}:${g.sessionCount}`).join(' '))
 check('owningSourceKey on an empty source is Ungrouped', owningSourceKey([], 's1') === UNGROUPED_KEY)
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)

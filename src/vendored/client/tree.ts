@@ -478,7 +478,16 @@ function groupBySource(
     .map(id => list.byId[id])
     .filter((s): s is SessionSummary =>
       s !== undefined && !accounted.has(s.id) && sessionVisible(s, current, archived, archivedFilter))
-  if (stray.length > 0) {
+  // Under an override the Ungrouped bucket always renders, empty included.
+  //
+  // It is not only a container: it is the drop target that takes a Session out of
+  // a caller-supplied group, so hiding it when nothing is loose would remove the
+  // only way back. The archived-only view still hides it — that view lists
+  // archives rather than the group inventory.
+  //
+  // `groupByWorkspace` above keeps the shipped rule (strays only), because a
+  // Workspace-grouped sidebar has no caller-supplied group to leave.
+  if (stray.length > 0 || archivedFilter !== 'only') {
     groups.push(buildGroup(
       UNGROUPED_KEY,
       undefined,

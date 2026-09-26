@@ -24,6 +24,8 @@
  * Usage: node probe-plugin-toggle.mjs <dshExe> <asarRoot> <dshHome>
  */
 import { spawn } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
@@ -39,6 +41,16 @@ const failures = []
 const check = (label, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? ` — ${detail}` : ''}`)
   if (!ok) failures.push(label)
+}
+
+/** The Host's own order records, read straight from this plugin's domain file. */
+const storedOrders = async () => {
+  try {
+    const text = await readFile(join(dshHome, 'storages', 'project_groups.json'), 'utf8')
+    return JSON.parse(text).tables.orders ?? {}
+  } catch {
+    return {}
+  }
 }
 
 /** Boot one profile on the fixed port; resolves once its URL is printed. */
@@ -132,6 +144,27 @@ try {
   console.log(`shared view store groupExpansion keys: ${JSON.stringify(shared)}`)
   check('the project key is NOT in the shared view store',
     shared !== null && !shared.includes(row?.key), JSON.stringify(shared))
+
+  // Switch to manual ordering, which freezes every project into a stored order.
+  // The record goes to this plugin's own domain, for the same reason the
+  // expansion does: the official mount prunes the view store's non-Workspace
+  // keys, and `retainAccountKeys` prunes `sessionOrderByAccount` as well.
+  await page.locator('button[aria-label="视图选项"]').first().click({ force: true })
+  await page.waitForTimeout(800)
+  await page.getByRole('menuitem', { name: '手动排序' }).first().click({ force: true })
+  await page.waitForTimeout(2500)
+
+  const sharedOrders = await page.evaluate(() => {
+    const raw = localStorage.getItem('dsh.workspace.view.v5')
+    return raw === null ? null : Object.keys(JSON.parse(raw).sessionOrderByAccount ?? {})
+  })
+  const ownOrders = await storedOrders()
+  console.log(`shared sessionOrderByAccount keys: ${JSON.stringify(sharedOrders)}`)
+  console.log(`our own order records: ${JSON.stringify(Object.keys(ownOrders))}`)
+  check('the project key is NOT in the shared sessionOrderByAccount',
+    sharedOrders !== null && !sharedOrders.includes(row?.key), JSON.stringify(sharedOrders))
+  check('the frozen order is in this plugin\'s own domain',
+    ownOrders[row?.key] !== undefined, JSON.stringify(Object.keys(ownOrders)))
   await stop(on.child)
 
   // --- Phase 2: plugin OFF — the official sidebar mounts and prunes ---------
@@ -159,6 +192,19 @@ try {
   check('the project row is back', back !== undefined, JSON.stringify(restored.map(s => s.heading)))
   check('and it came back EXPANDED, not collapsed', back?.expanded === 'true',
     `aria-expanded=${back?.expanded}`)
+
+  // The frozen order must have survived the official mount too — it was written
+  // to our own domain, so the prune had nothing of ours to delete.
+  const modeBack = await page.evaluate(() => {
+    const raw = localStorage.getItem('dsh.workspace.view.v5')
+    return raw === null ? null : JSON.parse(raw).orderBy ?? null
+  })
+  const ordersBack = await storedOrders()
+  console.log(`mode after the round trip: ${JSON.stringify(modeBack)}`)
+  console.log(`order records after the round trip: ${JSON.stringify(Object.keys(ordersBack))}`)
+  check('the ordering mode survived the plugin toggle', modeBack === 'manual', String(modeBack))
+  check('and so did the project\'s frozen order',
+    back !== undefined && ordersBack[back.key] !== undefined, JSON.stringify(Object.keys(ordersBack)))
 } finally {
   if (on?.child !== undefined && on.child.exitCode === null) await stop(on.child)
   await browser.close()
