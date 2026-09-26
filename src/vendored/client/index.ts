@@ -101,6 +101,9 @@ export const inject = [
 /** No caller-owned group has been touched: the default `expansions` snapshot. */
 const EMPTY_EXPANSIONS: Readonly<Record<string, boolean>> = Object.freeze({})
 
+/** No caller-owned group has a recorded order: the default `orders` snapshot. */
+const EMPTY_ORDERS: Readonly<Record<string, readonly string[]>> = Object.freeze({})
+
 /**
  * The caller's project verbs, threaded into the browsing region's inject face.
  * Absent, the region keeps the shipped directory flow and a caller-supplied
@@ -115,6 +118,8 @@ export interface ProjectActions {
   assignSession: (sessionId: SessionId, projectId: string) => Promise<void>
   /** Record one project row's open/closed state in the caller's own store. */
   setProjectExpanded: (projectId: string, expanded: boolean) => Promise<void>
+  /** Replace the manual order of every caller-supplied project at once. */
+  setProjectOrders: (orders: Readonly<Record<string, readonly string[]>>) => Promise<void>
 }
 
 /**
@@ -136,12 +141,17 @@ export interface ProjectActions {
  * browser's own view store, exactly as upstream. Supplied, the caller owns that
  * state and this browser only reads and reports it — which is what lets a
  * caller keep it somewhere the official plugin's mount cannot prune.
+ * @param ordersOverride - optional record of caller-supplied groups' manual
+ * member order, keyed by group key. Omitted, every group's order lives in this
+ * browser's own view store, exactly as upstream. Supplied, the caller owns it,
+ * for the same reason as `expansionsOverride`.
  */
 export function apply(
   ctx: Context,
   groupingOverride?: HostObservable<readonly GroupSource[] | undefined>,
   projectActions?: ProjectActions,
   expansionsOverride?: HostObservable<Readonly<Record<string, boolean>>>,
+  ordersOverride?: HostObservable<Readonly<Record<string, readonly string[]>>>,
 ): void {
   const sessions = ctx.get('sessions') as ISessions
   const workspaces = ctx.get('workspaces') as IWorkspaces
@@ -189,6 +199,12 @@ export function apply(
   // key resolves to this browser's own view store — upstream behaviour.
   const expansions: HostObservable<Readonly<Record<string, boolean>>> = expansionsOverride ?? {
     getSnapshot: () => EMPTY_EXPANSIONS,
+    subscribe: () => () => {},
+  }
+  // Same shape again: with no caller-owned order and no verb beside it, every key
+  // resolves to this browser's own view store — upstream behaviour.
+  const orders: HostObservable<Readonly<Record<string, readonly string[]>>> = ordersOverride ?? {
+    getSnapshot: () => EMPTY_ORDERS,
     subscribe: () => () => {},
   }
   const hostInfo: HostObservable<RemoteHostFacts> = {
@@ -314,6 +330,7 @@ export function apply(
       reorderProject: projectActions.reorderProject,
       assignSession: projectActions.assignSession,
       setProjectExpanded: projectActions.setProjectExpanded,
+      setProjectOrders: projectActions.setProjectOrders,
     }),
     hooks: {
       directoryFlow: browserFlowSource,
@@ -322,6 +339,7 @@ export function apply(
       shortcuts: ctx.shortcuts.catalog,
       grouping,
       expansions,
+      orders,
     },
   })
   const pickerInjected = (): WorkspacePickerInjected => ({

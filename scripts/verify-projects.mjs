@@ -28,7 +28,7 @@ globalThis.window = { __ModuleLoader__: { load: () => {} } }
 
 const { ProjectModel } = await import('../src/client/projects.ts')
 const { deriveGroups, UNGROUPED_KEY } = await import('../src/vendored/client/tree.ts')
-const { clientExpansions, clientGrouping, installProjectModel } = await import('../src/client/grouping.ts')
+const { clientExpansions, clientGrouping, clientOrders, installProjectModel } = await import('../src/client/grouping.ts')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -60,7 +60,7 @@ const groupsOf = (model, expanded = []) => deriveGroups(
  * model's read path, its unwrapping and its change notification are all real.
  */
 function fakeRemote({ failOn } = {}) {
-  const state = { projects: [], assignments: {}, expansions: {} }
+  const state = { projects: [], assignments: {}, expansions: {}, orders: {} }
   const calls = []
   const ok = value => Promise.resolve({ ok: true, value })
   const guard = name => {
@@ -109,6 +109,7 @@ function fakeRemote({ failOn } = {}) {
         if (owner === projectId) delete state.assignments[sessionId]
       }
       delete state.expansions[projectId]
+      delete state.orders[projectId]
       landed()
       return ok(undefined)
     },
@@ -119,6 +120,19 @@ function fakeRemote({ failOn } = {}) {
       state.expansions[projectId] = expanded
       landed()
       return ok({ projectId, expanded })
+    },
+    async setOrders({ orders }) {
+      calls.push(['setOrders', orders])
+      const refused = guard('setOrders')
+      if (refused !== undefined) return refused
+      // Whole-map replace, like the Host: an omitted project loses its record,
+      // and an unknown project id is dropped rather than refused.
+      const known = new Set(state.projects.map(p => p.projectId))
+      state.orders = Object.fromEntries(
+        Object.entries(orders).filter(([id]) => known.has(id)).map(([id, ids]) => [id, [...ids]]),
+      )
+      landed()
+      return ok({ orders: state.orders })
     },
     async reorder({ projectId, beforeId }) {
       calls.push(['reorder', projectId, beforeId])
@@ -487,6 +501,137 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   check('the deleted project leaves no expansion behind',
     model.expansions.getSnapshot()[projectId] === undefined,
     JSON.stringify(model.expansions.getSnapshot()))
+  stop()
+}
+
+// 16. Manual order: the plugin's own state, whole-map replace, and the
+//     absence-means-recency rule the ordering pipeline depends on.
+{
+  const { model, remote, stop } = await started()
+  await model.create('a')
+  await model.start()
+  const projectId = model.list()[0].projectId
+
+  check('a fresh project has no order record',
+    model.orders.getSnapshot()[projectId] === undefined,
+    JSON.stringify(model.orders.getSnapshot()))
+
+  await model.setOrders({ [projectId]: ['s2', 's1'] })
+  check('the write reached the namespace',
+    remote.calls.some(c => c[0] === 'setOrders'), JSON.stringify(remote.calls.map(c => c[0])))
+  check('the order is locally visible immediately',
+    model.orders.getSnapshot()[projectId]?.join(',') === 's2,s1',
+    JSON.stringify(model.orders.getSnapshot()))
+
+  // The Host projection is what makes it survive a reconnect.
+  await model.start()
+  check('the Host projection carries the order',
+    model.orders.getSnapshot()[projectId]?.join(',') === 's2,s1',
+    JSON.stringify(model.orders.getSnapshot()))
+
+  // Whole-map semantics: omitting the project discards its record, which is how
+  // recency mode means "no manual order".
+  await model.setOrders({})
+  check('an empty map discards the record',
+    model.orders.getSnapshot()[projectId] === undefined,
+    JSON.stringify(model.orders.getSnapshot()))
+  await model.start()
+  check('and the discard survives a re-read',
+    model.orders.getSnapshot()[projectId] === undefined,
+    JSON.stringify(model.orders.getSnapshot()))
+  stop()
+}
+
+// 17. A reordered list is a real change, an identical one is not — the snapshot
+//     identity is what the browser's selector compares.
+{
+  const { model, stop } = await started()
+  await model.create('a')
+  await model.start()
+  const projectId = model.list()[0].projectId
+  await model.setOrders({ [projectId]: ['s1', 's2'] })
+  const settled = model.orders.getSnapshot()
+
+  await model.setOrders({ [projectId]: ['s1', 's2'] })
+  check('an identical order does not notify', model.orders.getSnapshot() === settled)
+
+  await model.setOrders({ [projectId]: ['s2', 's1'] })
+  check('a reordered list yields a new snapshot', model.orders.getSnapshot() !== settled)
+  check('and carries the new order',
+    model.orders.getSnapshot()[projectId]?.join(',') === 's2,s1',
+    JSON.stringify(model.orders.getSnapshot()))
+  stop()
+}
+
+// 18. A refused order write reverts, so the row does not keep showing a position
+//     the Host never stored.
+{
+  const { model, stop } = await started({ failOn: 'setOrders' })
+  await model.create('a')
+  await model.start()
+  const projectId = model.list()[0].projectId
+  let threw = false
+  try {
+    await model.setOrders({ [projectId]: ['s2', 's1'] })
+  } catch {
+    threw = true
+  }
+  check('a refused order write rejects', threw)
+  check('and the optimistic order was rolled back',
+    model.orders.getSnapshot()[projectId] === undefined,
+    JSON.stringify(model.orders.getSnapshot()))
+  stop()
+}
+
+// 19. Deleting a project takes its order with it.
+{
+  const { model, stop } = await started()
+  await model.create('gone')
+  await model.start()
+  const projectId = model.list()[0].projectId
+  await model.setOrders({ [projectId]: ['s1'] })
+  await model.remove(projectId)
+  await model.start()
+  check('the deleted project leaves no order behind',
+    model.orders.getSnapshot()[projectId] === undefined,
+    JSON.stringify(model.orders.getSnapshot()))
+  stop()
+}
+
+// 20. The orders seat answers independently of the other two, and a baseline
+//     missing the field degrades to "no manual order" rather than throwing in
+//     the sidebar's render path.
+{
+  const { model, stop } = await started()
+  await model.create('a')
+  await model.start()
+  check('an empty orders record is the pre-install snapshot',
+    Object.keys(clientOrders.getSnapshot()).length === 0,
+    JSON.stringify(clientOrders.getSnapshot()))
+
+  // A Host that omits `orders` must not take the sidebar down with it. `follow`
+  // yields nothing so the model's stream loop ends quietly instead of logging a
+  // carrier error that would read like a real failure in the output.
+  const legacy = new ProjectModel({
+    baseline: async () => ({ ok: true, value: { projects: [], projectIds: [], assignments: {}, expansions: {} } }),
+    create: async () => ({ ok: true, value: {} }),
+    rename: async () => ({ ok: true, value: {} }),
+    delete: async () => ({ ok: true, value: {} }),
+    reorder: async () => ({ ok: true, value: {} }),
+    assign: async () => ({ ok: true, value: {} }),
+    unassign: async () => ({ ok: true, value: {} }),
+    setExpanded: async () => ({ ok: true, value: {} }),
+    setOrders: async () => ({ ok: true, value: {} }),
+    follow: () => (async function* () {})(),
+  })
+  let survived = true
+  try {
+    await legacy.start()
+  } catch {
+    survived = false
+  }
+  check('a baseline without an orders field does not throw', survived)
+  check('and reads as no manual order', Object.keys(legacy.orders.getSnapshot()).length === 0)
   stop()
 }
 

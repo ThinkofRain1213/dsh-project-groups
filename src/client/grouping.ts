@@ -35,6 +35,9 @@ const EMPTY: readonly GroupSource[] = Object.freeze([])
 /** No project row has been touched yet. */
 const EMPTY_EXPANSIONS: Readonly<Record<string, boolean>> = Object.freeze({})
 
+/** No project has a recorded manual order. */
+const EMPTY_ORDERS: Readonly<Record<string, readonly string[]>> = Object.freeze({})
+
 /**
  * The live model, or `undefined` before the Remote namespace has answered.
  *
@@ -47,6 +50,8 @@ let model: ProjectModel | undefined
 const pending = new Set<() => void>()
 /** The same, for {@link clientExpansions}; the two observables have separate seats. */
 const pendingExpansions = new Set<() => void>()
+/** The same, for {@link clientOrders}. */
+const pendingOrders = new Set<() => void>()
 
 /** @returns the live model, once its baseline has landed. */
 export function projectModel(): ProjectModel | undefined {
@@ -75,6 +80,11 @@ export function installProjectModel(started: ProjectModel): void {
   pendingExpansions.clear()
   for (const notify of earlyExpansions) started.expansions.subscribe(notify)
   for (const notify of earlyExpansions) notify()
+
+  const earlyOrders = [...pendingOrders]
+  pendingOrders.clear()
+  for (const notify of earlyOrders) started.orders.subscribe(notify)
+  for (const notify of earlyOrders) notify()
 }
 
 /**
@@ -113,5 +123,25 @@ export const clientExpansions: HostObservable<Readonly<Record<string, boolean>>>
       return () => { pendingExpansions.delete(listener) }
     }
     return live.expansions.subscribe(listener)
+  },
+}
+
+/**
+ * The recorded manual order of each project's members, handed to the vendored
+ * browser.
+ *
+ * Its own seat, for the same reason as {@link clientExpansions}: the region reads
+ * it with its own hook, and it carries the plugin's Host state rather than the
+ * view store the official plugin shares and prunes.
+ */
+export const clientOrders: HostObservable<Readonly<Record<string, readonly string[]>>> = {
+  getSnapshot: () => model?.orders.getSnapshot() ?? EMPTY_ORDERS,
+  subscribe: (listener) => {
+    const live = model
+    if (live === undefined) {
+      pendingOrders.add(listener)
+      return () => { pendingOrders.delete(listener) }
+    }
+    return live.orders.subscribe(listener)
   },
 }

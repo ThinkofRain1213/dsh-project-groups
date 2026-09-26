@@ -253,7 +253,7 @@ function bench() {
   const descriptor = descriptorOf(projectDomainSpec)
   check('the domain descriptor names the snake_case unit', descriptor.name === PROJECT_DOMAIN_NAME)
   check('the descriptor declares every table',
-    descriptor.tables.slice().sort().join(',') === 'assignments,expansions,projects',
+    descriptor.tables.slice().sort().join(',') === 'assignments,expansions,orders,projects',
     descriptor.tables.join(','))
   check('the descriptor declares a global', descriptor.hasGlobal === true)
   // Version 1 is load-bearing: a `single`-layout unit rejects a stored version
@@ -330,6 +330,80 @@ function bench() {
     baseline.assignments['session-x'] === created.project.projectId,
     JSON.stringify(baseline.assignments))
   check('and the stored order', baseline.projectIds.join(',') === created.project.projectId)
+}
+
+// 12. Manual session order: whole-map replace, with recency expressed by absence.
+{
+  const { controller, backend } = bench()
+  const a = (await controller.create({ title: 'a' })).project.projectId
+  const b = (await controller.create({ title: 'b' })).project.projectId
+
+  check('a project starts with no order record',
+    (await controller.baseline()).orders[a] === undefined,
+    JSON.stringify((await controller.baseline()).orders))
+
+  await controller.setOrders({ orders: { [a]: ['s2', 's1'] } })
+  let baseline = await controller.baseline()
+  check('an order is recorded as given', baseline.orders[a]?.join(',') === 's2,s1',
+    JSON.stringify(baseline.orders))
+  check('a project left out of the map keeps no record', baseline.orders[b] === undefined)
+
+  // The whole-map semantics: a project present in storage but absent from the
+  // request loses its record. That is what makes recency mode mean "no manual
+  // order" rather than "a stale one".
+  await controller.setOrders({ orders: { [a]: ['s1', 's2'], [b]: ['s9'] } })
+  baseline = await controller.baseline()
+  check('a second project can be recorded alongside', baseline.orders[b]?.join(',') === 's9',
+    JSON.stringify(baseline.orders))
+
+  await controller.setOrders({ orders: { [a]: ['s1', 's2'] } })
+  baseline = await controller.baseline()
+  check('omitting a project DELETES its record (recency mode)',
+    baseline.orders[b] === undefined, JSON.stringify(baseline.orders))
+
+  await controller.setOrders({ orders: {} })
+  baseline = await controller.baseline()
+  check('an empty map discards every order',
+    Object.keys(baseline.orders).length === 0, JSON.stringify(baseline.orders))
+
+  check('the durable unit holds the order table',
+    Object.keys(backend.units.get(PROJECT_DOMAIN_NAME).tables.orders ?? {}).length === 0,
+    JSON.stringify(backend.units.get(PROJECT_DOMAIN_NAME).tables.orders))
+
+  // A stale id can only come from a race with a delete; dropping it keeps the
+  // race from failing the whole drag.
+  await controller.setOrders({ orders: { [a]: ['s1'], 'project-that-was-deleted': ['s1'] } })
+  baseline = await controller.baseline()
+  check('an unknown project id is dropped, not refused',
+    baseline.orders['project-that-was-deleted'] === undefined && baseline.orders[a]?.join(',') === 's1',
+    JSON.stringify(baseline.orders))
+
+  // Deleting a project takes its order with it.
+  await controller.remove({ projectId: a })
+  check('deleting a project takes its order with it',
+    (await controller.baseline()).orders[a] === undefined)
+}
+
+// 13. setOrders diffs against storage, so an unchanged map writes nothing. Every
+//     landed write makes the follower re-project, so this is what keeps a drag's
+//     frame count proportional to the real change.
+{
+  const { controller, backend } = bench()
+  const a = (await controller.create({ title: 'a' })).project.projectId
+  await controller.setOrders({ orders: { [a]: ['s1', 's2'] } })
+
+  const unit = backend.units.get(PROJECT_DOMAIN_NAME)
+  const before = unit.tables.orders[a]
+  // Rewriting the identical map must leave the stored object untouched.
+  await controller.setOrders({ orders: { [a]: ['s1', 's2'] } })
+  const after = backend.units.get(PROJECT_DOMAIN_NAME).tables.orders[a]
+  check('an identical order is not rewritten', after === before,
+    after === before ? undefined : 'the record object was replaced')
+
+  await controller.setOrders({ orders: { [a]: ['s2', 's1'] } })
+  check('a reordered list IS written',
+    backend.units.get(PROJECT_DOMAIN_NAME).tables.orders[a].sessionIds.join(',') === 's2,s1',
+    JSON.stringify(backend.units.get(PROJECT_DOMAIN_NAME).tables.orders[a]))
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)

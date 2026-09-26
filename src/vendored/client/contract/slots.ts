@@ -250,6 +250,21 @@ export type WorkspaceBrowserInjected = {
      * official plugin mounting must supply both this and the verb.
      */
     expansions: HostObservable<Readonly<Record<string, boolean>>>
+    /**
+     * The recorded manual order of each caller-supplied group's members, keyed by
+     * group key.
+     *
+     * Mandatory as a hook for the same reason as `grouping` and `expansions`: the
+     * renderer binds hooks from the observable's identity, so a composition
+     * without this state supplies an observable answering an empty record.
+     *
+     * An **absent** key means the group has no manual order, so member position
+     * comes from recency. That is not the same as an empty list, and it is why
+     * recency mode is expressed by omitting a key rather than by storing one.
+     * Omitted by the caller, every group's order lives in this browser's own view
+     * store, exactly as upstream.
+     */
+    orders: HostObservable<Readonly<Record<string, readonly string[]>>>
   }
   /** Open the browser search and focus its input. */
   requestSearch: () => void
@@ -285,6 +300,20 @@ export type WorkspaceBrowserInjected = {
    * state supplies both, so the region never has to guess where to write.
    */
   setProjectExpanded?: ((projectId: string, expanded: boolean) => Promise<void>) | undefined
+  /**
+   * Replace the manual order of every caller-supplied project at once.
+   *
+   * Whole-map because the three callers need exactly that: a drop rewrites the
+   * target project and freezes the rest, switching to manual freezes all of them,
+   * and switching to recency discards them all. A project omitted from the map
+   * loses its record.
+   *
+   * Supplied together with the `orders` hook: a composition that owns this state
+   * supplies both, so the region never has to guess where to write.
+   */
+  setProjectOrders?:
+    | ((orders: Readonly<Record<string, readonly string[]>>) => Promise<void>)
+    | undefined
   /** Request the existing directory picker. */
   requestAddWorkspace: () => void
   /** Consume the directory-picker opening request. */

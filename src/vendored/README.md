@@ -87,13 +87,14 @@ source with a comment naming the seam.
 | `rows/WorkspaceBrowser.tsx` | `onCreate` drops its `if (group.workspaceId !== undefined)` guard and always expands (**behaviour change**, see below) | remove the guard again |
 | `rows/WorkspaceBrowser.tsx` | `onCreate` also files what a project row created, through the optional `assignSession` verb and the `beforeOpen` callback | re-apply the dispatch |
 | `rows/WorkspaceBrowser.tsx` | expansion is routed by key ownership: caller-supplied keys go through `setProjectExpanded` / `projectExpansion`, every other key through the view store (see below) | re-apply `isCallerOwned` / `recordExpansion` / `hasExpansion` and the merge in `expandedGroups` |
+| `rows/WorkspaceBrowser.tsx` | caller-supplied groups get the same two-mode member ordering the Workspace rows get, from `orderedProjects` + the `orders` hook; `commitSessionDrag` resolves a caller key after the Workspace lookup; `saveSessionOrder` and the order menu dispatch by key ownership (see below) | re-apply `orderedProjects` / `allProjectOrders`, the `?? groupingOverride?.find(...)` in `commitSessionDrag`, and the two dispatches |
 | `navigation.ts` | `startSession` takes an optional `beforeOpen` callback and threads it into `openWorkspace`, so a caller can act on the Session that lands (a project row files it). Omitted, the flow is unchanged | re-add the parameter and the pass-through |
 | `rows/WorkspaceBrowser.tsx` | rename/delete dialogs and the group drag take a `kind`-tagged row (`RowRequest`), so a caller-supplied project row drives the same affordances as a Workspace row; the header's add control runs `createProject` when the composition supplies one, and the dialog titles/labels switch on that kind | re-apply the dispatch, the two dialog blocks, and the drag wiring |
 | `rows/Rows.tsx` | labels the Ungrouped bucket by **empty label** rather than missing `workspaceId` | one-line change; a caller-supplied group has no Workspace id but does have a label |
 | `rows/Rows.tsx` | the row menu's delete label and the menu's aria-label follow `group.kind` | small change; a project's delete removes a record, not a registry entry |
 | `locales.ts` | project copy (`project.add`, `project.create.*`, `rename.project.title`, `delete.project*`, `field.projectName`, `create`, `actions.project.aria`) in both dictionaries | add the keys |
 | `navigation.ts` | `startSession` without a target resolves the Host's default Workspace instead of guessing (**behaviour change**, see below) | restore the shipped guess, or re-apply |
-| `index.ts` | `apply` takes an optional `groupingOverride`, an optional `ProjectActions`, and an optional `expansionsOverride`, forwarding all three into the inject face | re-add the parameters and the hook/verb fields |
+| `index.ts` | `apply` takes an optional `groupingOverride`, an optional `ProjectActions`, and optional `expansionsOverride` / `ordersOverride`, forwarding all into the inject face | re-add the parameters and the hook/verb fields |
 
 Two invariants keep these patches honest:
 
@@ -163,6 +164,33 @@ That was reverted: it left the caller's state in the official plugin's key space
 which is the coupling this design exists to remove. The measured account of that
 attempt is in `DESIGN.md` under L2c.
 
+**4. Caller-supplied groups order their members like Workspace rows do.**
+
+Shipped: member position inside a group comes from `orderedWorkspaces` /
+`orderedUngroupedSessionIds` / `orderedFlatSessionIds`, keyed by Workspace id, and
+`commitSessionDrag` looks a dragged row's group up among Workspace ids — so a
+caller-supplied group's key resolved to nothing and its drags committed no order.
+The rows could be dragged and showed an insertion marker; releasing did nothing.
+
+`orderedProjects` mirrors the same two-mode computation for caller-supplied
+groups, reading their order from the `orders` hook instead of the view store, and
+`commitSessionDrag` now resolves a caller key after the Workspace lookup. The
+three shipped orderings are untouched, and `activeSessionOrders` deliberately
+still excludes caller groups, so the two effects that reconcile blank-session
+pinning and manual orders never see them.
+
+The dispatch is by key ownership, as with expansion:
+
+  - a caller-owned key writes through `setProjectOrders`;
+  - every other key — a Workspace, and the Ungrouped bucket — keeps using
+    `setSessionOrder` and the view store, exactly as upstream.
+
+Because recency ordering needs no record (a member without one falls back to
+`updatedAt`), the mode's lifecycle is expressed in the caller's store too: picking
+manual writes every group's current order (freezing them), and picking recency
+writes an empty map (discarding them). Without the freeze the menu would read
+"manual" while an untouched group kept re-sorting itself.
+
 Nothing else inside `src/vendored/` should be edited. A behaviour change that is
 not one of the seams above belongs in `src/client/`.
 
@@ -195,6 +223,8 @@ browser probes that drive a live instance. They are run by hand rather than by
 | `scripts/probe-browser-console.mjs` | loads the UI and fails on any page error | needs a booted instance |
 | `scripts/probe-browser-flow.mjs` | creates a project, files a Session, reloads, deletes | needs a booted instance |
 | `scripts/probe-plugin-toggle.mjs` | boots **both** profiles itself and switches between them | spawns servers on a fixed port |
+| `scripts/probe-project-reorder.mjs` | drags one Session over another inside a project | spawns a server |
+| `scripts/probe-order-mode.mjs` | switches the order menu and reads the Host's stored records | spawns a server |
 
 `probe-plugin-toggle.mjs` owns its lifecycle deliberately: localStorage is scoped
 to an origin, and an origin includes the port, so running the two profiles on

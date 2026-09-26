@@ -1134,9 +1134,79 @@ key → 探针恒过。用**旧 bundle** 跑也"通过"，才暴露这一点。�
 **行为与官方一致**：折叠默认、记忆、当前会话所在组自动展开一次；
 新建项目默认折叠。
 
-### L2b — 拖拽归类
-- [ ] **会话跨组拖拽**（官方无此逻辑：官方不允许会话离开工作区，需新写）
-- [ ] 拖拽到项目行/未分组桶 → `assign` / `unassign`
+### L2b-1 — 项目成员排序（时间 / 手动）✅ 已完成（2026-09-26）
+
+**用户确认的现象**：项目内拖动排序**完全不工作**。
+
+**根因（读代码 + 反向对照实测）**：`commitSessionDrag` 里
+
+```ts
+const accountSessionIds = activeDrag.accountKey === UNGROUPED_KEY
+  ? ungroupedSessionIds
+  : workspaces.find(w => w.workspaceId === activeDrag.accountKey)?.sessionIds
+if (accountSessionIds === undefined) return      // ← 项目 key 在这里 return
+```
+
+且项目**完全不在排序管线里**（`orderedWorkspaces` 只遍历真实工作区，
+`groupBySource` 直接拿 `source.sessionIds`，不调用任何排序函数）。
+所以项目顺序原本 = `assignments` 的写入顺序，**既不按时间也不按手动**。
+
+**方案：给项目一条平行的排序管线**，只**调用**官方三个纯函数，不改它们：
+
+```tsx
+const orderedProjects = groupingOverride?.map((source) => {
+  const baseOrder = orderBy === 'updated'
+    ? orderByRecency(memberIds, list.byId)
+    : reconcileManualOrder(memberIds, projectOrders[source.key], list.byId, orderState)
+  return { ...source, sessionIds: pinCurrentBlank(baseOrder, ...) }
+})
+```
+
+然后 `groupingOverride={orderedProjects}` —— **一处改动**，因为 `SessionTree`
+内部其它 `groupingOverride` 用法都不关心顺序（逐个查过）。
+
+- [x] `spec.ts`：加 `orders` 表，**version 保持 1**
+- [x] `protocol.ts`：`setOrders`（**整表替换**）+ `baseline.orders`
+- [x] host：`@Remote('setOrders')`，**做 diff**（未变不写）+ 删项目级联
+- [x] client：`orders` 可观察量 + **乐观更新**
+- [x] `commitSessionDrag` 加一行 `?? groupingOverride?.find(...)`
+- [x] `saveSessionOrder` / 菜单切换按 **key 归属**分派
+- [x] 校验：`pnpm check` **252 项全绿**（host 57 + client 60）
+- [x] **实测**：项目内拖动落位 + 自动切手动 + 刷新存活；
+      菜单切手动冻结、切时间丢弃（读 Host 落盘文件确认）
+
+**"冻结"是什么**（用户问过）：官方 `setOrderBy` 在时间→手动时把**当前渲染顺序**
+抄进 `sessionOrderByAccount`。因为 `reconcileManualOrder` 对**没有保存顺序**的成员
+用 `orderByRecency` 兜底 → **"手动模式 + 无保存顺序" ≡ 时间模式**。不冻结的话，
+菜单显示"手动"而项目仍按时间重排。切回时间则**丢弃**（官方破坏性语义，照做）。
+
+**项目顺序为什么必须存我们自己的领域**：`retainAccountKeys` **不只剪
+`groupExpansion`**：
+
+```ts
+d.groupExpansion = ...filter(retained)
+d.sessionOrderByAccount = ...filter(retained)   // ← 这个也剪
+```
+
+项目 key 不在官方名单 → 存共享 store 会被官方挂载剪掉（L2d 同款坑）。
+**未分组继续用共享 store**（`UNGROUPED_KEY` 在名单里），行为一字不改。
+
+**反向对照（探针有效性证明）**：`probe-project-reorder.mjs` 在**旧 bundle** 上
+3 项全失败（顺序不变、模式仍 `updated`）——**复现了用户报的现象**；
+新 bundle 全通过。
+
+**我修掉的两个探针自身缺陷**（都是假信号）：
+
+1. `[data-row-key^="session:"]` **匹配所有组的行** → 拖到了别的组的行
+2. `dragTo` 默认落**行中心**，而 `rowHalf()` 判定中心以下为 `after`
+   → 第 2 行拖到第 1 行中心 = "放在第 1 行之后" = **它本来就在的位置**，
+   于是"什么也没发生"，看着像功能坏了。改成落**目标行顶边**。
+
+### L2b-2 — 跨组归属（拖进 / 拖出 / 项目间互拖）
+- [ ] 路径 A：拖到**项目栏** = 放进项目（时间模式按时间落位；手动模式插最前）
+- [ ] 路径 B：拖到**会话行** = 官方落行逻辑 + 自动 assign 到目标项目
+- [ ] 拖出到未分组
+- [ ] 组级高亮 CSS
 
 ### L3 — 行内动作适配
 - [ ] 会话行感知所属项目（hover 卡 / 菜单上下文）

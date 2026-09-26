@@ -46,6 +46,15 @@ export interface ProjectBaseline {
    * that distinction; a default-filled map would erase it.
    */
   readonly expansions: Readonly<Record<string, boolean>>
+  /**
+   * Project id → the manual order of its members.
+   *
+   * Only projects with a recorded order appear. A missing entry is not "empty":
+   * it means the project has no manual order, so the browser derives member
+   * position from recency — which is exactly the state recency ordering wants,
+   * and why this map is written whole rather than per member.
+   */
+  readonly orders: Readonly<Record<string, readonly string[]>>
 }
 
 /** One ordered change after a generation's baseline. */
@@ -129,4 +138,25 @@ export interface ProjectSetExpandedRequest {
 export interface ProjectExpansionValue {
   readonly projectId: string
   readonly expanded: boolean
+}
+
+/**
+ * `setOrders` request: replace the manual order of every project at once.
+ *
+ * Whole-map rather than per-project because the three callers all need the same
+ * thing: a drop rewrites one project and freezes the rest, switching to manual
+ * freezes all of them, and switching to recency discards them all. A project
+ * omitted from `orders` has its record removed, which is what makes recency mode
+ * mean "no manual order" rather than "stale manual order".
+ *
+ * A project id the Host does not know is dropped rather than refused: it can only
+ * come from a race with a delete, and failing the whole write would turn that
+ * race into a lost drag.
+ */
+export interface ProjectSetOrdersRequest {
+  readonly orders: Readonly<Record<string, readonly string[]>>
+}
+/** `setOrders` result: the map the Host actually holds. */
+export interface ProjectOrdersValue {
+  readonly orders: Readonly<Record<string, readonly string[]>>
 }

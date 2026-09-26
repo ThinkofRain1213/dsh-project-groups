@@ -32,8 +32,9 @@ import {
   PROJECT_NAMESPACE, PROJECT_SERVICE_KEY,
   type ProjectAssignRequest, type ProjectAssignmentValue, type ProjectBaseline,
   type ProjectCreateRequest, type ProjectDeleteRequest, type ProjectExpansionValue,
-  type ProjectFollowFrame, type ProjectOrderValue, type ProjectRenameRequest,
-  type ProjectRenameValue, type ProjectReorderRequest, type ProjectSetExpandedRequest,
+  type ProjectFollowFrame, type ProjectOrderValue, type ProjectOrdersValue,
+  type ProjectRenameRequest, type ProjectRenameValue, type ProjectReorderRequest,
+  type ProjectSetExpandedRequest, type ProjectSetOrdersRequest,
   type ProjectUnassignRequest, type ProjectUnassignValue,
   type ProjectValue, type ProjectValueResult,
 } from './protocol.ts'
@@ -147,6 +148,11 @@ export class ProjectController extends TypertRemoteService {
       expansions: Object.fromEntries(
         [...domain.table('expansions').entries()].map(([projectId, record]) => [projectId, record.expanded]),
       ),
+      // Likewise only recorded rows: an absent project has no manual order, so
+      // the browser derives member position from recency.
+      orders: Object.fromEntries(
+        [...domain.table('orders').entries()].map(([projectId, record]) => [projectId, [...record.sessionIds]]),
+      ),
     }
   }
 
@@ -186,11 +192,12 @@ export class ProjectController extends TypertRemoteService {
   }
 
   /**
-   * Remove one project, every assignment onto it, and its expansion record.
+   * Remove one project, every assignment onto it, and its presentation records.
    *
    * Sessions are not touched: an assignment is this plugin's own record, and a
-   * Session without one is simply Ungrouped. The expansion goes with the project
-   * because it is keyed by project id and would otherwise be unreachable state.
+   * Session without one is simply Ungrouped. The expansion and order go with the
+   * project because both are keyed by project id and would otherwise be
+   * unreachable state.
    * @param request - target project.
    */
   @Remote('delete')
@@ -201,6 +208,7 @@ export class ProjectController extends TypertRemoteService {
     }
     await domain.table('projects').delete(request.projectId)
     await domain.table('expansions').delete(request.projectId)
+    await domain.table('orders').delete(request.projectId)
     await domain.global.set({ projectIds: this.order().filter(id => id !== request.projectId) })
   }
 
@@ -275,6 +283,46 @@ export class ProjectController extends TypertRemoteService {
     }
     await domain.table('expansions').put(request.projectId, { expanded: request.expanded })
     return { projectId: request.projectId, expanded: request.expanded }
+  }
+
+  /**
+   * Replace the manual order of every project.
+   *
+   * Whole-map, because the callers need exactly that: a drop rewrites the target
+   * project and freezes the rest, switching to manual freezes all of them, and
+   * switching to recency discards them all. A project absent from the request has
+   * its record **deleted** — that is what makes recency mode mean "no manual
+   * order" rather than "a stale one".
+   *
+   * Writes are diffed against what is stored. Every landed write makes the
+   * follower re-project, so skipping unchanged projects keeps a frame's cost
+   * proportional to the real change rather than to the number of projects.
+   *
+   * Unknown project ids are dropped, not refused: they can only come from a race
+   * with a delete, and refusing would turn that race into a lost drag.
+   * @param request - the complete order map to store.
+   * @returns the map the Host actually holds.
+   */
+  @Remote('setOrders')
+  async setOrders(request: ProjectSetOrdersRequest): Promise<ProjectOrdersValue> {
+    const domain = await this.ready()
+    const projects = domain.table('projects')
+    const orders = domain.table('orders')
+    const next = Object.fromEntries(
+      Object.entries(request.orders)
+        .filter(([projectId]) => projects.get(projectId) !== undefined)
+        .map(([projectId, sessionIds]) => [projectId, [...sessionIds]]),
+    )
+    for (const projectId of [...orders.keys()]) {
+      if (next[projectId] === undefined) await orders.delete(projectId)
+    }
+    for (const [projectId, sessionIds] of Object.entries(next)) {
+      const stored = orders.get(projectId)?.sessionIds
+      const unchanged = stored !== undefined && stored.length === sessionIds.length
+        && stored.every((id, index) => id === sessionIds[index])
+      if (!unchanged) await orders.put(projectId, { sessionIds })
+    }
+    return { orders: next }
   }
 
   /**

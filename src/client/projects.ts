@@ -38,6 +38,7 @@ export interface ProjectRemote {
   assign(request: { sessionId: string; projectId: string }): Promise<RemoteOutcome<unknown>>
   unassign(request: { sessionId: string }): Promise<RemoteOutcome<unknown>>
   setExpanded(request: { projectId: string; expanded: boolean }): Promise<RemoteOutcome<unknown>>
+  setOrders(request: { orders: Readonly<Record<string, readonly string[]>> }): Promise<RemoteOutcome<unknown>>
 }
 
 /** Minimal result shape the mounted namespace answers with. */
@@ -58,12 +59,19 @@ interface ProjectState {
    * opens the group holding the current Session only while the entry is absent.
    */
   readonly expansions: Readonly<Record<string, boolean>>
+  /**
+   * Project id → the manual order of its members. An **absent** entry means the
+   * project has no manual order, so member position comes from recency — which is
+   * exactly what recency ordering wants.
+   */
+  readonly orders: Readonly<Record<string, readonly string[]>>
 }
 
 const EMPTY_STATE: ProjectState = Object.freeze({
   projects: Object.freeze([]),
   assignments: Object.freeze({}),
   expansions: Object.freeze({}),
+  orders: Object.freeze({}),
 })
 
 /** Unwrap one Remote outcome, turning a failure into a thrown error. */
@@ -115,6 +123,24 @@ export class ProjectModel {
    */
   readonly expansions: HostObservable<Readonly<Record<string, boolean>>> = {
     getSnapshot: () => this.state.expansions,
+    subscribe: (listener) => {
+      this.listeners.add(listener)
+      return () => { this.listeners.delete(listener) }
+    },
+  }
+
+  /**
+   * The recorded manual order of each project's members.
+   *
+   * Served from this plugin's own Host domain for the same reason as
+   * {@link expansions}: the browser's view store is shared with the official
+   * plugin, whose mount prunes every key that is not a Workspace id.
+   *
+   * Only projects with a recorded order appear. A missing entry means "derive
+   * position from recency", which is not the same as an empty list.
+   */
+  readonly orders: HostObservable<Readonly<Record<string, readonly string[]>>> = {
+    getSnapshot: () => this.state.orders,
     subscribe: (listener) => {
       this.listeners.add(listener)
       return () => { this.listeners.delete(listener) }
@@ -227,6 +253,40 @@ export class ProjectModel {
     }
   }
 
+  /**
+   * Replace the manual order of every project.
+   *
+   * Optimistic like {@link setExpanded}, and for the same reason: a drop has to
+   * land in the frame the pointer is released in, or the row visibly springs back
+   * before the Host's frame arrives. The Host stays authoritative — its `follow`
+   * frame replaces this state wholesale — so a refusal is corrected rather than
+   * left wrong.
+   *
+   * A project omitted from `orders` loses its record, which is how recency mode
+   * discards manual order.
+   * @param orders - the complete map to store.
+   */
+  async setOrders(orders: Readonly<Record<string, readonly string[]>>): Promise<void> {
+    const previous = this.state.orders
+    const next = Object.freeze(Object.fromEntries(
+      Object.entries(orders).map(([projectId, sessionIds]) => [projectId, Object.freeze([...sessionIds])]),
+    ))
+    if (sameOrders(previous, next)) return
+    this.state = Object.freeze({ ...this.state, orders: next })
+    for (const listener of [...this.listeners]) listener()
+    try {
+      unwrap(await this.remote.setOrders({ orders: next }), 'set project orders')
+    } catch (error: unknown) {
+      // Only revert when the Host has not already answered with something newer:
+      // a frame that arrived meanwhile is more current than this rollback.
+      if (sameOrders(this.state.orders, next)) {
+        this.state = Object.freeze({ ...this.state, orders: previous })
+        for (const listener of [...this.listeners]) listener()
+      }
+      throw error
+    }
+  }
+
   private acceptFrame(frame: ProjectFollowFrame): void {
     if (frame.type === 'baseline') {
       this.accept(frame.value)
@@ -241,7 +301,16 @@ export class ProjectModel {
   private accept(baseline: ProjectBaseline): void {
     const projects = Object.freeze(baseline.projects.map(project => Object.freeze({ ...project })))
     const assignments = Object.freeze({ ...baseline.assignments })
-    const expansions = Object.freeze({ ...baseline.expansions })
+    const expansions = Object.freeze({ ...baseline.expansions ?? {} })
+    // Read through `?? {}` rather than assuming the field: a baseline missing it
+    // degrades to "no manual order" (members fall back to recency) instead of
+    // throwing inside the sidebar's render path. Both halves ship together, so
+    // this is not a normal state — it is the difference between a wrong order and
+    // a dead sidebar.
+    const orders = Object.freeze(Object.fromEntries(
+      Object.entries(baseline.orders ?? {})
+        .map(([projectId, sessionIds]) => [projectId, Object.freeze([...sessionIds])]),
+    ))
     // Compare by value: the Host re-projects on every change, and a frame that
     // carries the same state must not invalidate the snapshot the browser
     // compares by identity.
@@ -249,10 +318,11 @@ export class ProjectModel {
       sameProjects(this.state.projects, projects)
       && sameAssignments(this.state.assignments, assignments)
       && sameExpansions(this.state.expansions, expansions)
+      && sameOrders(this.state.orders, orders)
     ) {
       return
     }
-    this.state = Object.freeze({ projects, assignments, expansions })
+    this.state = Object.freeze({ projects, assignments, expansions, orders })
     this.derived = undefined
     for (const listener of [...this.listeners]) listener()
   }
@@ -314,4 +384,24 @@ function sameExpansions(
   const leftKeys = Object.keys(left)
   if (leftKeys.length !== Object.keys(right).length) return false
   return leftKeys.every(key => left[key] === right[key])
+}
+
+/**
+ * Value equality over the order map.
+ *
+ * Order is the whole point of the value, so the comparison is positional: a
+ * reordered project differs even though it holds the same members.
+ */
+function sameOrders(
+  left: Readonly<Record<string, readonly string[]>>,
+  right: Readonly<Record<string, readonly string[]>>,
+): boolean {
+  const leftKeys = Object.keys(left)
+  if (leftKeys.length !== Object.keys(right).length) return false
+  return leftKeys.every((key) => {
+    const a = left[key]
+    const b = right[key]
+    if (b === undefined || a === undefined || a.length !== b.length) return false
+    return a.every((id, index) => id === b[index])
+  })
 }

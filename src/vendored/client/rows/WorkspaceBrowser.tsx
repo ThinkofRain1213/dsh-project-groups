@@ -467,6 +467,7 @@ function SessionTree({
     const accountSessionIds = activeDrag.accountKey === UNGROUPED_KEY
       ? ungroupedSessionIds
       : workspaces.find(workspace => workspace.workspaceId === activeDrag.accountKey)?.sessionIds
+        ?? groupingOverride?.find(source => source.key === activeDrag.accountKey)?.sessionIds
     if (accountSessionIds === undefined) return
     const renderedSessions = collapsedSessionRows(group.sessions, sessionLimits[group.key]).rows
     const nextOrder = sessionDragOrder(accountSessionIds, renderedSessions, activeDrag, over)
@@ -1031,7 +1032,9 @@ export function WorkspaceBrowser({
   reorderProject,
   assignSession,
   setProjectExpanded,
+  setProjectOrders,
   useExpansions,
+  useOrders,
   renderSlot,
   t,
 }: WorkspaceBrowserProps) {
@@ -1056,6 +1059,10 @@ export function WorkspaceBrowser({
   // no such state supplies an observable answering an empty record, and with no
   // `setProjectExpanded` verb every key resolves to this browser's view store.
   const projectExpansion = useExpansions(expansion => expansion)
+  // Manual order the caller owns, keyed by their own group keys. Same shape as
+  // the expansion seat: a composition without it supplies an empty record, and
+  // with no `setProjectOrders` verb every key resolves to the view store.
+  const projectOrders = useOrders(orders => orders)
   // The resolved name, not `t`, is the memo dependency: the bound seat keeps
   // its identity across a language switch.
   const defaultWorkspaceName = t('workspace.defaultName')
@@ -1127,6 +1134,38 @@ export function WorkspaceBrowser({
       ),
     }
   }), [currentBlank, list.byId, orderBy, orderState, sessionOrderByAccount, workspaces])
+  // Caller-supplied groups get the same two-mode ordering the Workspace rows get,
+  // from the caller's own order record rather than the shared view store — the
+  // official plugin prunes that store's non-Workspace keys on mount.
+  //
+  // A group with no recorded order falls to `reconcileManualOrder`'s recency
+  // fallback, which is exactly what recency ordering wants and why recency mode
+  // stores nothing.
+  const orderedProjects = useMemo(() => groupingOverride === undefined
+    ? undefined
+    : groupingOverride.map((source) => {
+      const memberIds = source.sessionIds
+      const baseOrder = orderBy === 'updated'
+        ? orderByRecency(memberIds, list.byId)
+        : reconcileManualOrder(memberIds, projectOrders[source.key], list.byId, orderState)
+      return {
+        ...source,
+        sessionIds: pinCurrentBlank(
+          baseOrder,
+          currentBlank !== undefined && memberIds.includes(currentBlank) ? currentBlank : undefined,
+        ),
+      }
+    }), [currentBlank, list.byId, orderBy, orderState, projectOrders, groupingOverride])
+  // Every project's currently rendered order. A drop writes this whole map with
+  // the target project replaced: in recency mode that freezes every project at
+  // once, which is what switching to manual has to do for the mode to mean
+  // anything (`reconcileManualOrder` falls back to recency without a record).
+  const allProjectOrders = useCallback(
+    (): Record<string, readonly SessionId[]> => Object.fromEntries(
+      (orderedProjects ?? []).map(source => [source.key, [...source.sessionIds]]),
+    ),
+    [orderedProjects],
+  )
   const orderedUngroupedSessionIds = useMemo(() => {
     const baseOrder = orderBy === 'updated'
       ? orderByRecency(ungroupedMemberIds, list.byId)
@@ -1195,7 +1234,24 @@ export function WorkspaceBrowser({
     workspaceReady,
   ])
   const saveSessionOrder = (accountKey: string, order: readonly string[]): void => {
-    actions.setSessionOrder(accountKey, order, activeSessionOrders)
+    // A caller-supplied group's order is the caller's state: it goes to their
+    // store, never to the view store, which the official plugin prunes. Every
+    // other key — a Workspace, and the Ungrouped bucket — keeps using the view
+    // store exactly as upstream.
+    const callerOwned = setProjectOrders !== undefined
+      && (groupingOverride?.some(source => source.key === accountKey) ?? false)
+    if (!callerOwned) {
+      actions.setSessionOrder(accountKey, order, activeSessionOrders)
+      return
+    }
+    // One write covers both modes: the whole map freezes every project at its
+    // current order, and the target is replaced with the drop's result. In manual
+    // mode the rest of the map is already what is stored, so nothing else moves.
+    const next = { ...allProjectOrders(), [accountKey]: [...order] }
+    if (orderBy === 'updated') actions.setOrderBy('manual', activeSessionOrders)
+    void setProjectOrders?.(next).catch((reason: unknown) => {
+      console.warn('project order rejected:', reason)
+    })
   }
   // The query outlives the tree and the input (both wide-only) so collapsing
   // does not silently drop an in-progress filter.
@@ -1552,7 +1608,17 @@ export function WorkspaceBrowser({
               orderBy={orderBy}
               archivedFilter={archivedFilter}
               onGroupPick={actions.setGroupBy}
-              onOrderPick={(mode) => { actions.setOrderBy(mode, activeSessionOrders) }}
+              onOrderPick={(mode) => {
+                actions.setOrderBy(mode, activeSessionOrders)
+                // Caller-owned orders follow the same lifecycle as the view
+                // store's: manual freezes what is on screen (a project with no
+                // record would otherwise keep re-sorting by recency, making the
+                // menu's "manual" a lie), and recency discards it.
+                if (setProjectOrders === undefined) return
+                void setProjectOrders(mode === 'manual' ? allProjectOrders() : {}).catch((reason: unknown) => {
+                  console.warn('project order rejected:', reason)
+                })
+              }}
               onArchivedFilterPick={actions.setArchivedFilter}
               t={t}
             />
@@ -1675,7 +1741,7 @@ export function WorkspaceBrowser({
                 reorderProject={reorderProject}
                 assignSession={assignSession}
                 workspaces={orderedWorkspaces}
-                groupingOverride={groupingOverride}
+                groupingOverride={orderedProjects}
                 ungroupedSessionIds={orderedUngroupedSessionIds}
                 workspaceReady={workspaceReady}
                 nestWorkspaces={groupBy === 'workspace-tree'}

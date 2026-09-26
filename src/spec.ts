@@ -9,7 +9,7 @@
  * registry — parallel, never mixed, so disabling this plugin leaves the official
  * data exactly as it was.
  *
- * ## The three tables
+ * ## The four tables
  *
  * `projects` is keyed by project id and holds the display title. `assignments`
  * is keyed by **session id**, which is what makes "a session belongs to at most
@@ -17,13 +17,19 @@
  * value, so a second assignment replaces the first. Moving a session between
  * projects is a single write, and removing it from its project is a delete.
  *
- * `expansions` is keyed by project id and holds whether the row is open. It is
+ * `expansions` and `orders` are keyed by project id and hold how the row is
+ * presented: whether it is open, and the manual order of its members. They are
  * this plugin's own state rather than the browser's, because the browser's view
  * store is **shared with the official plugin** — both persist to
  * `dsh.workspace.view.v5`, and the official mount prunes every key that is not a
- * Workspace id. A project's expansion kept there is deleted the first time the
+ * Workspace id (`retainAccountKeys` prunes `groupExpansion` and
+ * `sessionOrderByAccount` alike). State kept there is deleted the first time the
  * official sidebar mounts, which is exactly what happens when this plugin is
  * switched off. See `src/vendored/README.md`.
+ *
+ * The Ungrouped bucket is deliberately not in `orders`: its key is in the
+ * official retention list, so its order stays in the shared store and its
+ * behaviour is upstream's, unchanged.
  *
  * `global.projectIds` is the display order, mirroring how the official registry
  * keeps `workspaceIds`. It is declared at version 1 rather than added later, so
@@ -89,6 +95,24 @@ export const expansionRecord = z.object({
 export type ExpansionRecord = z.infer<typeof expansionRecord>
 
 /**
+ * Durable shape of one project's manual session order. The key is the project id.
+ *
+ * This mirrors the browser view store's `sessionOrderByAccount`, which the
+ * official plugin also writes to — and prunes. Keeping a project's order here
+ * rather than there is what makes it survive the official sidebar mounting, the
+ * same reason `expansions` lives here.
+ *
+ * Only the manual order is stored: under recency ordering a member's position is
+ * derived from its `updatedAt`, so there is nothing to record.
+ */
+export const orderRecord = z.object({
+  sessionIds: z.array(z.string()),
+})
+
+/** One stored manual-order record. */
+export type OrderRecord = z.infer<typeof orderRecord>
+
+/**
  * Domain name. `UNIT_NAME_RE` (`/^[a-z][a-z0-9_]*$/`) makes this both the
  * backend unit name and the storage file-name segment, so it is snake_case
  * rather than the camelCase the wire namespace uses.
@@ -116,5 +140,6 @@ export const projectDomainSpec = defineDomain({
     projects: domainTable<ProjectId, ProjectRecord>(projectRecord),
     assignments: domainTable<SessionId, AssignmentRecord>(assignmentRecord),
     expansions: domainTable<ProjectId, ExpansionRecord>(expansionRecord),
+    orders: domainTable<ProjectId, OrderRecord>(orderRecord),
   },
 })

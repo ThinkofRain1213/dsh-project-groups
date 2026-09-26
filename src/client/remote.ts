@@ -96,6 +96,7 @@ export const projectGroupsRemote: TypertRemoteContribution = {
     unary('assign', ['request'], 'ProjectAssignmentValue'),
     unary('unassign', ['request'], 'ProjectUnassignValue'),
     unary('setExpanded', ['request'], 'ProjectExpansionValue'),
+    unary('setOrders', ['request'], 'ProjectOrdersValue'),
     {
       id: `dsh-project-groups#${PROJECT_NAMESPACE}/follow`,
       service: PROJECT_SERVICE_KEY,

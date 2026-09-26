@@ -67,6 +67,8 @@
     "verify:project-host": "node scripts/verify-project-host.mjs",
     "verify:host-import": "node scripts/probe-host-import.mjs lib/index.js",
     "probe:plugin-toggle": "node scripts/probe-plugin-toggle.mjs",
+    "probe:project-reorder": "node scripts/probe-project-reorder.mjs",
+    "probe:order-mode": "node scripts/probe-order-mode.mjs",
     "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {
