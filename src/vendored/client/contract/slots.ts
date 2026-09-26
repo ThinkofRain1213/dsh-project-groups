@@ -253,6 +253,15 @@ export type WorkspaceBrowserInjected = {
   deleteProject?: ((id: string) => Promise<void>) | undefined
   /** Move one caller-supplied project before another; absent anchor appends. */
   reorderProject?: ((id: string, beforeId?: string) => Promise<void>) | undefined
+  /**
+   * File one Session under one project, replacing any previous filing.
+   *
+   * A project row's ＋ calls this for the Session it creates; every other row
+   * does not, because Ungrouped means precisely "filed under nothing". Absent,
+   * a project row's ＋ still creates a Session — in the default Workspace — but
+   * leaves it unfiled, which is the behaviour before project rows existed.
+   */
+  assignSession?: ((sessionId: SessionId, projectId: string) => Promise<void>) | undefined
   /** Request the existing directory picker. */
   requestAddWorkspace: () => void
   /** Consume the directory-picker opening request. */
@@ -263,10 +272,13 @@ export type WorkspaceBrowserInjected = {
   dismissForkError: () => void
   /**
    * Start a New Session in a Workspace: reuse-or-create its blank session and
-   * open it; without an explicit workspace, inherit the current Session
-   * Workspace, then the recent Workspace, or clear into the New Session view.
+   * open it; without an explicit workspace, resolve the Host's default Workspace.
+   * @param beforeOpen - optional synchronous preparation for the Session that
+   * lands, run once it exists and before it becomes the main view; see
+   * `UiWorkspace.startSession`. A project row uses it to file the Session it
+   * just created.
    */
-  startSession: (workspaceId?: WorkspaceId) => void
+  startSession: (workspaceId?: WorkspaceId, beforeOpen?: (sessionId: SessionId) => void) => void
   /** Open a real Session. */
   open: (sessionId: SessionId) => void
   /**

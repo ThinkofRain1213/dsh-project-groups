@@ -59,8 +59,13 @@ export interface UiWorkspace {
    * refuses is shown through the Workspace notice and leaves the selection as it was.
    * @param workspaceId - explicit target; absent targets the Host's default
    * Workspace, and does nothing when there is no default to resolve.
+   * @param beforeOpen - optional synchronous preparation for the Session that
+   * lands, run once it exists and before it becomes the main view. Best-effort:
+   * a flow superseded mid-navigation never opens its Session, so this does not
+   * run — which is the correct outcome for an abandoned click, since nothing was
+   * opened to prepare. Absent, the flow is the fire-and-forget it always was.
    */
-  startSession(workspaceId?: WorkspaceId): void
+  startSession(workspaceId?: WorkspaceId, beforeOpen?: (sessionId: SessionId) => void): void
   /**
    * Archive a Session and clear it when it is the current selection.
    * @param sessionId - Session to archive.
@@ -220,11 +225,11 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     await this.sessions.fork({ sessionId, increaseTitle: true })
   }
 
-  startSession(workspaceId?: WorkspaceId): void {
+  startSession(workspaceId?: WorkspaceId, beforeOpen?: (sessionId: SessionId) => void): void {
     // An explicit target is a real Workspace row asking for its own New
     // Session: unchanged.
     if (workspaceId !== undefined) {
-      this.openNewSessionIn(workspaceId)
+      this.openNewSessionIn(workspaceId, beforeOpen)
       return
     }
     // No target means every unscoped entry: the sidebar shell's New Session
@@ -233,12 +238,15 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     // the Host's default Workspace. The shipped behaviour guessed instead —
     // the current Session's Workspace, then the most recently used one — which
     // made the destination depend on whatever the user last did.
-    void this.startSessionInDefaultWorkspace()
+    void this.startSessionInDefaultWorkspace(beforeOpen)
   }
 
   /** Open the New Session flow in one already-known Workspace. */
-  private openNewSessionIn(workspaceId: WorkspaceId): void {
-    void this.openWorkspace(workspaceId).catch(
+  private openNewSessionIn(
+    workspaceId: WorkspaceId,
+    beforeOpen?: (sessionId: SessionId) => void,
+  ): void {
+    void this.openWorkspace(workspaceId, beforeOpen).catch(
       (reason: unknown) => { console.warn('new session failed:', reason) },
     )
   }
@@ -258,11 +266,15 @@ class UiWorkspaceService extends Service implements UiWorkspace {
    * ineligible for one) the click does nothing at all. It deliberately does not
    * fall back to another Workspace, and does not clear the current selection
    * the way the shipped guess did.
+   * @param beforeOpen - preparation for the Session that lands; see
+   * `startSession`. Skipped along with the whole flow when there is no default.
    */
-  private async startSessionInDefaultWorkspace(): Promise<void> {
+  private async startSessionInDefaultWorkspace(
+    beforeOpen?: (sessionId: SessionId) => void,
+  ): Promise<void> {
     const prepared = await this.initializeDefaultWorkspace(this.lifetime.signal)
     if (prepared === undefined) return
-    this.openNewSessionIn(prepared.workspaceId)
+    this.openNewSessionIn(prepared.workspaceId, beforeOpen)
   }
 
   async archiveSession(sessionId: SessionId, options: { readonly stopActivity?: boolean } = {}): Promise<void> {

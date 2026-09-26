@@ -977,11 +977,46 @@ L2 定策略（倾向"最后点的赢"）。
 `nodeLinker: hoisted`（`profile.ts` 明确注释）让树外插件共享安装实例的 cordis/zod，
 所以不需要把它们打进产物。
 
-### L2 — 拖拽归类
-- [x] `assignments` 表（L1-2 已建，key = sessionId → 一个会话只属一个项目）
-- [x] Remote：`assign` / `unassign`（L1-2 已通）
-- [ ] 项目行 ＋ 的 `assign(sessionId, projectId)` 接缝
+### L2a — 项目行 ＋ 归类 ✅ 已完成（2026-09-26）
+
+**目标**：点项目行的 ＋，新会话归到该项目；点未分组的 ＋，不归类。
+
+**做法**：`startSession` 加**可选** `beforeOpen` 回调，透传进 `openWorkspace`
+（那里本来就收 `sessionId`），项目行的 `onCreate` 用它调 `assignSession`。
+
+**为什么是回调而不是改返回值**：`startSession` 是 fire-and-forget（`void`），
+改成返回 Promise 会波及 5 个现有调用点（sidebar 壳 / Ctrl+N / schedule / preset），
+而 `openWorkspace` 已有 `beforeOpen` 接缝；可选参数不传时行为完全不变。
+
+**"最后点的赢"是 `put` 覆盖写的自然结果**，无需额外代码：
+
+```
+未分组 ＋ → 建空白 A（未 assign）
+项目 abc ＋ → 复用 A → assign(A, abc)    ← A 归 abc
+项目 xyz ＋ → 复用 A → assign(A, xyz)    ← A 移给 xyz
+```
+
+- [x] `navigation.ts`：`startSession(workspaceId?, beforeOpen?)` + 透传
+- [x] `contract/slots.ts`：注入面加 `assignSession?`
+- [x] `index.ts`：`ProjectActions.assignSession` + 透传
+- [x] `WorkspaceBrowser.tsx`：`onCreate` 按 `kind === 'project'` 分派
+- [x] `src/client/index.ts`：接到 `ProjectModel.assign()`
+- [x] 校验：`verify-new-session.mjs` 补 4 项（回调收到正确 id、显式目标、省略时不变、无默认不回调）
+- [x] **实测**：`pnpm check` 共 **186 项断言全绿**；
+      浏览器实测：`未分组 ＋` 后项目仍为 0；`项目 ＋` 后会话入项目且未分组消失；刷新后仍在
+
+**已知行为**：`reuseOrCreateBlank` 会复用同工作区的空白会话（发消息即固化）。
+所以"未分组 ＋"不会让未分组计数 +1——它复用了那个空白会话。
+探针已按此语义断言，并注明原因。
+
+**一项探针缺陷（已修）**：我最初把"会话不在未分组"写成
+`(section?.sessionCount ?? 0) === 0`，而**会话全归类后未分组组根本不渲染**，
+于是这个断言恒真——是假阳性。现在未分组的**存在性**与**计数**分开断言，
+且反向测试（未分组 ＋ 不归类）**先跑**，因为那是唯一能证伪"无条件 assign"的用例。
+
+### L2b — 拖拽归类
 - [ ] **会话跨组拖拽**（官方无此逻辑：官方不允许会话离开工作区，需新写）
+- [ ] 拖拽到项目行/未分组桶 → `assign` / `unassign`
 
 ### L3 — 行内动作适配
 - [ ] 会话行感知所属项目（hover 卡 / 菜单上下文）

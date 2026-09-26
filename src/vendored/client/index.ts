@@ -108,6 +108,8 @@ export interface ProjectActions {
   renameProject: (id: string, title: string) => Promise<void>
   deleteProject: (id: string) => Promise<void>
   reorderProject: (id: string, beforeId?: string) => Promise<void>
+  /** File one Session under one project; a project row's ＋ uses this. */
+  assignSession: (sessionId: SessionId, projectId: string) => Promise<void>
 }
 
 /**
@@ -264,7 +266,7 @@ export function apply(
   const browserInjected = (): WorkspaceBrowserInjected => ({
     // Explicit group actions keep their target; unscoped New Session inherits
     // the current Session Workspace before the recent-Workspace fallback.
-    startSession: (workspaceId) => { uiWorkspace.startSession(workspaceId) },
+    startSession: (workspaceId, beforeOpen) => { uiWorkspace.startSession(workspaceId, beforeOpen) },
     open: openSession,
     searchSessions,
     searchResultLimit: sessions.searchResultLimit,
@@ -291,6 +293,7 @@ export function apply(
       renameProject: projectActions.renameProject,
       deleteProject: projectActions.deleteProject,
       reorderProject: projectActions.reorderProject,
+      assignSession: projectActions.assignSession,
     }),
     hooks: { directoryFlow: browserFlowSource, hostInfo, workspaceShortcuts: shortcutControls.state, shortcuts: ctx.shortcuts.catalog, grouping },
   })

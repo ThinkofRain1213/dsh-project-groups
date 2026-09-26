@@ -69,6 +69,7 @@ const projectActions: ProjectActions = {
   renameProject: async (id, title) => { await requireModel().rename(id, title) },
   deleteProject: async (id) => { await requireModel().remove(id) },
   reorderProject: async (id, beforeId) => { await requireModel().reorder(id, beforeId) },
+  assignSession: async (sessionId, projectId) => { await requireModel().assign(sessionId, projectId) },
 }
 
 /** @returns the started model, or throws when the Remote namespace is absent. */

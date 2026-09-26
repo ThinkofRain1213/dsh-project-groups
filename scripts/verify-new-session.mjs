@@ -86,7 +86,13 @@ function bench({ items = [], sessions = {}, initializeDefault } = {}) {
     }),
     // `replaceMain` resolves the retained target through this before opening.
     subagentAddress: id => id,
-    create: async opts => { recording.created.push(opts); return sid(opts.sessionId ?? 'new') },
+    create: async opts => {
+      // Record both the request and the id handed back, so an assertion can check
+      // that the id the caller saw is the one creation produced.
+      const created = sid(opts.sessionId ?? `new-${recording.created.length + 1}`)
+      recording.created.push({ ...opts, sessionId: created })
+      return created
+    },
     fork: async () => sid('fork'),
     using: async () => ({ ok: true, value: undefined }),
     search: async () => ({ ok: true, value: { items: [], hasMore: false } }),
@@ -227,6 +233,61 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 20))
   b.uiWorkspace.startSession()
   await tick()
   check('each click resolves the default again (no stale cache)', resolutions === 2, `resolved ${resolutions}x`)
+}
+
+// 8. The optional `beforeOpen` callback hands the caller the Session that
+//    landed, which is how a project row files what it just created. Omitted, the
+//    flow must behave exactly as before.
+{
+  const b = bench({
+    items: [workspace('default', [])],
+    initializeDefault: async () => workspace('default', []),
+  })
+  await b.settle()
+  const seen = []
+  b.uiWorkspace.startSession(undefined, (sessionId) => { seen.push(sessionId) })
+  await tick()
+  check('beforeOpen receives the created Session id', seen.length === 1, JSON.stringify(seen))
+  check('and it is exactly the id creation returned',
+    seen[0] === b.recording.created[0]?.sessionId,
+    JSON.stringify({ seen, created: b.recording.created }))
+}
+
+// 9. An explicit Workspace id also reports its Session.
+{
+  const b = bench({
+    items: [workspace('explicit', [])],
+    initializeDefault: async () => workspace('default', []),
+  })
+  await b.settle()
+  const seen = []
+  b.uiWorkspace.startSession(wid('explicit'), (sessionId) => { seen.push(sessionId) })
+  await tick()
+  check('an explicit target reports its Session too', seen.length === 1, JSON.stringify(seen))
+}
+
+// 10. No callback is the old contract: the flow still runs and nothing is
+//     required of the caller.
+{
+  const b = bench({
+    items: [workspace('default', [])],
+    initializeDefault: async () => workspace('default', []),
+  })
+  await b.settle()
+  b.uiWorkspace.startSession()
+  await tick()
+  check('omitting beforeOpen still creates the Session',
+    b.recording.created.length === 1, JSON.stringify(b.recording.created))
+}
+
+// 11. A flow that resolves no Workspace never reports a Session.
+{
+  const b = bench({ items: [], initializeDefault: async () => undefined })
+  await b.settle()
+  const seen = []
+  b.uiWorkspace.startSession(undefined, (sessionId) => { seen.push(sessionId) })
+  await tick()
+  check('no default Workspace means no callback', seen.length === 0, JSON.stringify(seen))
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)

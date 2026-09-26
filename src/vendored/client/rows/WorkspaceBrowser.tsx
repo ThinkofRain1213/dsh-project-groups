@@ -282,6 +282,11 @@ type SessionTreeProps = Pick<
    * not draggable (a caller-supplied group with no verb behind it).
    */
   reorderProject?: ((id: string, beforeId?: string) => Promise<void>) | undefined
+  /**
+   * File one Session under one project. Absent, a project row's ＋ still creates
+   * a Session but leaves it unfiled; see the inject face's note.
+   */
+  assignSession?: ((sessionId: SessionId, projectId: string) => Promise<void>) | undefined
   /** Open the rename dialog from a row title double-click. */
   onSessionRenameRequest: (sessionId: SessionNode['id'], currentTitle: string) => void
   /** One Session chosen from search that must be exposed and scrolled into view. */
@@ -313,6 +318,7 @@ function SessionTree({
   workspaceReady, animationResetKey, usePanelInfo,
   onRenameRequest, onDeleteRequest, onSessionRenameRequest,
   reorderProject,
+  assignSession,
   renderSlot,
   insertWorkspaceBefore,
   nestWorkspaces, groupExpansion, setGroupExpanded,
@@ -584,11 +590,29 @@ function SessionTree({
             // Expand even when no Session ends up created: a collapsed group
             // would swallow the new row and read as "the click did nothing".
             setGroupExpanded(group.key, true)
-            // A real Workspace row targets itself. The Ungrouped bucket and
-            // this plugin's caller-supplied groups carry no Workspace id, so
-            // they fall through to the default Workspace — the shipped code
-            // guarded this off and left their ＋ inert.
-            startSession(group.workspaceId)
+            // A project row files what it creates under itself; every other row
+            // only creates it. Ungrouped means precisely "filed under nothing",
+            // so filing there would be a contradiction, and a real Workspace row
+            // predates projects entirely.
+            //
+            // The filing rides `beforeOpen`, which the navigation runs once the
+            // Session exists and before it becomes the main view. A rejection is
+            // logged rather than surfaced: the Session was created and opened, so
+            // a filing failure must not read as a failed New Session. It is also
+            // best-effort by design — a navigation superseded mid-flight never
+            // opens its Session, and an unfiled Session is the right outcome for
+            // an abandoned click.
+            const filedUnder = group.kind === 'project' ? group.key : undefined
+            startSession(
+              group.workspaceId,
+              filedUnder === undefined || assignSession === undefined
+                ? undefined
+                : (sessionId) => {
+                  void assignSession(sessionId, filedUnder).catch((reason: unknown) => {
+                    console.warn('file session under project rejected:', reason)
+                  })
+                },
+            )
           }}
           drag={workspaceDragProps}
           actions={group.kind === 'project'
@@ -955,6 +979,7 @@ export function WorkspaceBrowser({
   renameProject,
   deleteProject,
   reorderProject,
+  assignSession,
   renderSlot,
   t,
 }: WorkspaceBrowserProps) {
@@ -1592,6 +1617,7 @@ export function WorkspaceBrowser({
                 onSessionRenameRequest={requestSessionRename}
                 renderSlot={renderSlot}
                 reorderProject={reorderProject}
+                assignSession={assignSession}
                 workspaces={orderedWorkspaces}
                 groupingOverride={groupingOverride}
                 ungroupedSessionIds={orderedUngroupedSessionIds}
