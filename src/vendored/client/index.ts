@@ -99,6 +99,18 @@ export const inject = [
 ]
 
 /**
+ * The caller's project verbs, threaded into the browsing region's inject face.
+ * Absent, the region keeps the shipped directory flow and a caller-supplied
+ * group renders with no row menu or drag target.
+ */
+export interface ProjectActions {
+  createProject: (input: { title: string }) => Promise<void>
+  renameProject: (id: string, title: string) => Promise<void>
+  deleteProject: (id: string) => Promise<void>
+  reorderProject: (id: string, beforeId?: string) => Promise<void>
+}
+
+/**
  * Register the browser and picker once their slot declarations are on the
  * ledger. Inject factories return plain callbacks; data reads use the
  * framework's global hooks.
@@ -109,10 +121,14 @@ export const inject = [
  * groups instead, while Sessions keep their real Workspace account, `cwd`, and
  * archive state; see `contract/slots.ts` `grouping` and `tree.ts`
  * `GroupSource`.
+ * @param projectActions - optional verbs behind the region's project rows.
+ * Omitted, the header keeps the directory flow and caller-supplied groups have
+ * no row actions.
  */
 export function apply(
   ctx: Context,
   groupingOverride?: HostObservable<readonly GroupSource[] | undefined>,
+  projectActions?: ProjectActions,
 ): void {
   const sessions = ctx.get('sessions') as ISessions
   const workspaces = ctx.get('workspaces') as IWorkspaces
@@ -217,7 +233,7 @@ export function apply(
     },
     unarchiveSession,
   })
-  installWorkspaceShortcuts(ctx, uiWorkspace, shortcutControls, archiveInjected().archiveSession)
+  installWorkspaceShortcuts(ctx, uiWorkspace, shortcutControls, archiveInjected().archiveSession, projectActions !== undefined)
   const archiveConfirmInjected = (): SessionArchiveConfirmInjected => ({
     hooks: { archiveRequest },
     settleSessionArchive: () => { archiveRequest.set(null) },
@@ -266,6 +282,16 @@ export function apply(
     closeAddWorkspace: shortcutControls.closeAdd,
     setDirectoryBusy: shortcutControls.directoryBusy,
     dismissForkError: shortcutControls.dismissForkError,
+    // Project verbs exist only when the composition supplies a model. Spread
+    // rather than assigned as `undefined` so the injected face carries no keys
+    // at all without one — the region then reads them as absent and keeps the
+    // shipped directory flow.
+    ...(projectActions === undefined ? {} : {
+      createProject: projectActions.createProject,
+      renameProject: projectActions.renameProject,
+      deleteProject: projectActions.deleteProject,
+      reorderProject: projectActions.reorderProject,
+    }),
     hooks: { directoryFlow: browserFlowSource, hostInfo, workspaceShortcuts: shortcutControls.state, shortcuts: ctx.shortcuts.catalog, grouping },
   })
   const pickerInjected = (): WorkspacePickerInjected => ({

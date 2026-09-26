@@ -239,9 +239,12 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
   const label = row.label === '' ? t('group.ungrouped') : row.label
   const active = containsCurrentDescendant || (group.expanded && group.containsCurrent)
   const [menuOpen, setMenuOpen] = useState(false)
+  // A project row's delete removes a caller-supplied record, not a registry
+  // entry, so the copy names the project.
+  const deleteLabel = group.kind === 'project' ? t('delete.project') : t('delete.workspace')
   const workspaceMenuItems = [
     { id: 'rename', label: t('rename'), icon: <IconEditOutlineRegular /> },
-    { id: 'delete', label: t('delete.workspace'), icon: <IconTrashOutlineRegular />, danger: true },
+    { id: 'delete', label: deleteLabel, icon: <IconTrashOutlineRegular />, danger: true },
   ]
   const ownRow = (
     <div
@@ -290,7 +293,10 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
               <button
                 type="button"
                 className={css.iconButton}
-                aria-label={t('actions.workspace.aria', { name: label })}
+                aria-label={t(
+                  group.kind === 'project' ? 'actions.project.aria' : 'actions.workspace.aria',
+                  { name: label },
+                )}
                 onClick={(e) => { e.stopPropagation(); setMenuOpen(v => !v) }}
               >
                 <IconEllipsisOutlineRegular />

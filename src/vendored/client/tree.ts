@@ -97,6 +97,16 @@ export interface GroupSource {
   path?: string | undefined
   /** Sort time in epoch ms; absent sorts after dated groups. */
   createdAt?: number | undefined
+  /**
+   * The row is a caller-managed entity rather than a Host Workspace.
+   *
+   * The region draws the same header either way, but the two differ in what
+   * their row menus and drag targets drive: a Workspace row renames, deletes
+   * and reorders a registry entry; this one drives whatever the caller
+   * supplies. Marking it explicitly keeps that distinction independent of
+   * `key` (both are non-empty) and of `workspaceId` (absent on both).
+   */
+  kind?: 'project' | undefined
 }
 
 /**
@@ -111,6 +121,12 @@ export interface GroupNode {
   /** Workspace creation time (epoch ms); absent only for the ungrouped bucket. */
   createdAt: number | undefined
   label: string
+  /**
+   * Set for a caller-supplied project group. The renderer keys the row's
+   * rename/delete/reorder targets off this, because a project row is neither a
+   * Workspace row (no registry entry) nor the ungrouped bucket.
+   */
+  kind: 'project' | undefined
   /** Total visible sessions in the group. */
   sessionCount: number
   expanded: boolean
@@ -156,6 +172,7 @@ interface Group {
   cwd: string | undefined
   createdAt: number | undefined
   label: string
+  kind: 'project' | undefined
   sessions: SessionSummary[]
 }
 
@@ -340,8 +357,9 @@ function buildGroup(
   createdAt: number | undefined,
   label: string,
   members: readonly SessionSummary[],
+  kind: 'project' | undefined = undefined,
 ): Group {
-  return { key, workspaceId, cwd, createdAt, label, sessions: [...members] }
+  return { key, workspaceId, cwd, createdAt, label, kind, sessions: [...members] }
 }
 
 /** Apply a stored Ungrouped order and append newly loose Sessions by recency. */
@@ -449,12 +467,11 @@ function groupBySource(
     // group without archived Sessions contributes no group.
     if (archivedFilter === 'only' && members.length === 0) continue
     // `workspaceId` stays undefined: it means "a real Host Workspace row", and
-    // these are not. That is what withholds the Workspace rename/delete menu,
-    // workspace drag targets, and the startSession(workspaceId) button — none
-    // of which have a meaning for a caller-supplied group. The label still
-    // renders because it is non-empty (see `ProjectRowItem`).
+    // these are not. The caller's own row actions ride `kind` instead, so a
+    // project row keeps its menu and drag targets without pretending to be a
+    // registry entry. The label renders because it is non-empty.
     groups.push(buildGroup(
-      source.key, undefined, source.path, source.createdAt, source.label, members,
+      source.key, undefined, source.path, source.createdAt, source.label, members, source.kind,
     ))
   }
   const stray = list.ids
@@ -565,6 +582,7 @@ export function deriveGroups(
       cwd: g.cwd,
       createdAt: g.createdAt,
       label: g.label,
+      kind: g.kind,
       sessionCount: g.sessions.length,
       expanded,
       containsCurrent: g.key === currentGroup,

@@ -237,6 +237,22 @@ export type WorkspaceBrowserInjected = {
   }
   /** Open the browser search and focus its input. */
   requestSearch: () => void
+  /**
+   * The caller's project verbs, present only in a composition that supplies a
+   * project model.
+   *
+   * Every member here is optional as a group: absent, the region behaves exactly
+   * as upstream — the header's add control runs the directory flow, and a
+   * caller-supplied group renders with no row menu or drag target, because there
+   * is nothing behind it to drive.
+   */
+  createProject?: ((input: { title: string }) => Promise<void>) | undefined
+  /** Retitle one caller-supplied project. */
+  renameProject?: ((id: string, title: string) => Promise<void>) | undefined
+  /** Remove one caller-supplied project; its Sessions are not touched. */
+  deleteProject?: ((id: string) => Promise<void>) | undefined
+  /** Move one caller-supplied project before another; absent anchor appends. */
+  reorderProject?: ((id: string, beforeId?: string) => Promise<void>) | undefined
   /** Request the existing directory picker. */
   requestAddWorkspace: () => void
   /** Consume the directory-picker opening request. */

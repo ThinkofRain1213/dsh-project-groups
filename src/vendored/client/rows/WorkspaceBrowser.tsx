@@ -205,11 +205,25 @@ function sessionDragOrder(
   return pinCurrentBlank(next, rows.find(row => row.blank)?.id)
 }
 
-/** In-flight Workspace-row drag: source identity plus the current marker. */
+/**
+ * In-flight group-row drag: source identity plus the current marker.
+ *
+ * The id is a Workspace id or a caller-supplied project key depending on
+ * `kind`; both are plain strings on the wire, and the commit picks the verb.
+ */
 interface WorkspaceDragState {
-  workspaceId: WorkspaceId
-  over: { id: WorkspaceId; half: 'before' | 'after' } | null
+  readonly kind: 'workspace' | 'project'
+  readonly rowId: string
+  over: { id: string; half: 'before' | 'after' } | null
 }
+
+/**
+ * One group row requesting a dialog. A project row is not a Workspace, so the
+ * request names which kind it is and lets the owner pick the right subject.
+ */
+export type RowRequest =
+  | { readonly kind: 'workspace'; readonly id: WorkspaceId; readonly title: string }
+  | { readonly kind: 'project'; readonly id: string; readonly title: string }
 
 /** Resolve an insertion side across the Workspace header, descendants, and Sessions. */
 function workspaceGroupHalf(e: { clientY: number; currentTarget: HTMLElement }): 'before' | 'after' {
@@ -258,10 +272,16 @@ type SessionTreeProps = Pick<
   rowState: SessionRowState
   /** Switch the archived filter back to the default hide-archived view. */
   onLeaveArchivedOnly: () => void
-  /** Open the browser-owned rename dialog for a real Workspace group. */
-  onRenameRequest: (workspaceId: WorkspaceId, currentTitle: string) => void
-  /** Open the browser-owned delete-confirmation dialog for a real Workspace group. */
-  onDeleteRequest: (workspaceId: WorkspaceId, currentTitle: string) => void
+  /** Open the browser-owned rename dialog for a group row. */
+  onRenameRequest: (row: RowRequest) => void
+  /** Open the browser-owned delete-confirmation dialog for a group row. */
+  onDeleteRequest: (row: RowRequest) => void
+  /**
+   * Move one caller-supplied project before another; absent anchor appends.
+   * Absent entirely without a project model, in which case project rows are
+   * not draggable (a caller-supplied group with no verb behind it).
+   */
+  reorderProject?: ((id: string, beforeId?: string) => Promise<void>) | undefined
   /** Open the rename dialog from a row title double-click. */
   onSessionRenameRequest: (sessionId: SessionNode['id'], currentTitle: string) => void
   /** One Session chosen from search that must be exposed and scrolled into view. */
@@ -292,6 +312,7 @@ function SessionTree({
   rowState, onLeaveArchivedOnly,
   workspaceReady, animationResetKey, usePanelInfo,
   onRenameRequest, onDeleteRequest, onSessionRenameRequest,
+  reorderProject,
   renderSlot,
   insertWorkspaceBefore,
   nestWorkspaces, groupExpansion, setGroupExpanded,
@@ -313,6 +334,11 @@ function SessionTree({
   const [drag, setDrag] = useState<DragState | null>(null)
   const sessionDropCommitted = useRef(false)
   const [workspaceDrag, setWorkspaceDrag] = useState<WorkspaceDragState | null>(null)
+  // Same value as `workspaceDrag`, read from drag handlers. A handler closes
+  // over the render that created it, so the state variable would be the value
+  // from that render — stale by the time a drop fires.
+  const workspaceDragRef = useRef<WorkspaceDragState | null>(null)
+  workspaceDragRef.current = workspaceDrag
   const workspaceDropCommitted = useRef(false)
   const nativeDragActive = drag !== null || workspaceDrag !== null
   useNativeDragAcceptance(nativeDragActive)
@@ -397,18 +423,31 @@ function SessionTree({
     if (workspaceDropCommitted.current) return
     workspaceDropCommitted.current = true
     setWorkspaceDrag(null)
-    const owner = parents.get(activeDrag.workspaceId)
+    if (activeDrag.kind === 'project') {
+      // Project order is the caller's list, not a Workspace tree: every project
+      // is a sibling, and the anchor is whichever row the marker names.
+      if (over.id === activeDrag.rowId) return
+      const commit = reorderProject === undefined
+        ? Promise.reject(new Error('no project model'))
+        : reorderProject(activeDrag.rowId, over.half === 'before' ? over.id : undefined)
+      commit.catch((reason: unknown) => { console.warn('project reorder rejected:', reason) })
+      return
+    }
+    const workspaceId = activeDrag.rowId as WorkspaceId
+    const owner = parents.get(workspaceId)
     const siblings = workspaces.filter(workspace => parents.get(workspace.workspaceId) === owner)
     const rowIndex = siblings.findIndex(workspace => workspace.workspaceId === over.id)
     if (rowIndex === -1) return
-    const anchor = over.half === 'before' ? over.id : siblings[rowIndex + 1]?.workspaceId
-    if (anchor === activeDrag.workspaceId) return
-    const sourceIndex = siblings.findIndex(workspace => workspace.workspaceId === activeDrag.workspaceId)
+    const anchor: WorkspaceId | undefined = over.half === 'before'
+      ? over.id as WorkspaceId
+      : siblings[rowIndex + 1]?.workspaceId
+    if (anchor === workspaceId) return
+    const sourceIndex = siblings.findIndex(workspace => workspace.workspaceId === workspaceId)
     const anchorIndex = anchor === undefined
       ? siblings.length
       : siblings.findIndex(workspace => workspace.workspaceId === anchor)
     if (sourceIndex !== -1 && (anchorIndex === sourceIndex || anchorIndex === sourceIndex + 1)) return
-    insertWorkspaceBefore(activeDrag.workspaceId, anchor).catch((reason: unknown) => {
+    insertWorkspaceBefore(workspaceId, anchor).catch((reason: unknown) => {
       console.warn('workspace reorder rejected:', reason)
     })
   }
@@ -435,7 +474,17 @@ function SessionTree({
   const renderGroup = (group: GroupNode, depth: number): ReactNode => {
     const workspaceId = group.workspaceId
     const children = childrenByParent.get(group.key) ?? []
-    const compatibleDrag = workspaceDrag !== null && parents.get(workspaceDrag.workspaceId) === parents.get(group.key)
+    // Which verb this row's drag drives. A project is never a Workspace row and
+    // the Ungrouped bucket is neither, so the two join only where both are
+    // draggable entities: a project drags among projects, a Workspace among
+    // its siblings.
+    const dragKind: 'workspace' | 'project' | undefined = group.kind === 'project'
+      ? 'project'
+      : workspaceId === undefined ? undefined : 'workspace'
+    const dragRowId = group.kind === 'project' ? group.key : workspaceId
+    const compatibleDrag = workspaceDrag !== null && dragKind !== undefined
+      && workspaceDrag.kind === dragKind
+      && (dragKind === 'project' || parents.get(workspaceDrag.rowId as WorkspaceId) === parents.get(group.key))
     const collapsed = collapsedSessionRows(group.sessions)
     const visible = collapsedSessionRows(group.sessions, sessionLimits[group.key])
     const sessionsExpanded = visible.hiddenCount === 0
@@ -444,34 +493,40 @@ function SessionTree({
     const sessions = visible.rows
     for (const node of sessions) rowKeys.push(`session:${node.id}`)
     if (collapsed.hiddenCount > 0) rowKeys.push(`overflow:${group.key}`)
-    const workspaceMarker = workspaceId !== undefined && workspaceDrag?.over?.id === workspaceId
-      ? workspaceDrag.over.half
+    const activeDrag = workspaceDrag
+    const markerOver = dragRowId !== undefined && activeDrag !== null
+      && activeDrag.kind === dragKind && activeDrag.over?.id === dragRowId
+      ? activeDrag.over
       : null
-    const workspaceDragProps = workspaceId === undefined ? undefined : {
+    const workspaceMarker = markerOver === null ? null : markerOver.half
+    const workspaceDragProps = dragKind === undefined || dragRowId === undefined ? undefined : {
       start: () => {
         workspaceDropCommitted.current = false
-        setWorkspaceDrag({ workspaceId, over: null })
+        setWorkspaceDrag({ kind: dragKind, rowId: dragRowId, over: null })
       },
       end: () => {
-        if (workspaceDrag?.over !== null && workspaceDrag?.over !== undefined) {
-          commitWorkspaceDrag(workspaceDrag, workspaceDrag.over)
+        const active = workspaceDragRef.current
+        if (active?.over !== null && active?.over !== undefined) {
+          commitWorkspaceDrag(active, active.over)
         } else {
           setWorkspaceDrag(null)
         }
         workspaceDropCommitted.current = false
       },
     }
-    const hoverWorkspace = workspaceId === undefined || !compatibleDrag
+    const hoverWorkspace = dragRowId === undefined || !compatibleDrag
       ? undefined
       : (half: 'before' | 'after') => {
         setWorkspaceDrag(active => active === null
           ? active
-          : { ...active, over: { id: workspaceId, half } })
+          : { ...active, over: { id: dragRowId, half } })
       }
-    const dropWorkspace = workspaceId === undefined || !compatibleDrag
+    const dropWorkspace = dragRowId === undefined || !compatibleDrag
       ? undefined
       : (half: 'before' | 'after') => {
-        commitWorkspaceDrag(workspaceDrag, { id: workspaceId, half })
+        const active = workspaceDragRef.current
+        if (active === null) return
+        commitWorkspaceDrag(active, { id: dragRowId, half })
       }
     return (
     // Group section: header, descendant Workspaces, and own Session rows. The
@@ -536,18 +591,27 @@ function SessionTree({
             startSession(group.workspaceId)
           }}
           drag={workspaceDragProps}
-          actions={group.workspaceId === undefined
-            ? undefined
-            : {
-              rename: () => {
-              /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
-                if (group.workspaceId !== undefined) onRenameRequest(group.workspaceId, group.label)
-              },
-              delete: () => {
-              /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
-                if (group.workspaceId !== undefined) onDeleteRequest(group.workspaceId, group.label)
-              },
-            }}
+          actions={group.kind === 'project'
+            ? {
+              rename: () => { onRenameRequest({ kind: 'project', id: group.key, title: group.label }) },
+              delete: () => { onDeleteRequest({ kind: 'project', id: group.key, title: group.label }) },
+            }
+            : group.workspaceId === undefined
+              ? undefined
+              : {
+                rename: () => {
+                  /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
+                  if (group.workspaceId !== undefined) {
+                    onRenameRequest({ kind: 'workspace', id: group.workspaceId, title: group.label })
+                  }
+                },
+                delete: () => {
+                  /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
+                  if (group.workspaceId !== undefined) {
+                    onDeleteRequest({ kind: 'workspace', id: group.workspaceId, title: group.label })
+                  }
+                },
+              }}
         />
         {childRows.length > 0 && (
           <div role="group">
@@ -887,6 +951,10 @@ export function WorkspaceBrowser({
   closeAddWorkspace,
   setDirectoryBusy,
   dismissForkError,
+  createProject,
+  renameProject,
+  deleteProject,
+  reorderProject,
   renderSlot,
   t,
 }: WorkspaceBrowserProps) {
@@ -894,6 +962,10 @@ export function WorkspaceBrowser({
   const shortcuts = useShortcuts(rows => rows)
   const searchShortcut = shortcuts.find(row => row.id === 'session.search')
   const addShortcut = shortcuts.find(row => row.id === 'workspace.add')
+  // Whether this composition supplies a project model. Derived here, not beside
+  // the dialog, because the header's add control and the add-request effect both
+  // read it and both run above the dialog's state block.
+  const projectModelAvailable = createProject !== undefined
   const shortcutState = useWorkspaceShortcuts(state => state)
   // Ordering remains live while the rail or search replaces the list body.
   const list = useSessions(state => state)
@@ -1058,9 +1130,22 @@ export function WorkspaceBrowser({
   })
   const searchRoot = useRef<HTMLDivElement | null>(null)
   const searchInput = useRef<HTMLInputElement | null>(null)
-  // Section-header ＋ opens the picker menu (same popover in wide and rail
-  // states; the menu anchors on this button).
-  const wsPickerOpen = shortcutState.addRequested
+  // The section-header ＋ opens the picker menu (same popover in wide and rail
+  // states; the menu anchors on this button) — or the project dialog, which is
+  // what "add" means under a project model. The shortcut sets the same request
+  // either way, so a project composition must consume it too; otherwise Ctrl+O
+  // would resolve as handled and do nothing.
+  const wsPickerOpen = !projectModelAvailable && shortcutState.addRequested
+  const addRequested = shortcutState.addRequested
+  useEffect(() => {
+    if (!projectModelAvailable || !addRequested) return
+    // Clear the request first: the dialog's own state is what keeps it open, and
+    // leaving the flag set would re-open it on every later render.
+    closeAddWorkspace()
+    setCreateDraft('')
+    setCreateError(null)
+    setCreating(true)
+  }, [addRequested, projectModelAvailable, closeAddWorkspace])
   const wsPlusRef = useRef<HTMLButtonElement>(null)
   const composingRef = useRef(false)
 
@@ -1166,16 +1251,25 @@ export function WorkspaceBrowser({
   // The stored title decides whether confirming is a real rename; the draft is
   // seeded with the label on screen. They differ for a Workspace still
   // carrying its automatic title, so confirming the prefill pins that name.
-  const [renameTarget, setRenameTarget] = useState<{ workspaceId: WorkspaceId; storedTitle: string } | null>(null)
+  //
+  // One dialog serves both row kinds: a project row renames a caller-supplied
+  // record through `renameProject`, a Workspace row renames a registry entry.
+  // Only the commit differs, so the target carries which one it is.
+  type RenameTarget =
+    | { readonly kind: 'workspace'; readonly id: WorkspaceId; readonly storedTitle: string }
+    | { readonly kind: 'project'; readonly id: string; readonly storedTitle: string }
+  const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [renaming, setRenaming] = useState(false)
   const [renameError, setRenameError] = useState<string | null>(null)
   const renameTrimmed = renameDraft.trim()
   // Self is excluded by identity, not by title: the draft is seeded with the
   // localized label, which for an automatically titled Workspace equals its
-  // own displayed title without being a conflict with itself.
-  const renameDuplicate = renameTarget !== null && renameTrimmed !== ''
-    && workspaces.some(w => w.workspaceId !== renameTarget.workspaceId && w.title === renameTrimmed)
+  // own displayed title without being a conflict with itself. A project has no
+  // such automatic title, and its conflicts are the model's business, so the
+  // duplicate scan stays on the Workspace registry.
+  const renameDuplicate = renameTarget?.kind === 'workspace' && renameTrimmed !== ''
+    && workspaces.some(w => w.workspaceId !== renameTarget.id && w.title === renameTrimmed)
   const renameBlocked = renaming || renameTrimmed === ''
     || renameTarget === null || renameTrimmed === renameTarget.storedTitle || renameDuplicate
   const closeRename = () => {
@@ -1184,15 +1278,59 @@ export function WorkspaceBrowser({
     setRenameError(null)
   }
   const confirmRename = () => {
-    if (renameBlocked) return
+    if (renameBlocked || renameTarget === null) return
     setRenaming(true)
     setRenameError(null)
-    renameWorkspace(renameTarget.workspaceId, renameTrimmed).then(() => {
+    const commit = renameTarget.kind === 'workspace'
+      ? renameWorkspace(renameTarget.id, renameTrimmed)
+      : renameProject === undefined
+        ? Promise.reject(new Error('no project model'))
+        : renameProject(renameTarget.id, renameTrimmed)
+    commit.then(() => {
       setRenaming(false)
       setRenameTarget(null)
     }).catch((reason: unknown) => {
       setRenaming(false)
       setRenameError(reason instanceof Error ? reason.message : String(reason))
+    })
+  }
+
+  // The search results' restore button; the row actions own the rest of the
+  // Session verbs as slot entries.
+  // New-project dialog. Structurally the rename dialog with an empty seed: a
+  // project is a title in the caller's own model, so there is no directory to
+  // pick and nothing to rename. Browser-owned for the same reason the others
+  // are (it must outlive any row).
+  //
+  // It exists only when the composition supplies a project model. Without one
+  // the header keeps the shipped directory flow, which is the only "add" a
+  // composition without projects can perform.
+  const [creating, setCreating] = useState(false)
+  const [createDraft, setCreateDraft] = useState('')
+  const [createBusy, setCreateBusy] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
+  const createTrimmed = createDraft.trim()
+  const createBlocked = createBusy || createTrimmed === ''
+  const openCreate = () => {
+    setCreateDraft('')
+    setCreateError(null)
+    setCreating(true)
+  }
+  const closeCreate = () => {
+    if (createBusy) return
+    setCreating(false)
+    setCreateError(null)
+  }
+  const confirmCreate = () => {
+    if (createBlocked || createProject === undefined) return
+    setCreateBusy(true)
+    setCreateError(null)
+    createProject({ title: createTrimmed }).then(() => {
+      setCreateBusy(false)
+      setCreating(false)
+    }).catch((reason: unknown) => {
+      setCreateBusy(false)
+      setCreateError(reason instanceof Error ? reason.message : String(reason))
     })
   }
 
@@ -1206,11 +1344,20 @@ export function WorkspaceBrowser({
 
   // Delete dialog is separate from the row so a successful removal can
   // unmount that row without tearing down the in-flight confirmation state.
-  const [deleteTarget, setDeleteTarget] = useState<{ workspaceId: WorkspaceId; title: string } | null>(null)
+  // Like the rename dialog it serves both row kinds; only the commit and what
+  // "the row is gone" means differ.
+  type DeleteTarget =
+    | { readonly kind: 'workspace'; readonly id: WorkspaceId; readonly title: string }
+    | { readonly kind: 'project'; readonly id: string; readonly title: string }
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteCommittedId, setDeleteCommittedId] = useState<WorkspaceId | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   useEffect(() => {
+    // Workspace removals wait for the registry projection to drop the id, as
+    // shipped. A project commit closes on its own resolution instead: the
+    // grouping override is the caller's observable, and this component must
+    // not assume it has already re-rendered by the time the promise settles.
     if (deleteCommittedId === null
       || workspaces.some(workspace => workspace.workspaceId === deleteCommittedId)) return
     setDeleting(false)
@@ -1228,11 +1375,24 @@ export function WorkspaceBrowser({
     setDeleting(true)
     setDeleteCommittedId(null)
     setDeleteError(null)
-    deleteWorkspace(deleteTarget.workspaceId).then(() => {
+    if (deleteTarget.kind === 'project') {
+      const commit = deleteProject === undefined
+        ? Promise.reject(new Error('no project model'))
+        : deleteProject(deleteTarget.id)
+      commit.then(() => {
+        setDeleting(false)
+        setDeleteTarget(null)
+      }).catch((reason: unknown) => {
+        setDeleting(false)
+        setDeleteError(reason instanceof Error ? reason.message : String(reason))
+      })
+      return
+    }
+    deleteWorkspace(deleteTarget.id).then(() => {
       // Keep the confirmation pending until this component has rendered the
       // committed list projection without the deleted id. Closing earlier
       // exposes one stale React frame to the next Create Workspace gesture.
-      setDeleteCommittedId(deleteTarget.workspaceId)
+      setDeleteCommittedId(deleteTarget.id)
     }).catch((reason: unknown) => {
       setDeleting(false)
       setDeleteError(reason instanceof Error ? reason.message : String(reason))
@@ -1316,19 +1476,24 @@ export function WorkspaceBrowser({
               t={t}
             />
           )}
-          {/* Adding is the button's one action, so a composition with no
-              picking affordance has nothing to offer here: the region hides the
-              button rather than leaving a dead one in the header. */}
-          {directoryFlowAvailable && (
-            <Tooltip label={t('workspace.add')} shortcutKeys={addShortcut?.keys} side="bottom" delayMs={500}>
+          {/* With a project model the header adds a project; without one it
+              keeps the shipped directory flow, which is the only "add" a
+              composition without projects can perform. */}
+          {(projectModelAvailable || directoryFlowAvailable) && (
+            <Tooltip
+              label={t(projectModelAvailable ? 'project.add' : 'workspace.add')}
+              shortcutKeys={projectModelAvailable ? undefined : addShortcut?.keys}
+              side="bottom"
+              delayMs={500}
+            >
               <button
                 ref={wsPlusRef}
                 type="button"
                 className={css.iconButton}
-                aria-label={t('workspace.add')}
-                aria-keyshortcuts={addShortcut?.aria}
+                aria-label={t(projectModelAvailable ? 'project.add' : 'workspace.add')}
                 onClick={() => {
-                  requestAddWorkspace()
+                  if (projectModelAvailable) openCreate()
+                  else requestAddWorkspace()
                 }}
               >
                 <IconProjectAddOutlineRegular size={wide ? 16 : 18} />
@@ -1336,24 +1501,29 @@ export function WorkspaceBrowser({
             </Tooltip>
           )}
         </div>
-        {/* Add flow + its error dialog (same package — direct composition). */}
-        <WorkspacePickFlow
-          t={t}
-          open={wsPickerOpen}
-          anchorRef={wsPlusRef}
-          useWorkspaces={useWorkspaces}
-          createWorkspace={createWorkspace}
-          useDirectoryFlow={useDirectoryFlow}
-          renderDirectoryFlow={owner => renderSlot('sidebar.workspaces.directoryFlow', owner)}
-          addOnly
-          onBusyChange={setDirectoryBusy}
-          side="right"
-          onPick={(workspaceId) => {
-            closeAddWorkspace()
-            startSession(workspaceId)
-          }}
-          onClose={() => { closeAddWorkspace() }}
-        />
+        {/* Add flow + its error dialog (same package — direct composition).
+            Absent under a project model: adding is the project dialog's job
+            there, and a directory flow nobody can reach would only keep the
+            picking slot occupied. */}
+        {!projectModelAvailable && (
+          <WorkspacePickFlow
+            t={t}
+            open={wsPickerOpen}
+            anchorRef={wsPlusRef}
+            useWorkspaces={useWorkspaces}
+            createWorkspace={createWorkspace}
+            useDirectoryFlow={useDirectoryFlow}
+            renderDirectoryFlow={owner => renderSlot('sidebar.workspaces.directoryFlow', owner)}
+            addOnly
+            onBusyChange={setDirectoryBusy}
+            side="right"
+            onPick={(workspaceId) => {
+              closeAddWorkspace()
+              startSession(workspaceId)
+            }}
+            onClose={() => { closeAddWorkspace() }}
+          />
+        )}
       </div>
 
       {/* The collapsed rail keeps search as its own 36px control. */}
@@ -1421,6 +1591,7 @@ export function WorkspaceBrowser({
                 useSessionStatus={useSessionStatus}
                 onSessionRenameRequest={requestSessionRename}
                 renderSlot={renderSlot}
+                reorderProject={reorderProject}
                 workspaces={orderedWorkspaces}
                 groupingOverride={groupingOverride}
                 ungroupedSessionIds={orderedUngroupedSessionIds}
@@ -1439,16 +1610,19 @@ export function WorkspaceBrowser({
                 onSessionRevealed={acknowledgeSessionReveal}
                 home={home}
                 t={t}
-                onRenameRequest={(workspaceId, displayTitle) => {
-                  setRenameTarget({
-                    workspaceId,
-                    storedTitle: storedWorkspaces.find(w => w.workspaceId === workspaceId)?.title ?? displayTitle,
-                  })
-                  setRenameDraft(displayTitle)
+                onRenameRequest={(row) => {
+                  setRenameTarget(row.kind === 'project'
+                    ? { kind: 'project', id: row.id, storedTitle: row.title }
+                    : {
+                      kind: 'workspace',
+                      id: row.id,
+                      storedTitle: storedWorkspaces.find(w => w.workspaceId === row.id)?.title ?? row.title,
+                    })
+                  setRenameDraft(row.title)
                   setRenameError(null)
                 }}
-                onDeleteRequest={(workspaceId, title) => {
-                  setDeleteTarget({ workspaceId, title })
+                onDeleteRequest={(row) => {
+                  setDeleteTarget({ ...row })
                   setDeleteError(null)
                 }}
               />
@@ -1459,7 +1633,7 @@ export function WorkspaceBrowser({
         open={renameTarget !== null}
         onClose={closeRename}
         closeLabel={t('close')}
-        title={t('rename.workspace.title')}
+        title={t(renameTarget?.kind === 'project' ? 'rename.project.title' : 'rename.workspace.title')}
         footer={(
           <>
             <Button variant="outline" disabled={renaming} onClick={closeRename}>{t('cancel')}</Button>
@@ -1470,7 +1644,7 @@ export function WorkspaceBrowser({
         <input
           className={css.renameInput}
           value={renameDraft}
-          aria-label={t('field.workspaceName')}
+          aria-label={t(renameTarget?.kind === 'project' ? 'field.projectName' : 'field.workspaceName')}
           data-modal-autofocus
           disabled={renaming}
           onFocus={(e) => { e.target.select() }}
@@ -1494,10 +1668,10 @@ export function WorkspaceBrowser({
         open={deleteTarget !== null}
         onClose={closeDelete}
         closeLabel={t('close')}
-        title={t('delete.workspace')}
+        title={t(deleteTarget?.kind === 'project' ? 'delete.project' : 'delete.workspace')}
         {...deleteTarget === null
           ? {}
-          : { description: t('delete.desc', { name: deleteTarget.title }) }}
+          : { description: t(deleteTarget.kind === 'project' ? 'delete.project.desc' : 'delete.desc', { name: deleteTarget.title }) }}
         footer={(
           <>
             <Button variant="outline" disabled={deleting} onClick={closeDelete}>{t('cancel')}</Button>
@@ -1507,14 +1681,45 @@ export function WorkspaceBrowser({
               disabled={deleting}
               onClick={confirmDelete}
             >
-              {t('delete.workspace')}
+              {t(deleteTarget?.kind === 'project' ? 'delete.project' : 'delete.workspace')}
             </Button>
           </>
         )}
       >
-        {deleting && <div className={css.deleteStatus} role="status">{t('delete.pending')}</div>}
+        {deleting && <div className={css.deleteStatus} role="status">
+          {t(deleteTarget?.kind === 'project' ? 'delete.project.pending' : 'delete.pending')}
+        </div>}
         {deleteError !== null && <div className={css.renameError} role="alert">{deleteError}</div>}
       </Modal>
+
+      {/* New project: one title, no directory. Present only under a project
+          model, so an upstream composition renders no dialog it could reach. */}
+      {projectModelAvailable && (
+        <Modal
+          open={creating}
+          onClose={closeCreate}
+          closeLabel={t('close')}
+          title={t('project.create.title')}
+          footer={(
+            <>
+              <Button variant="outline" disabled={createBusy} onClick={closeCreate}>{t('cancel')}</Button>
+              <Button variant="primary" disabled={createBlocked} onClick={confirmCreate}>{t('create')}</Button>
+            </>
+          )}
+        >
+          <input
+            className={css.renameInput}
+            value={createDraft}
+            aria-label={t('field.projectName')}
+            placeholder={t('project.create.placeholder')}
+            data-modal-autofocus
+            disabled={createBusy}
+            onChange={(e) => { setCreateDraft(e.target.value) }}
+            onKeyDown={(e) => { if (e.key === 'Enter') confirmCreate() }}
+          />
+          {createError !== null && <div className={css.renameError} role="alert">{createError}</div>}
+        </Modal>
+      )}
       {shortcutState.forkError !== null && <Toast key={shortcutState.forkError.seq}
         text={t(shortcutState.forkError.reason === 'unavailable' ? 'shortcut.noCompletedTurn' : 'shortcut.forkFailed')}
         onDone={dismissForkError} />}

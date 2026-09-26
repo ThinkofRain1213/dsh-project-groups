@@ -61,12 +61,15 @@ export function createWorkspaceShortcutControls(): WorkspaceShortcutControls {
  * @param navigation - session creation and forking from the pointer controls' navigation service.
  * @param controls - browser-owned opening requests.
  * @param archiveSession - shared archive action, including running-work confirmation and notices.
+ * @param projectModel - whether the composition supplies a project model, which
+ * changes what "add" means (and therefore the command's label).
  */
 export function installWorkspaceShortcuts(
   ctx: Context,
   navigation: Pick<UiWorkspace, 'startSession' | 'forkSession'>,
   controls: ReturnType<typeof createWorkspaceShortcutControls>,
   archiveSession: (sessionId: SessionId) => void,
+  projectModel: boolean,
 ): void {
   const t = ctx.locale.bind('workspace')
   const current = () => Object.values(ctx.sessions.list.getSnapshot().byId)
@@ -88,8 +91,15 @@ export function installWorkspaceShortcuts(
     () => ({ status: 'handled', run: () => { navigation.startSession() } }))
   register('session.search', () => t('search.sessions.aria'), ['search sessions'], 'KeyK', ['primary'], ['primary', 'alt'],
     () => ({ status: 'handled', run: controls.search }))
-  register('workspace.add', () => t('workspace.add'), ['add workspace', 'open folder'], 'KeyO', ['primary'], ['primary', 'alt'],
+  // Under a project model the same command opens the project dialog; the
+  // directory-flow availability check no longer applies (there is no picker to
+  // be missing) and the label names what will happen.
+  register('workspace.add',
+    () => t(projectModel ? 'project.add' : 'workspace.add'),
+    projectModel ? ['new project'] : ['add workspace', 'open folder'],
+    'KeyO', ['primary'], ['primary', 'alt'],
     () => {
+      if (projectModel) return { status: 'handled', run: controls.add }
       const reason = addReason()
       return reason === null ? { status: 'handled', run: controls.add } : { status: 'blocked', reason }
     })

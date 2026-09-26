@@ -1,24 +1,27 @@
 /**
  * The grouping model this plugin feeds the vendored sidebar browser.
  *
- * ## What this is
+ * ## What a project is
  *
- * The browser renders group headings from a `GroupSource[]`. We supply the
- * array; the browser still reads Sessions, Workspaces, the archived set, pins,
- * and loading phases from the Host exactly as before.
+ * A title plus (from L2) the Sessions filed under it. It is **not** a
+ * Workspace: it owns no directory, contributes nothing to the Host registry,
+ * and never touches a Session's `cwd`. Every Session stays in the Host's
+ * default Workspace; the project is the grouping the sidebar draws on top.
  *
- * ## L1a: everything Ungrouped
+ * ## Where it lives
  *
- * {@link EMPTY_GROUPING} is an **active override that claims no Session**. The
- * browser treats unclaimed Sessions as stray and trails them under its own
- * Ungrouped bucket, so the net effect is every visible Session in one list —
- * which is this round's goal.
+ * L1-1 stages the model in the browser ({@link ProjectModel}) so the sidebar can
+ * be exercised before the persistence seam exists. `ctx.storageDomain` and the
+ * Remote namespace that reach it are L1-2; that step replaces the storage
+ * behind this model, not the model's API. While staged, projects do not survive
+ * a reload.
  *
- * An empty array is not the same as no override at all: `undefined` means
- * "group by the Host Workspace registry" (upstream behaviour), while `[]` means
- * "group by nothing", which is what puts every Session under Ungrouped. That
- * distinction is why the observable's *value* carries the inactive state rather
- * than the observable itself being absent.
+ * ## Why an override rather than the Workspace registry
+ *
+ * The observable is never `undefined`: `undefined` means "group by the Host
+ * Workspace registry" (upstream), while an array — empty included — is an active
+ * override. A fresh install's empty array is the honest state: the feature
+ * exists and no project has been created, so every Session is Ungrouped.
  *
  * ## Why the Host is unaffected
  *
@@ -26,26 +29,13 @@
  * here writes Workspace membership, `cwd`, or archive state, so switching this
  * back to `undefined` — or disabling the plugin — restores the official
  * workspace-grouped sidebar with all its data intact.
- *
- * L1 replaces {@link EMPTY_GROUPING} with sources derived from the project
- * table; the shape is already the one projects need (`key`, `label`,
- * `sessionIds`).
  */
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { GroupSource } from '../vendored/client/tree.ts'
+import { ProjectModel } from './projects.ts'
 
-/** How this round groups the sidebar: one active override claiming nothing. */
-export const EMPTY_GROUPING: readonly GroupSource[] = Object.freeze([])
+/** The project model this plugin's sidebar is a view of. */
+export const projects = new ProjectModel()
 
-/**
- * A source that never changes, so the browser subscribes to nothing and re-renders
- * only when the Session list moves.
- *
- * `getSnapshot` returns a stable frozen array rather than a fresh `[]`: the
- * selector compares by identity, and a new array per read would re-render every
- * consumer on each store ping.
- */
-export const clientGrouping: HostObservable<readonly GroupSource[] | undefined> = {
-  getSnapshot: () => EMPTY_GROUPING,
-  subscribe: () => () => {},
-}
+/** The observable handed to the vendored browser. */
+export const clientGrouping: HostObservable<readonly GroupSource[] | undefined> = projects.grouping

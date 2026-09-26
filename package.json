@@ -63,7 +63,8 @@
     "verify:patch": "node scripts/verify-patch.mjs",
     "verify:grouping": "node scripts/verify-grouping.mjs",
     "verify:new-session": "node scripts/verify-new-session.mjs",
-    "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm probe"
+    "verify:projects": "node scripts/verify-projects.mjs",
+    "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm probe"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

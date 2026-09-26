@@ -896,18 +896,52 @@ profileContext.home  →  $DSH_HOME  →  ~/.dsh
 所以"未分组 ＋"后紧接着"项目 ＋"会拿到同一个空白会话。发过消息即固化；
 L2 定策略（倾向"最后点的赢"）。
 
-### L1 — 新建项目
+### L1-1 — 新建项目（界面）✅ 已完成（2026-09-26）
+
+**目标**：把"添加工作区"换成"新建项目"，并让项目行拥有完整的行能力
+（重命名 / 删除 / 拖拽排序），全部接插件自己的模型。
+
+**背景**：上游的"添加工作区"强制走目录选择器（`workspace/create({path})`），
+那正是"必须绑文件夹"的根源。项目不绑目录，所以这个按钮要换成纯标题输入。
+
+- [x] `src/client/projects.ts`：`ProjectModel`（增删改查 + 排序 + 可订阅 observable）
+- [x] `tree.ts`：`GroupSource.kind` + `GroupNode.kind`，`groupBySource` 透传
+- [x] `contract/slots.ts`：注入面加 `createProject` / `renameProject` / `deleteProject` / `reorderProject`
+- [x] `WorkspaceBrowser.tsx`：顶部 ＋ 换"新建项目"对话框；重命名/删除对话框与**组拖拽**
+      改为按 `RowRequest.kind` 分派（项目行与工作区行共用一套 UI，动作不同）
+- [x] `Rows.tsx`：菜单删除文案与 aria 按 `kind` 切换（"删除项目"）
+- [x] `locales.ts`：中英项目文案
+- [x] 校验：`verify-projects.mjs`（29 项，真实 `ProjectModel` + 真实 `deriveGroups`）
+- [x] **实测**：`pnpm check` 共 **94 项断言全绿**；隔离实例启动干净，
+      产物含 `createProject`/`ProjectModel`/`kind: "project"`
+
+**为什么只有两种行**：插件启用时官方 `ui-workspace` 行已被 patch 禁用，
+分组又完全由 `groupingOverride` 接管，所以侧栏只有**项目行**和**未分组桶**
+——不存在"真实工作区行"，也就不需要第三种行类型。
+
+| 行 | 标题 | 菜单 | 拖拽 | ＋ |
+|---|---|---|---|---|
+| 项目行 | `projects.title` | 重命名 / 删除**项目** | 项目间排序 | 建会话（落默认工作区） |
+| 未分组桶 | 固定"未分组" | ❌ | ❌（L2 作放置目标） | 建会话（不归类） |
+
+**本轮的临时状态**：项目数据在**前端内存**（`ProjectModel`），刷新即丢。
+`ctx.storageDomain` 与 Remote 命名空间属 L1-2；届时替换存储，不改模型 API。
+
+**未做（明确留待）**：项目行 ＋ 的 `assign(sessionId, projectId)`——需要 L2 的归属表。
+
+### L1-2 — 项目持久化
 - [ ] host half 与领域声明 + `ctx.storageDomain` 打开
-- [ ] Remote：`create` / `rename` / `delete` / `follow`
-- [ ] 项目列表渲染（把 `EMPTY_GROUPING` 换成项目派生的 `GroupSource[]`）
-- [ ] 项目重命名 / 删除
-- [ ] 项目行 ＋ 的 `assign(sessionId, projectId)` 接缝
+- [ ] Remote：`create` / `rename` / `delete` / `reorder` / `follow`
+- [ ] **前置验证**：typert 代码生成器能否用于独立仓库（npm 上仅 `0.0.1-rc.1`，
+      且其 `workspaceRoot()` 依赖 `tsconfig.host.json`）；不可用则改手写 contribution
+      （`ctx.typert.register()` 官方明确支持非生成场景）
+- [ ] `ProjectModel` 换成 Remote 支持的实现（API 不变）
 
 ### L2 — 拖拽归类
 - [ ] `assignments` 表启用
 - [ ] Remote：`assign` / `unassign`
-- [ ] 分组派生改为：项目 + "未分组"桶
-- [ ] 拖拽交互 + 放置目标（复用 vendor 的拖拽基建或新增）
+- [ ] 项目行 ＋ 的 `assign(sessionId, projectId)` 接缝
+- [ ] **会话跨组拖拽**（官方无此逻辑：官方不允许会话离开工作区，需新写）
 
 ### L3 — 行内动作适配
 - [ ] 会话行感知所属项目（hover 卡 / 菜单上下文）
