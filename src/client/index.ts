@@ -2,10 +2,10 @@
  * Browser entry for dsh-project-groups.
  *
  * This plugin owns the sidebar's workspace browser by **vendoring the official
- * implementation** rather than reimplementing it — see
- * `src/vendored/README.md` for why: every seam that could have let us swap
- * behaviour underneath the official component is closed by an explicit
- * invariant, and `scripts/probe-approach-b.mjs` reproduces that finding.
+ * implementation** rather than reimplementing it — see `src/vendored/README.md`
+ * for why: every seam that could have let us swap behaviour underneath the
+ * official component is closed by an explicit invariant, and
+ * `scripts/probe-approach-b.mjs` reproduces that finding.
  *
  * Runtime identity is unchanged from the official plugin:
  *
@@ -20,60 +20,98 @@
  * providers of those services, would be a hard startup error rather than a
  * merge.
  *
+ * ## How project data reaches the browser
+ *
+ * This plugin owns a Remote namespace, but the Client's Remote assembly is a
+ * fixed list (`packages/api/remotes/src/client/index.ts`) that does not name
+ * this package — so `apply` mounts its own contribution with
+ * `ctx.remote.$mount`. That is a service call, not a module import, which is why
+ * it does not pull `@deepseek-ai/dsh-api-gateway/client` into this bundle.
+ *
  * ## How project grouping reaches the vendored browser
  *
- * The vendored `apply` takes an optional grouping observable and threads it
- * into the browser's `grouping` hook. We pass {@link clientGrouping}; the
- * vendored half keeps its upstream default (`undefined` = group by the Host
- * Workspace registry) for the one-argument call the loader makes on any other
- * composition.
+ * The vendored `apply` takes an optional grouping observable and threads it into
+ * the browser's `grouping` hook. We pass {@link clientGrouping}; the vendored
+ * half keeps its upstream default (`undefined` = group by the Host Workspace
+ * registry) for the one-argument call the loader makes on any other composition.
  *
  * The override is a **parameter, not a service**: a service provided in this
  * same `apply` is not readable from this fiber until the apply has unwound, so
  * reading it during registration would race the slot declaration order.
- * `scripts/probe-service-timing.mjs` measures that; the parameter makes the
- * order explicit and unobservable at runtime.
+ * `scripts/probe-service-timing.mjs` measures that.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import type { TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol'
 import { apply as applyVendored, inject as vendoredInject } from '../vendored/client/index.ts'
-import { clientGrouping, projects } from './grouping.ts'
 import type { ProjectActions } from '../vendored/client/index.ts'
+import { clientGrouping, installProjectModel, projectModel } from './grouping.ts'
+import { ProjectModel } from './projects.ts'
+import { projectGroupsRemote } from './remote.ts'
 
-export { clientGrouping, projects } from './grouping.ts'
+export { clientGrouping, projectModel } from './grouping.ts'
 export type { GroupSource } from '../vendored/client/tree.ts'
-export type { Project } from './projects.ts'
+export type { ProjectRemote } from './projects.ts'
 
 /** The same service set the vendored half needs; see its own `inject`. */
 export const inject = vendoredInject
 
 /**
- * The verbs the browser row menu and drag drive, bound to this plugin's model.
+ * The verbs the browser's row menu and drag drive.
  *
- * Each resolves only after the model has changed, so the dialog that awaited it
- * closes on a committed value and a rejection surfaces in the dialog rather
- * than behind it.
+ * Each resolves only after the Host has accepted the write, so a dialog awaiting
+ * one closes on a committed value and a refusal surfaces in the dialog rather
+ * than behind it. The state itself arrives over the `follow` stream, not from
+ * these calls.
  */
 const projectActions: ProjectActions = {
-  createProject: async ({ title }) => { projects.create(title) },
-  renameProject: async (id, title) => {
-    if (!projects.rename(id, title)) throw new Error(`unknown project: ${id}`)
-  },
-  deleteProject: async (id) => {
-    if (!projects.delete(id)) throw new Error(`unknown project: ${id}`)
-  },
-  reorderProject: async (id, beforeId) => { projects.reorder(id, beforeId) },
+  createProject: async ({ title }) => { await requireModel().create(title) },
+  renameProject: async (id, title) => { await requireModel().rename(id, title) },
+  deleteProject: async (id) => { await requireModel().remove(id) },
+  reorderProject: async (id, beforeId) => { await requireModel().reorder(id, beforeId) },
+}
+
+/** @returns the started model, or throws when the Remote namespace is absent. */
+function requireModel(): ProjectModel {
+  const live = projectModel()
+  if (live === undefined) throw new Error('the projectGroups namespace is not available')
+  return live
 }
 
 /**
  * Register the vendored browser with this plugin's grouping model.
- *
- * The grouping override is a parameter rather than a service: a service
- * provided in this same apply is not readable from this fiber until the apply
- * has unwound, so reading one during registration would race the slot
- * declaration order (`scripts/probe-service-timing.mjs` measures that).
  * @param ctx - client root context.
  */
 export function apply(ctx: Context): void {
+  // Mount before registering the browser so the model's baseline can land while
+  // the sidebar is still being assembled. A failure here is contained: the
+  // sidebar then renders one Ungrouped bucket and the project verbs refuse
+  // loudly, which is better than a dead sidebar.
+  void mountProjects(ctx)
   applyVendored(ctx, clientGrouping, projectActions)
 }
 
+/**
+ * Mount this plugin's Remote namespace and start the projection.
+ *
+ * `$mount` is read off the `remote` service rather than imported: the gateway's
+ * Client face is not a platform module, so importing it would be a build-purity
+ * violation. The structural type below is the part of that face this plugin
+ * uses.
+ * @param ctx - client root context.
+ */
+async function mountProjects(ctx: Context): Promise<void> {
+  try {
+    const remote = ctx.get('remote') as {
+      $mount(contribution: TypertRemoteContribution): Promise<() => Promise<void>>
+      projectGroups: ConstructorParameters<typeof ProjectModel>[0]
+    } | undefined
+    if (remote === undefined) throw new Error('the remote service is unavailable')
+    await remote.$mount(projectGroupsRemote)
+    const model = new ProjectModel(remote.projectGroups)
+    const stop = await model.start()
+    installProjectModel(model)
+    ctx.effect(() => stop, 'project-groups: follow stream')
+  } catch (error: unknown) {
+    console.error('dsh-project-groups: project namespace failed to mount:', error)
+  }
+}

@@ -1,76 +1,87 @@
 /**
- * The project model this plugin layers over the vendored sidebar.
+ * The project model this plugin's sidebar is a view of.
  *
- * ## What a project is
+ * ## Where the data lives
  *
- * A title plus a set of Sessions. It is **not** a Workspace: it owns no
- * directory, contributes nothing to the Host registry, and never touches a
- * Session's `cwd`. Every Session stays in the Host's default Workspace; the
- * project is the grouping the sidebar draws on top.
+ * The Host owns it: `src/index.ts` keeps the durable table under
+ * `$DSH_HOME/storages/`, and this class mirrors the projection it streams. Every
+ * verb here calls the Remote method and lets the resulting `follow` frame update
+ * the state — nothing is applied optimistically, so the sidebar can never show a
+ * project the Host did not accept.
  *
- * ## Why it lives here and not in the Host
+ * ## Why the grouping observable caches its snapshot
  *
- * L1-1 stages the model in the browser so the sidebar can be exercised before
- * the persistence seam exists. `ctx.storageDomain` and the Remote namespace that
- * reach it are L1-2; the shape below is already the one those will carry, so
- * that step replaces this file's storage, not its API.
+ * The vendored browser's selector compares snapshot identity, so a fresh array
+ * per read would re-render every consumer on each store ping. The derived
+ * `GroupSource[]` is therefore rebuilt only when the projection actually
+ * changes, which is the same discipline the shipped `derive()` helper enforces.
  *
- * The consequence while staged: projects do not survive a reload.
+ * ## Why Ungrouped is the fallback rather than a project
  *
- * ## Membership
- *
- * L1-1 moves no Sessions, so every project reports an empty membership and the
- * whole list renders under Ungrouped — which is the correct starting state
- * (nothing has been filed yet), not a placeholder. Assignment arrives with the
- * drag interaction in L2.
+ * A Session with no assignment is not in any project, and an empty source is a
+ * meaningful override: `undefined` would mean "group by the Host Workspace
+ * registry" (upstream), while `[]` means "an active override claiming nothing".
+ * Projects plus the browser's own Ungrouped bucket is therefore the whole list.
  */
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { GroupSource } from '../vendored/client/tree.ts'
+import type { ProjectBaseline, ProjectFollowFrame, ProjectValue } from '../protocol.ts'
 
-/** One project as the sidebar renders it. */
-export interface Project {
-  readonly id: string
-  readonly title: string
+/** The Remote face this model drives; structurally the mounted namespace. */
+export interface ProjectRemote {
+  baseline(): Promise<{ ok: boolean; value?: unknown; error?: { message: string } }>
+  create(request: { title: string }): Promise<RemoteOutcome<unknown>>
+  rename(request: { projectId: string; title: string }): Promise<RemoteOutcome<unknown>>
+  delete(request: { projectId: string }): Promise<RemoteOutcome<unknown>>
+  reorder(request: { projectId: string; beforeId?: string }): Promise<RemoteOutcome<unknown>>
+  assign(request: { sessionId: string; projectId: string }): Promise<RemoteOutcome<unknown>>
+  unassign(request: { sessionId: string }): Promise<RemoteOutcome<unknown>>
 }
 
-/** Sessions filed under one project. L2 fills this; L1-1 always reads it empty. */
-const NO_MEMBERS: readonly SessionId[] = Object.freeze([])
+/** Minimal result shape the mounted namespace answers with. */
+interface RemoteOutcome<T> {
+  readonly ok: boolean
+  readonly value?: T
+  readonly error?: { readonly message: string }
+}
 
-/**
- * Stable project identity. `randomUUID` is available in every secure context,
- * which includes the loopback URL the Web UI is served from; the fallback keeps
- * an exotic embedding (a non-secure origin) working rather than throwing.
- * @returns a fresh project id.
- */
-function newProjectId(): string {
-  const random = globalThis.crypto?.randomUUID?.()
-  if (random !== undefined) return random
-  return `project-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+/** Everything the sidebar needs to render projects, as the Host reports it. */
+interface ProjectState {
+  readonly projects: readonly ProjectValue[]
+  /** Session id → owning project id. */
+  readonly assignments: Readonly<Record<string, string>>
+}
+
+const EMPTY_STATE: ProjectState = Object.freeze({ projects: Object.freeze([]), assignments: Object.freeze({}) })
+
+/** Unwrap one Remote outcome, turning a failure into a thrown error. */
+function unwrap<T>(outcome: RemoteOutcome<T>, what: string): T {
+  if (!outcome.ok) throw new Error(outcome.error?.message ?? `${what} failed`)
+  return outcome.value as T
 }
 
 /**
- * Front-end project store: the list, its derived grouping source, and the verbs
- * the sidebar drives.
+ * Client-side projection of the Host's project registry.
  *
- * The grouping observable is what the vendored browser consumes. Its snapshot is
- * cached and only rebuilt on a real change, because the browser's selector
- * compares snapshot identity — a fresh array per read would re-render every
- * consumer on each store ping. This is the same discipline the shipped
- * `derive()` helper enforces.
+ * A single instance is shared with the sidebar's inject face; see
+ * `src/client/index.ts`.
  */
 export class ProjectModel {
-  private projects: readonly Project[] = []
+  private state: ProjectState = EMPTY_STATE
   private derived: readonly GroupSource[] | undefined
   private readonly listeners = new Set<() => void>()
 
   /**
+   * @param remote - the mounted `projectGroups` namespace.
+   */
+  constructor(private readonly remote: ProjectRemote) {}
+
+  /**
    * The grouping source handed to the vendored browser.
    *
-   * Always an array, never `undefined`: `undefined` means "group by the Host
-   * Workspace registry" (upstream), while an empty array is an active override
-   * claiming nothing. An empty list is therefore the honest state for a fresh
-   * install — projects exist as a feature, none has been created.
+   * Never `undefined`: see the module doc on why "no override" is a different
+   * state from "an override with nothing in it".
    */
   readonly grouping: HostObservable<readonly GroupSource[] | undefined> = {
     getSnapshot: () => this.groupingSnapshot(),
@@ -81,90 +92,146 @@ export class ProjectModel {
   }
 
   /** @returns projects in display order. */
-  list(): readonly Project[] {
-    return this.projects
+  list(): readonly ProjectValue[] {
+    return this.state.projects
   }
 
   /** @returns the project with this id, or undefined. */
-  get(id: string): Project | undefined {
-    return this.projects.find(project => project.id === id)
+  get(id: string): ProjectValue | undefined {
+    return this.state.projects.find(project => project.projectId === id)
+  }
+
+  /** @returns the id of the project owning this Session, or undefined. */
+  projectOf(sessionId: SessionId): string | undefined {
+    return this.state.assignments[sessionId]
   }
 
   /**
-   * Append a project.
-   * @param title - already-trimmed, non-blank display title.
-   * @returns the created project.
+   * Load the Host's current projection and subscribe to its changes.
+   * @returns a disposer that stops following.
    */
-  create(title: string): Project {
-    const project: Project = Object.freeze({ id: newProjectId(), title })
-    this.projects = [...this.projects, project]
-    this.changed()
-    return project
+  async start(): Promise<() => void> {
+    const baseline = await this.remote.baseline()
+    if (!baseline.ok) throw new Error(baseline.error?.message ?? 'project baseline failed')
+    this.accept(baseline.value as ProjectBaseline)
+
+    // `follow` answers a stream handle rather than a promise; the shape is the
+    // Gateway's, so it is read structurally here to keep this file free of a
+    // platform-module import.
+    const handle = this.remote as unknown as {
+      follow(signal: AbortSignal): AsyncIterable<ProjectFollowFrame>
+    }
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        for await (const frame of handle.follow(controller.signal)) this.acceptFrame(frame)
+      } catch (error: unknown) {
+        // A dropped carrier is recoverable (the Gateway reopens the stream), so
+        // this is logged rather than surfaced: the sidebar keeps the last
+        // projection, and a reconnect delivers a fresh baseline.
+        console.warn('project stream ended:', error)
+      }
+    })()
+    return () => { controller.abort() }
   }
 
-  /**
-   * Retitle one project in place.
-   * @param id - target project.
-   * @param title - already-trimmed, non-blank display title.
-   * @returns whether a project carried that id.
-   */
-  rename(id: string, title: string): boolean {
-    if (!this.projects.some(project => project.id === id)) return false
-    this.projects = this.projects.map(project => project.id === id ? { ...project, title } : project)
-    this.changed()
-    return true
+  /** Create a project; the state updates when the Host's write reaches the stream. */
+  async create(title: string): Promise<void> {
+    unwrap(await this.remote.create({ title: title.trim() }), 'create project')
   }
 
-  /**
-   * Remove one project. Its Sessions are not touched anywhere: membership is
-   * L2's separate table, and an absent membership already reads as Ungrouped.
-   * @param id - target project.
-   * @returns whether a project was removed.
-   */
-  delete(id: string): boolean {
-    const next = this.projects.filter(project => project.id !== id)
-    if (next.length === this.projects.length) return false
-    this.projects = next
-    this.changed()
-    return true
+  /** Retitle a project. */
+  async rename(projectId: string, title: string): Promise<void> {
+    unwrap(await this.remote.rename({ projectId, title: title.trim() }), 'rename project')
   }
 
-  /**
-   * Move one project to a position in display order.
-   * @param id - project to move.
-   * @param beforeId - project it should precede; absent appends to the end.
-   * @returns whether the order changed.
-   */
-  reorder(id: string, beforeId?: string): boolean {
-    const moving = this.projects.find(project => project.id === id)
-    if (moving === undefined) return false
-    const rest = this.projects.filter(project => project.id !== id)
-    const index = beforeId === undefined ? rest.length : rest.findIndex(project => project.id === beforeId)
-    if (index === -1) return false
-    const next = [...rest.slice(0, index), moving, ...rest.slice(index)]
-    if (next.every((project, position) => project.id === this.projects[position]?.id)) return false
-    this.projects = next
-    this.changed()
-    return true
+  /** Delete a project; its Sessions return to Ungrouped on the Host. */
+  async remove(projectId: string): Promise<void> {
+    unwrap(await this.remote.delete({ projectId }), 'delete project')
+  }
+
+  /** Move a project before another; an absent anchor appends. */
+  async reorder(projectId: string, beforeId?: string): Promise<void> {
+    unwrap(
+      await this.remote.reorder(beforeId === undefined ? { projectId } : { projectId, beforeId }),
+      'reorder project',
+    )
+  }
+
+  /** File a Session under a project, replacing any previous assignment. */
+  async assign(sessionId: SessionId, projectId: string): Promise<void> {
+    unwrap(await this.remote.assign({ sessionId, projectId }), 'assign session')
+  }
+
+  /** Return a Session to Ungrouped. */
+  async unassign(sessionId: SessionId): Promise<void> {
+    unwrap(await this.remote.unassign({ sessionId }), 'unassign session')
+  }
+
+  private acceptFrame(frame: ProjectFollowFrame): void {
+    if (frame.type === 'baseline') {
+      this.accept(frame.value)
+      return
+    }
+    // Increments are not used: the Host re-projects as a baseline on every
+    // change, so only that branch is reachable today. Kept exhaustive so a
+    // future increment fails loudly here rather than being dropped.
+    console.warn('project frame ignored:', frame.type)
+  }
+
+  private accept(baseline: ProjectBaseline): void {
+    const projects = Object.freeze(baseline.projects.map(project => Object.freeze({ ...project })))
+    const assignments = Object.freeze({ ...baseline.assignments })
+    // Compare by value: the Host re-projects on every change, and a frame that
+    // carries the same state must not invalidate the snapshot the browser
+    // compares by identity.
+    if (sameProjects(this.state.projects, projects) && sameAssignments(this.state.assignments, assignments)) {
+      return
+    }
+    this.state = Object.freeze({ projects, assignments })
+    this.derived = undefined
+    for (const listener of [...this.listeners]) listener()
   }
 
   private groupingSnapshot(): readonly GroupSource[] {
-    this.derived ??= Object.freeze(this.projects.map(project => Object.freeze({
-      key: project.id,
+    this.derived ??= Object.freeze(this.state.projects.map(project => Object.freeze({
+      key: project.projectId,
       label: project.title,
-      sessionIds: NO_MEMBERS,
+      // Members come from the assignment map, so a Session appears under the
+      // project the Host says owns it. A stale id (a deleted Session) is absent
+      // from the browser's list and therefore simply not rendered.
+      sessionIds: Object.freeze(
+        Object.entries(this.state.assignments)
+          .filter(([, projectId]) => projectId === project.projectId)
+          .map(([sessionId]) => sessionId as SessionId),
+      ),
       // Marks the row as ours: the region gives it a rename/delete menu and a
-      // reorder drag target, and drives them through this model rather than
-      // the Host registry.
+      // reorder drag target, driven through this model rather than the registry.
       kind: 'project',
     } satisfies GroupSource)))
     return this.derived
   }
+}
 
-  private changed(): void {
-    // Drop the cache before notifying: a listener reads the snapshot during the
-    // notification and must observe the new value.
-    this.derived = undefined
-    for (const listener of [...this.listeners]) listener()
-  }
+/** Value equality over the project rows. */
+function sameProjects(left: readonly ProjectValue[], right: readonly ProjectValue[]): boolean {
+  if (left.length !== right.length) return false
+  return left.every((project, index) => {
+    const other = right[index]
+    return other !== undefined
+      && project.projectId === other.projectId
+      && project.title === other.title
+      && project.docPath === other.docPath
+      && project.updatedAt === other.updatedAt
+  })
+}
+
+/** Value equality over the assignment map. */
+function sameAssignments(
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+): boolean {
+  const leftKeys = Object.keys(left)
+  if (leftKeys.length !== Object.keys(right).length) return false
+  return leftKeys.every(key => left[key] === right[key])
 }

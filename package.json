@@ -64,7 +64,9 @@
     "verify:grouping": "node scripts/verify-grouping.mjs",
     "verify:new-session": "node scripts/verify-new-session.mjs",
     "verify:projects": "node scripts/verify-projects.mjs",
-    "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm probe"
+    "verify:project-host": "node scripts/verify-project-host.mjs",
+    "verify:host-import": "node scripts/probe-host-import.mjs lib/index.js",
+    "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -90,7 +92,10 @@
     "@deepseek-ai/dsh-jobs": "0.1.7-rc.2",
     "@deepseek-ai/dsh-schedule": "0.1.7-rc.2",
     "@deepseek-ai/dsh-session": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-storage": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "0.1.7-rc.2",
     "@deepseek-ai/dsh-subagent": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.1.7-rc.2",
     "@deepseek-ai/dsh-util-values": "0.1.7-rc.2",
     "@deepseek-ai/dsh-util-workspace-path": "0.1.7-rc.2",
     "@types/react": "~18.3.1",
@@ -100,7 +105,8 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "tsdown": "^0.22.14",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "zod": "4.6.5"
   },
   "keywords": [
     "dsh",

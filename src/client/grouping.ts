@@ -1,41 +1,87 @@
 /**
  * The grouping model this plugin feeds the vendored sidebar browser.
  *
- * ## What a project is
+ * A project is a title plus the Sessions filed under it. It is **not** a
+ * Workspace: it owns no directory, contributes nothing to the Host registry, and
+ * never touches a Session's `cwd`. Every Session stays in the Host's default
+ * Workspace; the project is the grouping the sidebar draws on top.
  *
- * A title plus (from L2) the Sessions filed under it. It is **not** a
- * Workspace: it owns no directory, contributes nothing to the Host registry,
- * and never touches a Session's `cwd`. Every Session stays in the Host's
- * default Workspace; the project is the grouping the sidebar draws on top.
- *
- * ## Where it lives
- *
- * L1-1 stages the model in the browser ({@link ProjectModel}) so the sidebar can
- * be exercised before the persistence seam exists. `ctx.storageDomain` and the
- * Remote namespace that reach it are L1-2; that step replaces the storage
- * behind this model, not the model's API. While staged, projects do not survive
- * a reload.
+ * The state itself lives in the Host (`src/index.ts`, a `projectGroups` domain
+ * under `$DSH_HOME/storages/`) and reaches here over this plugin's own Remote
+ * namespace. {@link installProjectModel} starts the browser-side mirror.
  *
  * ## Why an override rather than the Workspace registry
  *
  * The observable is never `undefined`: `undefined` means "group by the Host
  * Workspace registry" (upstream), while an array — empty included — is an active
- * override. A fresh install's empty array is the honest state: the feature
- * exists and no project has been created, so every Session is Ungrouped.
+ * override. An install with no projects yet therefore renders one Ungrouped
+ * bucket holding every Session, which is the honest picture: the feature exists
+ * and nothing has been filed.
  *
  * ## Why the Host is unaffected
  *
  * Grouping is a derivation in the browser (`tree.ts` `deriveGroups`). Nothing
  * here writes Workspace membership, `cwd`, or archive state, so switching this
  * back to `undefined` — or disabling the plugin — restores the official
- * workspace-grouped sidebar with all its data intact.
+ * workspace-grouped sidebar with all of its data intact.
  */
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { GroupSource } from '../vendored/client/tree.ts'
-import { ProjectModel } from './projects.ts'
+import type { ProjectModel } from './projects.ts'
 
-/** The project model this plugin's sidebar is a view of. */
-export const projects = new ProjectModel()
+/** The override with no projects: one Ungrouped bucket. */
+const EMPTY: readonly GroupSource[] = Object.freeze([])
 
-/** The observable handed to the vendored browser. */
-export const clientGrouping: HostObservable<readonly GroupSource[] | undefined> = projects.grouping
+/**
+ * The live model, or `undefined` before the Remote namespace has answered.
+ *
+ * Module-level because the browser's inject face is registered during `apply`
+ * while the model only becomes usable once its baseline lands; both must resolve
+ * the same instance.
+ */
+let model: ProjectModel | undefined
+/** Listeners attached before the model existed, handed to it on install. */
+const pending = new Set<() => void>()
+
+/** @returns the live model, once its baseline has landed. */
+export function projectModel(): ProjectModel | undefined {
+  return model
+}
+
+/**
+ * Adopt the started model and wake any listeners that subscribed early.
+ *
+ * The browser subscribes to {@link clientGrouping} during its own registration,
+ * which can precede the Remote baseline; those subscribers read an empty
+ * snapshot then, and nothing would tell them the real one had arrived. They are
+ * re-registered on the live model and notified once for the change in identity.
+ * @param started - the started model.
+ */
+export function installProjectModel(started: ProjectModel): void {
+  model = started
+  const early = [...pending]
+  pending.clear()
+  for (const notify of early) started.grouping.subscribe(notify)
+  // The snapshot these listeners last read was the empty override; the model now
+  // has the Host's, so one notification is a real change rather than a no-op.
+  for (const notify of early) notify()
+}
+
+/**
+ * The observable handed to the vendored browser.
+ *
+ * Reads through the module-level model so the browser may register before the
+ * Remote namespace is ready: until the first baseline lands the snapshot is an
+ * empty override, which renders exactly what a fresh install looks like.
+ */
+export const clientGrouping: HostObservable<readonly GroupSource[] | undefined> = {
+  getSnapshot: () => model?.grouping.getSnapshot() ?? EMPTY,
+  subscribe: (listener) => {
+    const live = model
+    if (live === undefined) {
+      pending.add(listener)
+      return () => { pending.delete(listener) }
+    }
+    return live.grouping.subscribe(listener)
+  },
+}

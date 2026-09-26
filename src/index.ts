@@ -1,9 +1,320 @@
 /**
  * Host half of dsh-project-groups.
  *
- * L0 carries no host-side behaviour: the plugin is a pure client view
- * replacement, so there is nothing to register, watch, or persist here yet.
- * Later layers (project records, session assignment, document injection) will
- * mount into this same apply.
+ * Owns the durable project table and serves it over the plugin's own Remote
+ * namespace. Everything the sidebar shows about projects comes from here; the
+ * Host's workspace registry is never written, so a Session's `cwd` and its
+ * official Workspace account are exactly what they were before this plugin was
+ * installed.
+ *
+ * ## Why no generated Typert artifact
+ *
+ * The official Remote owners ship a `typert.remote-client.js` produced by
+ * `@deepseek-ai/dsh-typert-generator`. That generator is built for the harness
+ * monorepo: it discovers packages only under `<root>/packages` (or `vendor`) and
+ * requires a `tsconfig.host.json` at the workspace root, so an out-of-tree
+ * plugin cannot use it without masquerading as a monorepo.
+ *
+ * It is not needed here. The Gateway has an SRC fallback
+ * (`packages/api/gateway/src/index.ts`, `resolveSrcDescriptor`) that derives an
+ * invocation descriptor at runtime from the service's `typertRemote` binding
+ * plus the `@Remote` markers its prototype carries — and `TypertRemoteService`
+ * is what supplies that binding. So `@Remote` is sufficient on this side, and
+ * the Client ships hand-written descriptors instead of generated ones
+ * (`src/client/remote.ts`).
  */
-export function apply(): void {}
+import { Context } from '@deepseek-ai/cordis'
+import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import type { Domain, DomainChanged } from '@deepseek-ai/dsh-storage-domain'
+import type {} from '@deepseek-ai/dsh-storage-domain'
+import { PROJECT_DOMAIN_NAME, projectDomainSpec, type ProjectRecord } from './spec.ts'
+import {
+  PROJECT_NAMESPACE, PROJECT_SERVICE_KEY,
+  type ProjectAssignRequest, type ProjectAssignmentValue, type ProjectBaseline,
+  type ProjectCreateRequest, type ProjectDeleteRequest, type ProjectFollowFrame,
+  type ProjectOrderValue, type ProjectRenameRequest, type ProjectRenameValue,
+  type ProjectReorderRequest, type ProjectUnassignRequest, type ProjectUnassignValue,
+  type ProjectValue, type ProjectValueResult,
+} from './protocol.ts'
+
+/**
+ * Required Host services. The storage domain facility opens this plugin's
+ * domain; without it there is nowhere durable to put a project.
+ */
+export const inject = ['storageDomain']
+
+/**
+ * Host project registry: the durable table, its order, and the assignment map,
+ * plus the Remote methods the Client calls.
+ *
+ * Extends `TypertRemoteService` rather than plain `Service`: that base's
+ * constructor installs the `typertRemote` binding the Gateway's SRC discovery
+ * reads, and without it none of the `@Remote` markers below would be reachable.
+ *
+ * Reads are synchronous from the domain's in-memory state; every write queues on
+ * the domain's own chain, so a rejected durable write leaves memory untouched.
+ */
+export class ProjectController extends TypertRemoteService {
+  static inject = ['storageDomain']
+
+  private domain: Domain<typeof projectDomainSpec> | undefined
+  /** Live followers, each woken by a landed write. */
+  private readonly followers = new Set<() => void>()
+  /** Serializes domain opens so repeated activation cannot open twice. */
+  private opening: Promise<void> | undefined
+  /** Listener for `domain/changed`, held so the close path can drop it. */
+  private detach: (() => void) | undefined
+
+  /**
+   * @param ctx - Host context carrying the storage-domain facility.
+   */
+  constructor(ctx: Context) {
+    super(ctx, PROJECT_SERVICE_KEY, { namespace: PROJECT_NAMESPACE })
+    ctx.effect(() => () => this.close(), 'project-groups: domain close')
+  }
+
+  /**
+   * Open this plugin's domain once, on first use.
+   *
+   * Deferred rather than done in the constructor because `open` is async and a
+   * Service constructor is not; a composition that never touches projects pays
+   * nothing for it.
+   * @returns the open domain.
+   */
+  private async ready(): Promise<Domain<typeof projectDomainSpec>> {
+    this.opening ??= (async () => {
+      this.domain = await this.ctx.storageDomain.open(projectDomainSpec)
+      this.detach = this.ctx.on('domain/changed', (change) => {
+        if (change.domain !== PROJECT_DOMAIN_NAME) return
+        for (const wake of [...this.followers]) wake()
+      })
+    })()
+    await this.opening
+    /* v8 ignore next -- the open assigned `domain`, or it threw and this line is unreachable. */
+    return this.domain as Domain<typeof projectDomainSpec>
+  }
+
+  private async close(): Promise<void> {
+    const domain = this.domain
+    this.detach?.()
+    this.detach = undefined
+    this.domain = undefined
+    this.opening = undefined
+    this.followers.clear()
+    if (domain !== undefined) await domain.close()
+  }
+
+  /** Current display order; empty before the first order write. */
+  private order(): readonly string[] {
+    return this.domain?.global.get().projectIds ?? []
+  }
+
+  private projectValue(projectId: string, record: ProjectRecord): ProjectValue {
+    return {
+      projectId,
+      title: record.title,
+      docPath: record.docPath,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    }
+  }
+
+  /**
+   * The complete Client projection: projects in display order, the order itself,
+   * and every assignment.
+   * @returns the baseline a following generation opens with.
+   */
+  @Remote('baseline')
+  async baseline(): Promise<ProjectBaseline> {
+    const domain = await this.ready()
+    const projects = domain.table('projects')
+    const assignments = domain.table('assignments')
+    // The order array is authoritative, but a record that landed without an
+    // order entry (an interrupted write, or a hand-edited medium) must still be
+    // visible rather than silently dropped.
+    const ordered = this.order().filter(id => projects.get(id) !== undefined)
+    const seen = new Set(ordered)
+    for (const id of projects.keys()) if (!seen.has(id)) ordered.push(id)
+    return {
+      projects: ordered.map(id => this.projectValue(id, projects.get(id) as ProjectRecord)),
+      projectIds: ordered,
+      assignments: Object.fromEntries(
+        [...assignments.entries()].map(([sessionId, record]) => [sessionId, record.projectId]),
+      ),
+    }
+  }
+
+  /**
+   * Create a project.
+   * @param request - display title; surrounding whitespace is trimmed.
+   * @returns the created project.
+   */
+  @Remote('create')
+  async create(request: ProjectCreateRequest): Promise<ProjectValueResult> {
+    const title = request.title.trim()
+    if (title === '') throw new Error('a project title is required')
+    const domain = await this.ready()
+    const projectId = newProjectId()
+    const now = new Date().toISOString()
+    const record: ProjectRecord = { title, docPath: '', createdAt: now, updatedAt: now }
+    await domain.table('projects').put(projectId, record)
+    await domain.global.set({ projectIds: [...this.order(), projectId] })
+    return { project: this.projectValue(projectId, record) }
+  }
+
+  /**
+   * Retitle one project.
+   * @param request - target project and its new title.
+   * @returns the updated project.
+   */
+  @Remote('rename')
+  async rename(request: ProjectRenameRequest): Promise<ProjectRenameValue> {
+    const title = request.title.trim()
+    if (title === '') throw new Error('a project title is required')
+    const domain = await this.ready()
+    const record = domain.table('projects').get(request.projectId)
+    if (record === undefined) throw new Error(`unknown project: ${request.projectId}`)
+    const next: ProjectRecord = { ...record, title, updatedAt: new Date().toISOString() }
+    await domain.table('projects').put(request.projectId, next)
+    return { project: this.projectValue(request.projectId, next) }
+  }
+
+  /**
+   * Remove one project and every assignment onto it.
+   *
+   * Sessions are not touched: an assignment is this plugin's own record, and a
+   * Session without one is simply Ungrouped.
+   * @param request - target project.
+   */
+  @Remote('delete')
+  async remove(request: ProjectDeleteRequest): Promise<void> {
+    const domain = await this.ready()
+    for (const [sessionId, record] of [...domain.table('assignments').entries()]) {
+      if (record.projectId === request.projectId) await domain.table('assignments').delete(sessionId)
+    }
+    await domain.table('projects').delete(request.projectId)
+    await domain.global.set({ projectIds: this.order().filter(id => id !== request.projectId) })
+  }
+
+  /**
+   * Move one project in display order.
+   * @param request - project to move and the project it should precede.
+   * @returns the new order.
+   */
+  @Remote('reorder')
+  async reorder(request: ProjectReorderRequest): Promise<ProjectOrderValue> {
+    const domain = await this.ready()
+    const current = [...this.order()]
+    if (!current.includes(request.projectId)) throw new Error(`unknown project: ${request.projectId}`)
+    const rest = current.filter(id => id !== request.projectId)
+    const index = request.beforeId === undefined ? rest.length : rest.indexOf(request.beforeId)
+    if (index === -1) throw new Error(`unknown project: ${String(request.beforeId)}`)
+    const projectIds = [...rest.slice(0, index), request.projectId, ...rest.slice(index)]
+    await domain.global.set({ projectIds })
+    return { projectIds }
+  }
+
+  /**
+   * File one Session under one project, replacing any previous assignment.
+   * @param request - Session and target project.
+   * @returns the landed assignment.
+   */
+  @Remote('assign')
+  async assign(request: ProjectAssignRequest): Promise<ProjectAssignmentValue> {
+    const domain = await this.ready()
+    if (domain.table('projects').get(request.projectId) === undefined) {
+      throw new Error(`unknown project: ${request.projectId}`)
+    }
+    await domain.table('assignments').put(request.sessionId, {
+      projectId: request.projectId,
+      assignedAt: new Date().toISOString(),
+    })
+    return { sessionId: request.sessionId, projectId: request.projectId }
+  }
+
+  /**
+   * Return one Session to Ungrouped.
+   * @param request - Session to unassign.
+   * @returns whether an assignment was removed.
+   */
+  @Remote('unassign')
+  async unassign(request: ProjectUnassignRequest): Promise<ProjectUnassignValue> {
+    const domain = await this.ready()
+    const removed = await domain.table('assignments').delete(request.sessionId)
+    return { sessionId: request.sessionId, removed }
+  }
+
+  /**
+   * Stream the projection: a baseline first, then a fresh baseline per landed
+   * write.
+   *
+   * Every frame is a complete projection rather than a diff. That is what makes
+   * reconnection trivial (a new generation opens with a baseline and the Client
+   * replaces its state) and what keeps the two sides from having to agree on
+   * increment semantics. The writes here are user gestures, not a hot path, so
+   * re-projecting costs nothing that matters.
+   * @param signal - caller lifetime; the follower leaves with it.
+   * @returns the frame stream.
+   */
+  @Remote({ mode: 'stream' })
+  async *follow(signal: AbortSignal): AsyncIterable<ProjectFollowFrame> {
+    // Baseline before subscribing: attaching a listener first could let a
+    // concurrent write land between the two, and its frame would then arrive
+    // before the baseline that already contains it.
+    const frames: ProjectFollowFrame[] = []
+    let wake: (() => void) | undefined
+    const push = (): void => {
+      const pending = wake
+      wake = undefined
+      pending?.()
+    }
+    const refresh = async (): Promise<void> => {
+      frames.push({ type: 'baseline', value: await this.baseline() })
+      push()
+    }
+    yield { type: 'baseline', value: await this.baseline() }
+
+    await this.ready()
+    const onChanged = (): void => { void refresh() }
+    this.followers.add(onChanged)
+    const leave = (): void => { this.followers.delete(onChanged) }
+    signal.addEventListener('abort', leave, { once: true })
+    try {
+      while (!signal.aborted) {
+        const next = frames.shift()
+        if (next !== undefined) {
+          yield next
+          continue
+        }
+        await new Promise<void>((resolve) => { wake = resolve })
+      }
+    } finally {
+      leave()
+      signal.removeEventListener('abort', leave)
+    }
+  }
+}
+
+/**
+ * A fresh project id.
+ *
+ * `randomUUID` is present on every supported Node line; the fallback keeps an
+ * exotic runtime working rather than throwing during a create.
+ * @returns a unique id.
+ */
+function newProjectId(): string {
+  const random = globalThis.crypto?.randomUUID?.()
+  if (random !== undefined) return random
+  return `project-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/**
+ * Mount the Host half.
+ * @param ctx - Host context.
+ */
+export function apply(ctx: Context): void {
+  new ProjectController(ctx)
+}
+
+/** Re-exported so the Client contribution and Host agree on one declaration. */
+export type { DomainChanged }

@@ -24,6 +24,39 @@
 import { readFile } from 'node:fs/promises'
 import { basename, dirname, relative, resolve, sep } from 'node:path'
 import { transform } from 'lightningcss'
+import ts from 'typescript'
+
+/**
+ * Lower standard decorators before bundling.
+ *
+ * `@Remote` is TypeScript syntax, and neither tsdown's TypeScript reader nor
+ * rolldown erases it — the decorator is emitted verbatim into `lib/index.js`,
+ * which Node then rejects with "Invalid or unexpected token". Upstream hits the
+ * same thing and solves it the same way: its `dsh-typert-generator` tsdown
+ * plugin's first job is this exact `transpileModule` pass
+ * (`packages/typert/generator/src/tsdown-plugin.ts`).
+ *
+ * Only files that actually carry a decorator are touched, so the rest of the
+ * build keeps its existing pipeline.
+ */
+const DECORATOR_SYNTAX = /^\s*@[A-Za-z_$][\w$]*/m
+
+const decorators = {
+  name: 'dsh-project-groups-decorators',
+  transform(code, id) {
+    const file = id.split('?', 1)[0] ?? id
+    if (!/\.[cm]?tsx?$/.test(file) || !DECORATOR_SYNTAX.test(code)) return
+    const result = ts.transpileModule(code, {
+      fileName: file,
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2024,
+        module: ts.ModuleKind.ESNext,
+        ...(file.endsWith('x') ? { jsx: ts.JsxEmit.ReactJSX } : {}),
+      },
+    })
+    return { code: result.outputText.replace(/\n?\/\/# sourceMappingURL=.*$/u, '\n'), map: undefined }
+  },
+}
 
 /**
  * Specifiers the shell's module table answers; these stay `require()`d so React
@@ -171,7 +204,18 @@ const client = {
   },
 }
 
-/** The host half: a no-op apply today; the earlier layers' code lives here. */
+/**
+ * The host half: this plugin's own Remote namespace, its durable domain, and the
+ * `@Remote` methods the Gateway discovers.
+ *
+ * Every harness package stays external. The running Host supplies them from its
+ * own install — a bundled copy would be a second instance of `cordis` (its
+ * service registry and `instanceof` checks are identity-based) and a second
+ * `zod` (the domain validates records against the schemas this half declares).
+ * `zod` is external for the same reason even though it is an ordinary library:
+ * the storage backend parses what this half wrote, and both must share one
+ * schema implementation.
+ */
 const node = {
   name: PACKAGE_NAME,
   entry: { index: 'src/index.ts' },
@@ -182,7 +226,14 @@ const node = {
   dts: false,
   clean: false,
   fixedExtension: false,
-  external: ['@deepseek-ai/cordis'],
+  plugins: [decorators],
+  external: [
+    '@deepseek-ai/cordis',
+    '@deepseek-ai/dsh-typert-protocol',
+    '@deepseek-ai/dsh-storage-domain',
+    '@deepseek-ai/dsh-storage',
+    'zod',
+  ],
 }
 
 export default [node, client]

@@ -911,7 +911,7 @@ L2 定策略（倾向"最后点的赢"）。
       改为按 `RowRequest.kind` 分派（项目行与工作区行共用一套 UI，动作不同）
 - [x] `Rows.tsx`：菜单删除文案与 aria 按 `kind` 切换（"删除项目"）
 - [x] `locales.ts`：中英项目文案
-- [x] 校验：`verify-projects.mjs`（29 项，真实 `ProjectModel` + 真实 `deriveGroups`）
+- [x] 校验：`verify-projects.mjs`（31 项，真实 `ProjectModel` + 真实 `deriveGroups`）
 - [x] **实测**：`pnpm check` 共 **94 项断言全绿**；隔离实例启动干净，
       产物含 `createProject`/`ProjectModel`/`kind: "project"`
 
@@ -924,22 +924,62 @@ L2 定策略（倾向"最后点的赢"）。
 | 项目行 | `projects.title` | 重命名 / 删除**项目** | 项目间排序 | 建会话（落默认工作区） |
 | 未分组桶 | 固定"未分组" | ❌ | ❌（L2 作放置目标） | 建会话（不归类） |
 
-**本轮的临时状态**：项目数据在**前端内存**（`ProjectModel`），刷新即丢。
-`ctx.storageDomain` 与 Remote 命名空间属 L1-2；届时替换存储，不改模型 API。
+**L1-1 的临时状态**（已被 L1-2 取代）：项目数据曾在前端内存，刷新即丢。
 
-**未做（明确留待）**：项目行 ＋ 的 `assign(sessionId, projectId)`——需要 L2 的归属表。
+### L1-2 — 项目持久化 ✅ 已完成（2026-09-26）
 
-### L1-2 — 项目持久化
-- [ ] host half 与领域声明 + `ctx.storageDomain` 打开
-- [ ] Remote：`create` / `rename` / `delete` / `reorder` / `follow`
-- [ ] **前置验证**：typert 代码生成器能否用于独立仓库（npm 上仅 `0.0.1-rc.1`，
-      且其 `workspaceRoot()` 依赖 `tsconfig.host.json`）；不可用则改手写 contribution
-      （`ctx.typert.register()` 官方明确支持非生成场景）
-- [ ] `ProjectModel` 换成 Remote 支持的实现（API 不变）
+**目标**：项目落到 `$DSH_HOME/storages/`，重启不丢；前端改为读 host 状态。
+
+- [x] `src/spec.ts`：`defineDomain({ name: 'project_groups', version: 1 })`
+      —— `projects` + `assignments` 两表 + `global.projectIds` 顺序
+- [x] `src/protocol.ts`：两半共享的线协议（7 个方法 + follow 帧）
+- [x] `src/index.ts`：`ProjectController extends TypertRemoteService`
+      （`@Remote` × 7，含 `follow` 流），domain 挂 `ctx.effect` 生命周期
+- [x] `src/client/remote.ts`：**手写** contribution（~60 行 descriptor）
+- [x] `src/client/projects.ts`：`ProjectModel` 改为 host 投影的镜像（含 `follow`）
+- [x] `src/client/index.ts`：`ctx.remote.$mount(...)` + 启动模型
+- [x] `tsdown.config.ts`：host half 加**装饰器降级插件**（关键修复，见下）
+- [x] 校验：`verify-project-host.mjs`（31 项，真实 controller + 真实 domain 设施）、
+      `verify-projects.mjs`（31 项，真实 model + 真实 deriveGroups）
+- [x] **实测**：`pnpm check` 全绿；隔离实例启动干净；**7 个动词经 `/api` 全部打通**；
+      数据落 `storages/project_groups.json`；**重启后仍在**
+
+**本轮查清并推翻的两个前置判断**
+
+| 我先前说 | 实际 |
+|---|---|
+| 「代码生成器 npm 上只有 `0.0.1-rc.1`」 | ❌ 错。`0.1.7-rc.2` **存在**（`0.0.1-rc.1` 是 npm 的 `latest` 标签） |
+| 「必须用代码生成器 / 或手写 24.9 KB 产物」 | ❌ 都不必。手写 descriptor **约 60 行**就够 |
+
+**为什么手写 descriptor 够**（`verify` 已覆盖）
+
+1. client 只校验参数 codec 的 `mode === 'strict'`，**不检查 `create()` 返回什么**
+   （`gateway/src/client/index.ts` 的 `requireStrictCodec`）
+2. `TypertSchema` 是结构类型 `{ parse(value) }`，**不要求 zod**
+3. 本插件载荷全是扁平 JSON，直通 codec 即语义正确
+4. **host 侧根本不需要生成物**：Gateway 有 SRC 回退
+   （`resolveSrcDescriptor`），运行时从 `typertRemote` binding + `@Remote` 标记推导 descriptor
+
+**生成器仍不适用于独立仓库**（故未采用）：它只扫 `<root>/packages` 或 `vendor`，
+并要求根目录有 `tsconfig.host.json`。
+
+**关键修复：装饰器必须降级**
+
+首次启动报 `project-groups (dsh-project-groups): failed to import`。
+根因不是模块解析，而是 **`@Remote` 被原样输出到 `.js`**（TS 语法，Node 无法解析）。
+官方同样遇到并以 `typert-generator` 的 tsdown `transform` 钩子解决；
+我们加了一个只做这件事的最小插件（`DECORATOR_SYNTAX` + `ts.transpileModule`）。
+
+**第二个真实错误**：领域名 `projectGroups` 违反 `UNIT_NAME_RE`（`/^[a-z][a-z0-9_]*$/`）
+——它同时是后端 unit 名与文件名片段，故改为 snake_case 的 `project_groups`。
+
+**依赖解析**：host half 的 harness 包全部保持 external；DSH 的 profile 用
+`nodeLinker: hoisted`（`profile.ts` 明确注释）让树外插件共享安装实例的 cordis/zod，
+所以不需要把它们打进产物。
 
 ### L2 — 拖拽归类
-- [ ] `assignments` 表启用
-- [ ] Remote：`assign` / `unassign`
+- [x] `assignments` 表（L1-2 已建，key = sessionId → 一个会话只属一个项目）
+- [x] Remote：`assign` / `unassign`（L1-2 已通）
 - [ ] 项目行 ＋ 的 `assign(sessionId, projectId)` 接缝
 - [ ] **会话跨组拖拽**（官方无此逻辑：官方不允许会话离开工作区，需新写）
 
