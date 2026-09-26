@@ -58,7 +58,7 @@
     "build": "tsdown",
     "watch": "tsdown --watch",
     "typecheck": "tsc -p tsconfig.json --pretty false",
-    "probe": "node scripts/probe-approach-b.mjs && node scripts/probe-slots.mjs && node scripts/probe-service.mjs && node scripts/probe-grouping-seam.mjs",
+    "probe": "node scripts/probe-approach-b.mjs && node scripts/probe-slots.mjs && node scripts/probe-service.mjs && node scripts/probe-grouping-seam.mjs && node scripts/probe-inject-wait.mjs && node scripts/probe-contribution.mjs",
     "verify:bundle": "node scripts/compare-bundle.mjs",
     "verify:patch": "node scripts/verify-patch.mjs",
     "verify:grouping": "node scripts/verify-grouping.mjs",

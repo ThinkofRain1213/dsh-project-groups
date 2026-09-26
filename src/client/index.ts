@@ -47,6 +47,7 @@ import type { ProjectActions } from '../vendored/client/index.ts'
 import { clientGrouping, installProjectModel, projectModel } from './grouping.ts'
 import { ProjectModel } from './projects.ts'
 import { projectGroupsRemote } from './remote.ts'
+import { PROJECT_NAMESPACE } from '../protocol.ts'
 
 export { clientGrouping, projectModel } from './grouping.ts'
 export type { GroupSource } from '../vendored/client/tree.ts'
@@ -93,9 +94,17 @@ export function apply(ctx: Context): void {
 /**
  * Mount this plugin's Remote namespace and start the projection.
  *
+ * Both services are read with `ctx.get`, not as properties: cordis gates
+ * property access on the fiber's declared dependencies, so `remote.projectGroups`
+ * throws `cannot get property "..." without inject`. Declaring it in `inject`
+ * would deadlock — the namespace exists only because this very call mounts it, so
+ * the fiber would be waiting on itself. `ctx.get` is the ungated lookup, and it
+ * is what makes mounting one's own namespace possible at all
+ * (`scripts/probe-inject-wait.mjs` measures both shapes).
+ *
  * `$mount` is read off the `remote` service rather than imported: the gateway's
  * Client face is not a platform module, so importing it would be a build-purity
- * violation. The structural type below is the part of that face this plugin
+ * violation. The structural types below are the parts of those faces this plugin
  * uses.
  * @param ctx - client root context.
  */
@@ -103,11 +112,16 @@ async function mountProjects(ctx: Context): Promise<void> {
   try {
     const remote = ctx.get('remote') as {
       $mount(contribution: TypertRemoteContribution): Promise<() => Promise<void>>
-      projectGroups: ConstructorParameters<typeof ProjectModel>[0]
     } | undefined
     if (remote === undefined) throw new Error('the remote service is unavailable')
     await remote.$mount(projectGroupsRemote)
-    const model = new ProjectModel(remote.projectGroups)
+    // Re-read through the ungated lookup: the mount created this service, and
+    // reading it as `remote.projectGroups` would hit the inject gate.
+    const namespace = ctx.get(`remote.${PROJECT_NAMESPACE}`) as
+      | ConstructorParameters<typeof ProjectModel>[0]
+      | undefined
+    if (namespace === undefined) throw new Error(`the ${PROJECT_NAMESPACE} namespace did not mount`)
+    const model = new ProjectModel(namespace)
     const stop = await model.start()
     installProjectModel(model)
     ctx.effect(() => stop, 'project-groups: follow stream')
