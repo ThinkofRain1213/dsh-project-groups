@@ -88,8 +88,8 @@ source with a comment naming the seam.
 | `rows/WorkspaceBrowser.tsx` | `onCreate` also files what a project row created, through the optional `assignSession` verb and the `beforeOpen` callback | re-apply the dispatch |
 | `rows/WorkspaceBrowser.tsx` | expansion is routed by key ownership: caller-supplied keys go through `setProjectExpanded` / `projectExpansion`, every other key through the view store (see below) | re-apply `isCallerOwned` / `recordExpansion` / `hasExpansion` and the merge in `expandedGroups` |
 | `rows/WorkspaceBrowser.tsx` | caller-supplied groups get the same two-mode member ordering the Workspace rows get, from `orderedProjects` + the `orders` hook; `commitSessionDrag` resolves a caller key after the Workspace lookup; `saveSessionOrder` and the order menu dispatch by key ownership (see below) | re-apply `orderedProjects` / `allProjectOrders`, the `?? groupingOverride?.find(...)` in `commitSessionDrag`, and the two dispatches |
-| `rows/WorkspaceBrowser.tsx` | a Session can be dragged **between** groups: `DragState.overGroupKey` names the target, a row drop is positional and a group-header drop is not, and `commitCrossGroupDrag` files it through `assignSession` / `unassignSession` before writing the order (see below) | re-apply `overGroupKey`, `canReceiveDrag`, `insertIntoTargetOrder`, `commitCrossGroupDrag`, and the group section's `crossGroupTarget` branch |
-| `rows/Rows.tsx` | a Session row's `dragover` / `drop` call `stopPropagation`, so the row is the target rather than the enclosing group section | re-add the two calls |
+| `rows/WorkspaceBrowser.tsx` | a Session can be dragged **between** groups: `DragState.overGroupKey` names the target, a row drop is positional and a header drop is not, and `commitCrossGroupDrag` files it through `assignSession` / `unassignSession` before writing the order (see below) | re-apply `overGroupKey`, `canReceiveDrag`, `insertIntoTargetOrder`, `commitCrossGroupDrag`, and the `groupDrop` wiring |
+| `rows/Rows.tsx` | a Session row's `dragover` / `drop` call `stopPropagation`, so the row is the target rather than the enclosing group section; `ProjectRowItem` takes an optional `groupDrop` that makes the **header row** — not the section — the cross-group hit target (the highlight stays on the section, painted by the region) | re-add the two calls and the `groupDrop` prop and handlers |
 | `tree.ts` | under a grouping override the Ungrouped bucket always renders, empty included — it is the drop target that takes a Session back out of a caller-supplied group (see below) | re-apply the `archivedFilter !== 'only'` alternative |
 | `navigation.ts` | `startSession` takes an optional `beforeOpen` callback and threads it into `openWorkspace`, so a caller can act on the Session that lands (a project row files it). Omitted, the flow is unchanged | re-add the parameter and the pass-through |
 | `rows/WorkspaceBrowser.tsx` | rename/delete dialogs and the group drag take a `kind`-tagged row (`RowRequest`), so a caller-supplied project row drives the same affordances as a Workspace row; the header's add control runs `createProject` when the composition supplies one, and the dialog titles/labels switch on that kind | re-apply the dispatch, the two dialog blocks, and the drag wiring |
@@ -209,10 +209,23 @@ Two drop paths, and they mean different things:
   - **on a row** — a positional drop. The Session is filed, inserted at that
     position, and the view switches to manual ordering, which is upstream's rule
     for any sort gesture.
-  - **on the group itself** (its header, or the empty body where its rows would
-    be) — a drop *into* the group. Under recency nothing is stored: the member has
-    no saved position, so `reconcileManualOrder` derives one from `updatedAt`.
-    Under manual it goes to the front, the one position a header drop can name.
+  - **on the header row** — a drop *into* the group. Under recency nothing is
+    stored: the member has no saved position, so `reconcileManualOrder` derives one
+    from `updatedAt`. Under manual it goes to the front, the one position a header
+    drop can name.
+
+The target is the header **row**, not the enclosing group section: the section is
+taller than its children — it owns the 2px `margin-top` between each pair — and
+covers the space beside them, so accepting a drop there would let a Session land in
+a group from a pointer nowhere near a drop position. That is the flash seen while
+dragging past a project.
+
+The **highlight**, though, is painted on the whole group (the section). Hit testing
+and highlight answer different questions here: the row is what can be dropped on,
+the group is what the drop means. Painting the highlight on the row says the wrong
+thing, and painting the *target* on the section is the bug above — so the two are
+deliberately split. `GroupDropProps` therefore carries no `active` flag: the region
+already holds the state and paints the section from it.
 
 `DragState.overGroupKey` carries the target, and `over === null` distinguishes a
 header drop from a positional one — which is why `commitSessionDrag`'s second
@@ -221,11 +234,18 @@ parameter is now nullable. Filing goes through `assignSession` /
 same-group path uses. With either verb absent, `canReceiveDrag` is false and the
 region behaves exactly as upstream.
 
-Two supporting changes:
+Three supporting changes:
 
   - a Session row's `dragover` / `drop` `stopPropagation`, so the row wins over
     the enclosing group section (which would otherwise replace the positional
     marker with a group-level target);
+  - the header's `groupDrop` asserts the target on `dragover`, not only on
+    `dragenter`. Both enter and leave also fire when the pointer crosses a *child*
+    of the row (the folder glyph, the chevron, the title) and they bubble, so
+    moving within the header would fire a `dragleave` that cancelled a highlight
+    the pointer never left. Asserting on the continuously-firing `dragover` makes
+    the state self-correcting; the setter is idempotent so those events do not
+    re-render;
   - the Ungrouped bucket always renders under an override, because it is the drop
     target that takes a Session back out of a project. `groupByWorkspace` keeps
     the shipped strays-only rule, and the archived-only view still hides an empty
@@ -263,6 +283,7 @@ browser probes that drive a live instance. They are run by hand rather than by
 | `scripts/probe-project-reorder.mjs` | drags one Session over another inside a project | spawns a server |
 | `scripts/probe-order-mode.mjs` | switches the order menu and reads the Host's stored records | spawns a server; **needs an empty `dshHome`** (it asserts the arriving state) |
 | `scripts/probe-cross-group.mjs` | drags Sessions between projects and out to Ungrouped | spawns a server |
+| `scripts/probe-drop-highlight.mjs` | checks the cross-group highlight is on the group section while the pointer is on the header row, and that the section itself accepts no drop | spawns a server |
 
 `probe-plugin-toggle.mjs` owns its lifecycle deliberately: localStorage is scoped
 to an origin, and an origin includes the port, so running the two profiles on

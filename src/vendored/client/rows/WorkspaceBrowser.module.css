@@ -496,10 +496,17 @@
   bottom: -8px;
 }
 
-/* A Session dragged out of another group hovering this group itself (its header
- * or its empty body) — a drop *into* the group, as opposed to the insert line a
- * row gives for a positional drop. The two say different things, so they look
- * different: a line names a position, an outline names a destination. */
+/* A Session dragged out of another group hovering this group's **header row**.
+ *
+ * Hit testing lives on the header row — that is the only place a drop lands — but
+ * the highlight is painted here, across the whole group, because the drop means
+ * "into this project" rather than "at this row". Painting it on the row instead
+ * would say the wrong thing: the row is the handle, the group is the destination.
+ *
+ * Because this sits on the section, it also covers the 2px gaps between the rows
+ * and the space beside them. That is the point — the group reads as one highlighted
+ * block — and it does not make those areas droppable, which is a separate question
+ * decided by where the handlers are attached. */
 .groupDropTarget {
   border-radius: var(--dsw-radius-sm);
   background: var(--dsw-alias-interactive-bg-hover);

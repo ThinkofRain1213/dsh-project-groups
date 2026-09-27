@@ -196,6 +196,28 @@ interface WorkspaceRowDragProps {
   end: () => void
 }
 
+/**
+ * A Session dragged out of another group hovering this group's **header row**.
+ *
+ * Hit testing is the row and not the enclosing section on purpose: a section spans
+ * the gaps between its rows and the empty space beside them, so accepting a drop
+ * there would let a Session land in a group from a pointer that is nowhere near a
+ * drop position. Only the header is a target.
+ *
+ * The highlight is deliberately *not* here. The row is the handle, the group is
+ * what the drop means, so the owner paints the whole group from the state these
+ * callbacks report — which it already holds, and which is why this carries no
+ * `active` flag for the row to read.
+ */
+export interface GroupDropProps {
+  /** Report the drag entering this row. */
+  enter: () => void
+  /** Report the drag leaving this row. */
+  leave: () => void
+  /** Commit the drop into this group. */
+  drop: () => void
+}
+
 /** Pointer-position half of a row (insert line above or below). */
 function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): 'before' | 'after' {
   const rect = e.currentTarget.getBoundingClientRect()
@@ -216,7 +238,7 @@ function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): 'before' |
  * @param props.t - the browser root's locale seat.
  * @returns the row element.
  */
-export function ProjectRowItem({ group, containsCurrentDescendant = false, onToggle, onCreate, actions, drag, home, newShortcut, t }: {
+export function ProjectRowItem({ group, containsCurrentDescendant = false, onToggle, onCreate, actions, drag, groupDrop, home, newShortcut, t }: {
   group: GroupNode
   newShortcut?: ShortcutCatalogEntry | undefined
   containsCurrentDescendant?: boolean
@@ -226,6 +248,8 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
   actions?: { rename: () => void; delete: () => void } | undefined
   /** Present only for real Workspace rows in the grouped view. */
   drag?: WorkspaceRowDragProps | undefined
+  /** Present only when a Session from another group can be dropped into this one. */
+  groupDrop?: GroupDropProps | undefined
   /** Host account home; POSIX home-rooted hover paths display as `~`. */
   home?: string | undefined
   t: RowTranslate
@@ -262,6 +286,38 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
           drag.start()
         }}
       onDragEnd={drag?.end}
+      // The header is the drop target for a Session dragged out of another group.
+      //
+      // `enter` is asserted on every `dragover`, not just on `dragenter`. The
+      // enter/leave pair alone is not enough: both events also fire when the
+      // pointer crosses a *child* of this row (the folder glyph, the chevron, the
+      // title), and they bubble, so moving within the header would fire a
+      // `dragleave` that cancelled a highlight the pointer never left. Asserting
+      // on `dragover` — which fires continuously while over the row — makes the
+      // state self-correcting regardless of how those two interleave.
+      onDragEnter={groupDrop === undefined
+        ? undefined
+        : (e) => {
+          e.preventDefault()
+          groupDrop.enter()
+        }}
+      onDragOver={groupDrop === undefined
+        ? undefined
+        : (e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          e.dataTransfer.dropEffect = 'move'
+          groupDrop.enter()
+        }}
+      // Clears only when the pointer has left the row for good; see `leave`.
+      onDragLeave={groupDrop === undefined ? undefined : () => { groupDrop.leave() }}
+      onDrop={groupDrop === undefined
+        ? undefined
+        : (e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          groupDrop.drop()
+        }}
     >
       <span className={clsx(css.slot, css.folder, active && css.folderActive)}>
         {row.expanded ? <IconFolderOpenRegular /> : <IconFolderCloseRegular />}
