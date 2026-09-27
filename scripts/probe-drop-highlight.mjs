@@ -1,15 +1,21 @@
 /**
- * Is the cross-group drop highlight confined to a group's header row?
+ * Is the cross-group highlight painted on the whole group, and only while the
+ * pointer is on the header row?
  *
- * It used to hang on the group **section**. The section is taller than its
- * children — it owns the 2px `margin-top` between each pair — so a pointer in one
- * of those gaps was inside the section but inside no row, and the whole group lit
- * up. That is the flash seen while dragging past a project.
+ * Two separate questions, and the answers are deliberately different:
  *
- * The discriminating position is therefore the **2px gap between the header and
- * the first row**: the section covers it, no row does. A gap between two Session
- * rows is *not* discriminating — both builds leave it clear, because a session
- * row's own handler stops the event before the section sees it.
+ *   - **hit testing** — only the header row accepts a drop. The group section is
+ *     taller than its children (it owns the 2px `margin-top` between each pair)
+ *     and covers the space beside them, so accepting a drop there would let a
+ *     Session land in a group from a pointer nowhere near a drop position. That is
+ *     the flash this fixed.
+ *   - **highlight** — the *whole group*, because the drop means "into this
+ *     project", not "at this row". The row is the handle, the group is the
+ *     destination.
+ *
+ * So the checks are: the section carries the highlight while the pointer is on the
+ * header, and nothing is highlighted over a Session row, a gap, or the space
+ * beside them.
  *
  * Usage: node probe-drop-highlight.mjs <dshExe> <asarRoot> <dshHome>
  */
@@ -153,9 +159,9 @@ try {
   const betaBox = await betaHeader.boundingBox()
   if (betaBox === null) throw new Error('target is not laid out after drag start')
 
-  // (a) 乙's header row — the intended target, reached with a real pointer. Run
-  // first: a synthetic event dispatched later would leave the drag bookkeeping in
-  // a state a real pointer move then does not recover from.
+  // (a) 乙's header row — the hit target, reached with a real pointer. Run first:
+  // a synthetic event dispatched later would leave the drag bookkeeping in a state
+  // a real pointer move then does not recover from.
   //
   // Approached in two stages. Starting a drag disables the list's row animation
   // (`AnimatedRows ready={!nativeDragActive}`), which shifts the rows, so a box
@@ -171,22 +177,74 @@ try {
   const onHeader = await highlighted()
   console.log(`highlight over 乙's header: ${JSON.stringify(onHeader)}`)
 
-  // (b) THE discriminating check, and it is dispatched rather than aimed.
+  // The highlight belongs to the **group**, so the element carrying it is the
+  // section — which has no row key. (A build that paints the row instead reports
+  // `workspace:<id>` here, and that is what this fails on.)
+  check('the whole GROUP is highlighted while on the header',
+    onHeader.length === 1 && onHeader[0].key === null,
+    JSON.stringify(onHeader))
+
+  // (b) Over one of 乙's Session rows: a positional target, so no group highlight.
+  const betaFirstRow = groupSection(beta).locator('[data-row-key^="session:"]').first()
+  const betaRowBox = await betaFirstRow.boundingBox()
+  if (betaRowBox === null) throw new Error('target row is not laid out')
+  await page.mouse.move(betaRowBox.x + betaRowBox.width / 2, betaRowBox.y + betaRowBox.height / 2, { steps: 8 })
+  await page.waitForTimeout(600)
+  const onRow = await highlighted()
+  console.log(`highlight over 乙's first row: ${JSON.stringify(onRow)}`)
+  check('no group highlight over a Session row', onRow.length === 0, JSON.stringify(onRow))
+
+  // (c) Back onto the header: the highlight must return. Moving from a row up to
+  // the header is the common gesture (aiming for the group rather than a position),
+  // so a highlight that only appeared on first entry would look broken.
+  await page.mouse.move(settledBox.x + settledBox.width / 2, settledBox.y + settledBox.height / 2, { steps: 8 })
+  await page.waitForTimeout(600)
+  const backOnHeader = await highlighted()
+  console.log(`highlight back on 乙's header: ${JSON.stringify(backOnHeader)}`)
+  check('the group highlights again on returning to the header',
+    backOnHeader.length === 1 && backOnHeader[0].key === null, JSON.stringify(backOnHeader))
+
+  // Release here, so the probe also proves the drop it is measuring still works.
+  await page.mouse.up()
+  await page.waitForTimeout(2500)
+
+  const alphaAfter = await sessionsUnder(alpha)
+  const betaAfter = await sessionsUnder(beta)
+  console.log(`甲 after: ${JSON.stringify(alphaAfter)}`)
+  console.log(`乙 after: ${JSON.stringify(betaAfter)}`)
+  check('the drop into 乙 still worked',
+    alphaAfter.length === 1 && betaAfter.length === 3 && betaAfter.includes(alphaRows[0]),
+    JSON.stringify({ alphaAfter, betaAfter }))
+
+  // (d) THE hit-testing check, and it is dispatched rather than aimed. Run last:
+  // dispatching a synthetic `DragEvent` perturbs Chromium's own drag bookkeeping
+  // enough that the *next* real pointer move does not reliably deliver `dragover`,
+  // so every real-pointer assertion above would become a measurement of the harness.
   //
   // The section is only 2px taller than its children per gap and the row below
-  // overlaps all but one pixel of that, so a synthetic pointer cannot reliably
-  // land in the band: an earlier version of this probe aimed at the computed
+  // overlaps all but one pixel of that, so a synthetic pointer cannot reliably land
+  // in the band either: an earlier version of this probe aimed at the computed
   // midpoint, actually hit the row, and passed on the broken build too.
   //
-  // Dispatching `dragover` on the section element itself removes the ambiguity.
-  // The broken build hangs the handler on the section, so the event sets the
-  // highlight; the fixed build has no handler there, the event bubbles to the
-  // document listener (which only `preventDefault`s), and nothing changes.
-  const sectionOnly = await page.evaluate((title) => {
+  // Dispatching on the section element itself removes the ambiguity. A build that
+  // hangs the handler on the section sets the highlight; this one has no handler
+  // there, the event bubbles to the document listener (which only `preventDefault`s),
+  // and nothing changes.
+  //
+  // A fresh drag is started for it, so the state is unambiguous.
+  const source2 = groupSection(alpha).locator('[data-row-key^="session:"]').nth(0)
+  const source2Box = await source2.boundingBox()
+  if (source2Box === null) throw new Error('source is not laid out')
+  await page.mouse.move(source2Box.x + source2Box.width / 2, source2Box.y + source2Box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(source2Box.x + source2Box.width / 2 + 8, source2Box.y + source2Box.height / 2 + 8, { steps: 4 })
+  await page.waitForTimeout(400)
+
+  const sectionAccepted = await page.evaluate((title) => {
     const header = [...document.querySelectorAll('[data-row-key^="workspace:"]')]
       .find(node => (node.textContent ?? '').includes(title))
     const section = header?.closest('div[class*="groupSection"]')
-    if (section === undefined || section === null) return false
+    if (section === undefined || section === null) return null
     const box = section.getBoundingClientRect()
     const event = new DragEvent('dragover', {
       bubbles: true,
@@ -196,48 +254,15 @@ try {
       dataTransfer: new DataTransfer(),
     })
     section.dispatchEvent(event)
-    return true
+    return event.defaultPrevented
   }, beta)
-  check('the section accepted a dispatched dragover', sectionOnly)
   await page.waitForTimeout(500)
-  const onSection = await highlighted()
-  console.log(`highlight after dispatching dragover on 乙's section: ${JSON.stringify(onSection)}`)
-
-  // The highlight must be on the header **row** and never on the section. Asserting
-  // "nothing is highlighted" would be wrong here — the pointer is still resting on
-  // the header, so a header highlight is correct. What matters is *which element*
-  // carries it: the old build put the class on the section (the whole-group flash),
-  // the fixed one puts it on the row.
-  check('the highlight appears on 乙\'s header ROW',
-    onHeader.length === 1 && onHeader[0].key?.startsWith('workspace:') === true,
-    JSON.stringify(onHeader))
-  check('the group SECTION never carries the highlight',
-    onSection.every(entry => entry.key?.startsWith('workspace:') === true),
-    JSON.stringify(onSection))
-
-  // Leaving the header must clear it — that is what stops a flash on the way past.
-  const betaFirstRow = groupSection(beta).locator('[data-row-key^="session:"]').first()
-  const betaRowBox = await betaFirstRow.boundingBox()
-  if (betaRowBox !== null) {
-    await page.mouse.move(betaRowBox.x + betaRowBox.width / 2, betaRowBox.y + betaRowBox.height / 2, { steps: 8 })
-    await page.waitForTimeout(600)
-    const afterLeave = await highlighted()
-    console.log(`highlight after moving from the header onto 乙's row: ${JSON.stringify(afterLeave)}`)
-    check('the header highlight clears when the pointer leaves it', afterLeave.length === 0,
-      JSON.stringify(afterLeave))
-  }
+  const afterDispatch = await highlighted()
+  console.log(`highlight after dispatching dragover on 乙's section: ${JSON.stringify(afterDispatch)}`)
+  check('the group SECTION is not a drop target', afterDispatch.length === 0,
+    `defaultPrevented=${String(sectionAccepted)} highlight=${JSON.stringify(afterDispatch)}`)
 
   await page.mouse.up()
-  await page.waitForTimeout(2500)
-
-  const alphaAfter = await sessionsUnder(alpha)
-  const betaAfter = await sessionsUnder(beta)
-  console.log(`甲 after: ${JSON.stringify(alphaAfter)}`)
-  console.log(`乙 after: ${JSON.stringify(betaAfter)}`)
-  // The pointer released on 乙's header, so the dragged row joins 乙.
-  check('the drop into 乙 still worked',
-    alphaAfter.length === 1 && betaAfter.length === 3 && betaAfter.includes(alphaRows[0]),
-    JSON.stringify({ alphaAfter, betaAfter }))
 } finally {
   child.kill()
   await browser.close()

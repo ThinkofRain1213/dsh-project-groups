@@ -729,19 +729,23 @@ function SessionTree({
     // **header row** — a drop *into* the group, as opposed to the positional drop
     // a Session row gives.
     //
-    // The target is the row, not this section: the section also spans the 2px
-    // gaps between rows and the empty space beside them, and pointing at one of
-    // those would light up the whole group while the pointer is nowhere near a
-    // drop position. `drag.over === null` is what distinguishes this from the row
-    // target below, since a positional drop always names a row.
+    // Hit testing is the row, not this section: the section also spans the 2px
+    // gaps between rows and the empty space beside them, and accepting a drop
+    // there would let a Session land from a pointer nowhere near a drop position.
+    // `drag.over === null` is what distinguishes this from the row target below,
+    // since a positional drop always names a row.
+    //
+    // The highlight, though, is painted on the section (`groupDropActive` below):
+    // the row is what can be dropped on, the group is what the drop means.
     //
     // The two drags are mutually exclusive, so `workspaceDrag === null` plus a
     // live session drag is enough to tell them apart, and the shipped workspace
     // handlers below are reached unchanged whenever a row drag is in flight.
     const groupDropTarget = drag !== null && drag.accountKey !== group.key
       && canReceiveDrag(group.key)
+    const groupDropActive = groupDropTarget
+      && drag.overGroupKey === group.key && drag.over === null
     const groupDrop = groupDropTarget ? {
-      active: drag.overGroupKey === group.key && drag.over === null,
       // Idempotent: `dragover` fires continuously while the pointer is over the
       // row, so returning the same state when it already holds keeps those events
       // from re-rendering the tree.
@@ -778,6 +782,7 @@ function SessionTree({
           css.groupSection,
           workspaceMarker === 'before' && css.workspaceDropBefore,
           workspaceMarker === 'after' && css.workspaceDropAfter,
+          groupDropActive && css.groupDropTarget,
         )}
         onDragOver={workspaceDrag === null
           ? undefined

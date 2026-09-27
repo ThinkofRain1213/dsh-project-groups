@@ -1269,13 +1269,31 @@ onDragOver={workspaceDrag === null ? undefined : (e) => {...}}
 `margin-top: 2px` 属于它。指针落在那 2px 里时，**在 section 内但不在任何行内**
 → section 的 `dragover` 触发 → 整组高亮。
 
-**方案 A（用户选定）**：落点**下移到标题行**（`ProjectRowItem` 新增可选
-`groupDrop`），section 不再有任何会话拖拽分支。
+**方案 A（用户选定）**：**命中判定**下移到标题行（`ProjectRowItem` 新增可选
+`groupDrop`），section 不再接受会话 drop。
 
 **踩到的坑**：`dragenter`/`dragleave` 在指针跨过**行的子元素**（文件夹图标、
 箭头、标题）时也会触发并冒泡 → 在标题行内移动会误触发 `dragleave` 把高亮清掉。
 改为在**持续触发**的 `dragover` 上断言目标，setter 做成幂等（同状态返回原引用，
 避免每个 dragover 都重渲染）。
+
+**我一开始理解偏了（重要）**：我顺手把**高亮**也一起缩到标题行。用户纠正：
+**命中判定收窄，但高亮仍然整组**——两者回答的是不同问题：
+
+> 行是"能落在哪"（handle），组是"落下的含义"（destination）。
+
+所以最终实现是**故意分离**的：
+
+| | 位置 | 理由 |
+|---|---|---|
+| **命中判定**（`groupDrop` handlers） | **标题行** | 只有这里能放；缝隙/侧面不接受 |
+| **高亮**（`.groupDropTarget`） | **整组**（section） | 落下的含义是"进这个项目"，不是"在这一行" |
+
+`GroupDropProps` 因此**不带 `active` 字段**——region 本来就有这个状态
+（`overGroupKey === key && over === null`），直接用它画 section。
+
+**探针判别断言也随之反过来**：高亮在标题行上时**必须挂在 `groupSection`**
+（旧实现挂 `projectRow`，即那 2 项 FAIL）。
 
 #### 问题3：新项目落最下面
 

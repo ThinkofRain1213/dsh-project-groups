@@ -89,7 +89,7 @@ source with a comment naming the seam.
 | `rows/WorkspaceBrowser.tsx` | expansion is routed by key ownership: caller-supplied keys go through `setProjectExpanded` / `projectExpansion`, every other key through the view store (see below) | re-apply `isCallerOwned` / `recordExpansion` / `hasExpansion` and the merge in `expandedGroups` |
 | `rows/WorkspaceBrowser.tsx` | caller-supplied groups get the same two-mode member ordering the Workspace rows get, from `orderedProjects` + the `orders` hook; `commitSessionDrag` resolves a caller key after the Workspace lookup; `saveSessionOrder` and the order menu dispatch by key ownership (see below) | re-apply `orderedProjects` / `allProjectOrders`, the `?? groupingOverride?.find(...)` in `commitSessionDrag`, and the two dispatches |
 | `rows/WorkspaceBrowser.tsx` | a Session can be dragged **between** groups: `DragState.overGroupKey` names the target, a row drop is positional and a group-header drop is not, and `commitCrossGroupDrag` files it through `assignSession` / `unassignSession` before writing the order (see below) | re-apply `overGroupKey`, `canReceiveDrag`, `insertIntoTargetOrder`, `commitCrossGroupDrag`, and the `groupDrop` wiring |
-| `rows/Rows.tsx` | a Session row's `dragover` / `drop` call `stopPropagation`, so the row is the target rather than the enclosing group section; `ProjectRowItem` takes an optional `groupDrop` that makes the **header row** — not the section — the cross-group target | re-add the two calls and the `groupDrop` prop and handlers |
+| `rows/Rows.tsx` | a Session row's `dragover` / `drop` call `stopPropagation`, so the row is the target rather than the enclosing group section; `ProjectRowItem` takes an optional `groupDrop` that makes the **header row** — not the section — the cross-group hit target (the highlight stays on the section, painted by the region) | re-add the two calls and the `groupDrop` prop and handlers |
 | `tree.ts` | under a grouping override the Ungrouped bucket always renders, empty included — it is the drop target that takes a Session back out of a caller-supplied group (see below) | re-apply the `archivedFilter !== 'only'` alternative |
 | `navigation.ts` | `startSession` takes an optional `beforeOpen` callback and threads it into `openWorkspace`, so a caller can act on the Session that lands (a project row files it). Omitted, the flow is unchanged | re-add the parameter and the pass-through |
 | `rows/WorkspaceBrowser.tsx` | rename/delete dialogs and the group drag take a `kind`-tagged row (`RowRequest`), so a caller-supplied project row drives the same affordances as a Workspace row; the header's add control runs `createProject` when the composition supplies one, and the dialog titles/labels switch on that kind | re-apply the dispatch, the two dialog blocks, and the drag wiring |
@@ -214,11 +214,18 @@ Two drop paths, and they mean different things:
     from `updatedAt`. Under manual it goes to the front, the one position a header
     drop can name.
 
-The target is the header **row**, not the enclosing group section. The section is
-taller than its children — it owns the 2px `margin-top` between each pair — so a
-pointer in one of those gaps was inside the section but inside no row, and a
-section-level target lit the whole group while the pointer was nowhere near a drop
-position. That is the flash seen while dragging past a project.
+The target is the header **row**, not the enclosing group section: the section is
+taller than its children — it owns the 2px `margin-top` between each pair — and
+covers the space beside them, so accepting a drop there would let a Session land in
+a group from a pointer nowhere near a drop position. That is the flash seen while
+dragging past a project.
+
+The **highlight**, though, is painted on the whole group (the section). Hit testing
+and highlight answer different questions here: the row is what can be dropped on,
+the group is what the drop means. Painting the highlight on the row says the wrong
+thing, and painting the *target* on the section is the bug above — so the two are
+deliberately split. `GroupDropProps` therefore carries no `active` flag: the region
+already holds the state and paints the section from it.
 
 `DragState.overGroupKey` carries the target, and `over === null` distinguishes a
 header drop from a positional one — which is why `commitSessionDrag`'s second

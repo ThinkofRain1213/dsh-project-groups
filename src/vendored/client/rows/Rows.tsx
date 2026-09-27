@@ -199,14 +199,17 @@ interface WorkspaceRowDragProps {
 /**
  * A Session dragged out of another group hovering this group's **header row**.
  *
- * The target is the row and not the enclosing section on purpose: a section spans
- * the gaps between its rows and the empty space beside them, so pointing at one
- * of those would light up the whole group while the pointer is nowhere near a drop
- * position. The row is exactly the region the highlight can mean something about.
+ * Hit testing is the row and not the enclosing section on purpose: a section spans
+ * the gaps between its rows and the empty space beside them, so accepting a drop
+ * there would let a Session land in a group from a pointer that is nowhere near a
+ * drop position. Only the header is a target.
+ *
+ * The highlight is deliberately *not* here. The row is the handle, the group is
+ * what the drop means, so the owner paints the whole group from the state these
+ * callbacks report — which it already holds, and which is why this carries no
+ * `active` flag for the row to read.
  */
 export interface GroupDropProps {
-  /** Whether the highlight should show. */
-  active: boolean
   /** Report the drag entering this row. */
   enter: () => void
   /** Report the drag leaving this row. */
@@ -269,11 +272,7 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
   ]
   const ownRow = (
     <div
-      className={clsx(
-        css.projectRow,
-        menuOpen && css.menuOpen,
-        groupDrop?.active === true && css.groupDropTarget,
-      )}
+      className={clsx(css.projectRow, menuOpen && css.menuOpen)}
       data-row-key={`workspace:${group.key}`}
       role="treeitem"
       aria-expanded={row.expanded}
