@@ -93,7 +93,8 @@ function bench() {
   check('a fresh registry carries no assignments', Object.keys(baseline.assignments).length === 0)
 }
 
-// 2. Create appends in call order and lands durably.
+// 2. Create prepends — newest first, matching the Host's Workspace registry —
+//    and lands durably.
 {
   const { controller, backend } = bench()
   const first = await controller.create({ title: '项目一' })
@@ -103,13 +104,39 @@ function bench() {
   check('create records no document yet', first.project.docPath === '')
 
   const baseline = await controller.baseline()
-  check('baseline lists both in creation order',
-    baseline.projects.map(p => p.title).join(',') === '项目一,second',
+  // Newest first: `packages/workspace/workspace/src/index.ts` stores
+  // `workspaceIds: [id, ...state.workspaceIds]`, and a new row should appear where
+  // the user is looking rather than below however many rows already exist.
+  check('the newest project is first',
+    baseline.projects.map(p => p.title).join(',') === 'second,项目一',
     baseline.projects.map(p => p.title).join(','))
+  check('and the order array agrees',
+    baseline.projectIds.join(',') === `${second.project.projectId},${first.project.projectId}`,
+    baseline.projectIds.join(','))
   check('the durable unit was opened', backend.units.has(PROJECT_DOMAIN_NAME),
     [...backend.units.keys()].join(','))
   check('the record landed in the table',
     Object.keys(backend.units.get(PROJECT_DOMAIN_NAME).tables.projects ?? {}).length === 2)
+}
+
+// 2b. Prepend must not disturb an order the user has rearranged: the new row
+//     goes to the front, and everything else keeps its relative position.
+{
+  const { controller } = bench()
+  const a = (await controller.create({ title: 'a' })).project.projectId
+  const b = (await controller.create({ title: 'b' })).project.projectId
+  const c = (await controller.create({ title: 'c' })).project.projectId
+  check('three creates are newest-first', (await controller.baseline()).projectIds.join(',') === `${c},${b},${a}`,
+    (await controller.baseline()).projectIds.join(','))
+
+  // Rearrange, then create: the existing order is preserved behind the new row.
+  await controller.reorder({ projectId: a, beforeId: c })
+  check('a manual order is respected', (await controller.baseline()).projectIds.join(',') === `${a},${c},${b}`,
+    (await controller.baseline()).projectIds.join(','))
+  const d = (await controller.create({ title: 'd' })).project.projectId
+  check('a later create still goes to the very front',
+    (await controller.baseline()).projectIds.join(',') === `${d},${a},${c},${b}`,
+    (await controller.baseline()).projectIds.join(','))
 }
 
 // 3. Titles are trimmed, and a blank one is refused.
@@ -190,16 +217,20 @@ function bench() {
   const a = (await controller.create({ title: 'a' })).project.projectId
   const b = (await controller.create({ title: 'b' })).project.projectId
   const c = (await controller.create({ title: 'c' })).project.projectId
+  // Create prepends, so the starting order is newest-first.
+  check('creates start newest-first', (await controller.baseline()).projectIds.join(',') === `${c},${b},${a}`,
+    (await controller.baseline()).projectIds.join(','))
 
-  const moved = await controller.reorder({ projectId: c, beforeId: a })
+  const moved = await controller.reorder({ projectId: a, beforeId: c })
   check('reorder places the project before its anchor',
-    moved.projectIds.join(',') === `${c},${a},${b}`, moved.projectIds.join(','))
+    moved.projectIds.join(',') === `${a},${c},${b}`, moved.projectIds.join(','))
   check('the baseline follows the new order',
-    (await controller.baseline()).projects.map(p => p.title).join(',') === 'c,a,b')
+    (await controller.baseline()).projects.map(p => p.title).join(',') === 'a,c,b',
+    (await controller.baseline()).projects.map(p => p.title).join(','))
 
-  const appended = await controller.reorder({ projectId: a })
+  const appended = await controller.reorder({ projectId: c })
   check('an absent anchor appends',
-    appended.projectIds.join(',') === `${c},${b},${a}`, appended.projectIds.join(','))
+    appended.projectIds.join(',') === `${a},${b},${c}`, appended.projectIds.join(','))
 
   let message = ''
   try {

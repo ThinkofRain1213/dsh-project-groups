@@ -157,7 +157,13 @@ export class ProjectController extends TypertRemoteService {
   }
 
   /**
-   * Create a project.
+   * Create a project, at the **front** of the display order.
+   *
+   * Prepend rather than append, matching the Host's own Workspace registry
+   * (`packages/workspace/workspace/src/index.ts`: `workspaceIds: [id,
+   * ...state.workspaceIds]`). A new row appears where the user is looking instead
+   * of below however many rows already exist, which is what makes a long list
+   * workable.
    * @param request - display title; surrounding whitespace is trimmed.
    * @returns the created project.
    */
@@ -170,7 +176,7 @@ export class ProjectController extends TypertRemoteService {
     const now = new Date().toISOString()
     const record: ProjectRecord = { title, docPath: '', createdAt: now, updatedAt: now }
     await domain.table('projects').put(projectId, record)
-    await domain.global.set({ projectIds: [...this.order(), projectId] })
+    await domain.global.set({ projectIds: [projectId, ...this.order()] })
     return { project: this.projectValue(projectId, record) }
   }
 

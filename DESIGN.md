@@ -1259,6 +1259,64 @@ onDragOver={workspaceDrag === null ? undefined : (e) => {...}}
    我在同一次运行里先后跑两个探针共用 home，它报了 2 个假失败。
    已在文件头写明。
 
+### L2b-3 — 落点收窄 + 新项目置顶 ✅ 已完成（2026-09-26）
+
+用户报的两个问题，已修。
+
+#### 问题1：缝隙/侧面被当落点 → 整组高亮闪现
+
+**根因**：跨组落点挂在 `groupSection` 上，而**它比子元素高**——行与行之间的
+`margin-top: 2px` 属于它。指针落在那 2px 里时，**在 section 内但不在任何行内**
+→ section 的 `dragover` 触发 → 整组高亮。
+
+**方案 A（用户选定）**：落点**下移到标题行**（`ProjectRowItem` 新增可选
+`groupDrop`），section 不再有任何会话拖拽分支。
+
+**踩到的坑**：`dragenter`/`dragleave` 在指针跨过**行的子元素**（文件夹图标、
+箭头、标题）时也会触发并冒泡 → 在标题行内移动会误触发 `dragleave` 把高亮清掉。
+改为在**持续触发**的 `dragover` 上断言目标，setter 做成幂等（同状态返回原引用，
+避免每个 dragover 都重渲染）。
+
+#### 问题3：新项目落最下面
+
+**根因**：`create` 用 `[...this.order(), projectId]` 追加。
+
+**官方行为**（查上游源码，非推断）：
+
+```ts
+// packages/workspace/workspace/src/index.ts:558  createCanonical()
+workspaceIds: [id, ...state.workspaceIds],   // ← 置顶
+```
+
+全文件只有这一处插入 `workspaceIds`（搜过 `workspaceIds: [...`），
+所以没有第二条追加路径。**用户诉求 = 官方行为**，我原来的实现是偏离。
+
+- [x] `src/index.ts`：`[projectId, ...this.order()]`
+- [x] host 测试更新 + 新增 2 组（置顶、置顶不破坏已重排顺序）
+- [x] 校验：`pnpm check` **262 项全绿**
+
+**反向对照（两次都有效）**
+
+| | 旧 bundle | 新 bundle |
+|---|---|---|
+| 高亮挂在 | `groupSection`（**整组**） | `projectRow`（**标题行**） |
+| 新项目位置 | 末尾（`append-create=True`） | 最前 |
+
+**我修掉的三个探针缺陷**（都曾让断言空转通过）：
+
+1. **aim 点落在源组**：`canReceiveDrag` 排除拖拽起点所在组，所以源组永远不可能
+   高亮——在那儿测缝隙是**恒真**的。改到**目标组**。
+2. **2px 缝隙无法用合成指针命中**：section 只比子元素高 2px，且下一行覆盖其中
+   1px，**section-only 的像素只有 1 个**。按包围盒算中点实际落在行上 → 旧 bundle
+   也 PASS。改为**直接向 section 元素派发 `dragover`**，彻底消除歧义。
+3. **`lib/` 恢复失败导致"正向对照"其实在测旧代码**：我用 `Copy-Item` 覆盖
+   `lib/client.js` 做反向对照，临时副本被后续命令删掉，恢复静默失败——
+   而 `Select-String` 打印的 `False` 暴露了它。改为**从源码 `pnpm build` 重建**。
+
+**还修了一个我自己引入的真 bug**：`dragover` 只在 `dragenter` 时设状态，
+在标题行内移动（跨子元素）会清掉高亮 → 标题行高亮**完全不出现**。
+是探针抓到的，不是猜的。
+
 ### L3 — 行内动作适配
 - [ ] 会话行感知所属项目（hover 卡 / 菜单上下文）
 - [ ] 项目自身的重命名 / 删除 / 排序（新对象）

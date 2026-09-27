@@ -725,15 +725,48 @@ function SessionTree({
         if (active === null) return
         commitWorkspaceDrag(active, { id: dragRowId, half })
       }
-    // A Session dragged out of another group can be dropped on the group itself —
-    // its header, or the empty space where its rows would be. That is a drop
-    // *into* the group, as opposed to the positional drop a row gives.
+    // A Session dragged out of another group can be dropped on this group's
+    // **header row** — a drop *into* the group, as opposed to the positional drop
+    // a Session row gives.
+    //
+    // The target is the row, not this section: the section also spans the 2px
+    // gaps between rows and the empty space beside them, and pointing at one of
+    // those would light up the whole group while the pointer is nowhere near a
+    // drop position. `drag.over === null` is what distinguishes this from the row
+    // target below, since a positional drop always names a row.
     //
     // The two drags are mutually exclusive, so `workspaceDrag === null` plus a
     // live session drag is enough to tell them apart, and the shipped workspace
-    // handlers above are reached unchanged whenever a row drag is in flight.
-    const crossGroupTarget = drag !== null && drag.accountKey !== group.key
+    // handlers below are reached unchanged whenever a row drag is in flight.
+    const groupDropTarget = drag !== null && drag.accountKey !== group.key
       && canReceiveDrag(group.key)
+    const groupDrop = groupDropTarget ? {
+      active: drag.overGroupKey === group.key && drag.over === null,
+      // Idempotent: `dragover` fires continuously while the pointer is over the
+      // row, so returning the same state when it already holds keeps those events
+      // from re-rendering the tree.
+      enter: () => {
+        setDrag(d => (d === null || (d.overGroupKey === group.key && d.over === null)
+          ? d
+          : { ...d, over: null, overGroupKey: group.key }))
+      },
+      // The pointer left the header. Without this the highlight would stick until
+      // some other target claimed the drag, which is what makes a gap between rows
+      // flash the whole group.
+      //
+      // Only cleared while this header is still the target: a `dragleave` can
+      // arrive after the next target has already claimed the drag, and clearing
+      // then would drop a marker that is now correct.
+      leave: () => {
+        setDrag(d => (d === null || d.overGroupKey !== group.key
+          ? d
+          : { ...d, overGroupKey: undefined }))
+      },
+      drop: () => {
+        const active = dragRef.current
+        if (active !== null) commitSessionDrag(active, null, group.key)
+      },
+    } : undefined
     return (
     // Group section: header, descendant Workspaces, and own Session rows. The
     // inter-group breathing room is the section's own margin
@@ -745,17 +778,9 @@ function SessionTree({
           css.groupSection,
           workspaceMarker === 'before' && css.workspaceDropBefore,
           workspaceMarker === 'after' && css.workspaceDropAfter,
-          crossGroupTarget && drag.overGroupKey === group.key && drag.over === null && css.groupDropTarget,
         )}
         onDragOver={workspaceDrag === null
-          ? crossGroupTarget
-            ? (e) => {
-              e.preventDefault()
-              e.stopPropagation()
-              e.dataTransfer.dropEffect = 'move'
-              setDrag(d => (d === null ? d : { ...d, over: null, overGroupKey: group.key }))
-            }
-            : undefined
+          ? undefined
           : (e) => {
             e.preventDefault()
             if (hoverWorkspace === undefined && parents.get(group.key) !== undefined) return
@@ -769,14 +794,7 @@ function SessionTree({
             }
           }}
         onDrop={workspaceDrag === null
-          ? crossGroupTarget
-            ? (e) => {
-              e.preventDefault()
-              e.stopPropagation()
-              const active = dragRef.current
-              if (active !== null) commitSessionDrag(active, null, group.key)
-            }
-            : undefined
+          ? undefined
           : (e) => {
             e.preventDefault()
             if (dropWorkspace === undefined && parents.get(group.key) !== undefined) return
@@ -830,6 +848,7 @@ function SessionTree({
             )
           }}
           drag={workspaceDragProps}
+          groupDrop={groupDrop}
           actions={group.kind === 'project'
             ? {
               rename: () => { onRenameRequest({ kind: 'project', id: group.key, title: group.label }) },
