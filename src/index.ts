@@ -27,14 +27,15 @@ import { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { Domain, DomainChanged } from '@deepseek-ai/dsh-storage-domain'
 import type {} from '@deepseek-ai/dsh-storage-domain'
-import { PROJECT_DOMAIN_NAME, projectDomainSpec, type ProjectRecord } from './spec.ts'
+import { PROJECT_DOMAIN_NAME, projectDomainSpec, type GlobalRecord, type ProjectRecord } from './spec.ts'
 import {
   PROJECT_NAMESPACE, PROJECT_SERVICE_KEY,
   type ProjectAssignRequest, type ProjectAssignmentValue, type ProjectBaseline,
   type ProjectCreateRequest, type ProjectDeleteRequest, type ProjectExpansionValue,
   type ProjectFollowFrame, type ProjectOrderValue, type ProjectOrdersValue,
+  type ProjectNewSessionTargetValue,
   type ProjectRenameRequest, type ProjectRenameValue, type ProjectReorderRequest,
-  type ProjectSetExpandedRequest, type ProjectSetOrdersRequest,
+  type ProjectSetExpandedRequest, type ProjectSetNewSessionTargetRequest, type ProjectSetOrdersRequest,
   type ProjectUnassignRequest, type ProjectUnassignValue,
   type ProjectValue, type ProjectValueResult,
 } from './protocol.ts'
@@ -111,6 +112,24 @@ export class ProjectController extends TypertRemoteService {
     return this.domain?.global.get().projectIds ?? []
   }
 
+  /**
+   * Write the global singleton, changing only the fields given.
+   *
+   * `Domain.global.set` replaces the whole value rather than merging into it, so
+   * every writer must spread what is already stored. Routing them all through
+   * here means a writer cannot drop a field it does not know about — which is
+   * exactly what the type checker caught when `newSessionTarget` was added to a
+   * singleton three existing call sites were writing whole.
+   * @param domain - the open domain.
+   * @param patch - the fields to change.
+   */
+  private async setGlobal(
+    domain: Domain<typeof projectDomainSpec>,
+    patch: Partial<GlobalRecord>,
+  ): Promise<void> {
+    await domain.global.set({ ...domain.global.get(), ...patch })
+  }
+
   private projectValue(projectId: string, record: ProjectRecord): ProjectValue {
     return {
       projectId,
@@ -153,6 +172,9 @@ export class ProjectController extends TypertRemoteService {
       orders: Object.fromEntries(
         [...domain.table('orders').entries()].map(([projectId, record]) => [projectId, [...record.sessionIds]]),
       ),
+      // The stored global is parsed through the spec's schema on open, so a unit
+      // written before this field existed already reads back as its default.
+      newSessionTarget: domain.global.get().newSessionTarget,
     }
   }
 
@@ -176,7 +198,7 @@ export class ProjectController extends TypertRemoteService {
     const now = new Date().toISOString()
     const record: ProjectRecord = { title, docPath: '', createdAt: now, updatedAt: now }
     await domain.table('projects').put(projectId, record)
-    await domain.global.set({ projectIds: [projectId, ...this.order()] })
+    await this.setGlobal(domain, { projectIds: [projectId, ...this.order()] })
     return { project: this.projectValue(projectId, record) }
   }
 
@@ -215,7 +237,7 @@ export class ProjectController extends TypertRemoteService {
     await domain.table('projects').delete(request.projectId)
     await domain.table('expansions').delete(request.projectId)
     await domain.table('orders').delete(request.projectId)
-    await domain.global.set({ projectIds: this.order().filter(id => id !== request.projectId) })
+    await this.setGlobal(domain, { projectIds: this.order().filter(id => id !== request.projectId) })
   }
 
   /**
@@ -232,7 +254,7 @@ export class ProjectController extends TypertRemoteService {
     const index = request.beforeId === undefined ? rest.length : rest.indexOf(request.beforeId)
     if (index === -1) throw new Error(`unknown project: ${String(request.beforeId)}`)
     const projectIds = [...rest.slice(0, index), request.projectId, ...rest.slice(index)]
-    await domain.global.set({ projectIds })
+    await this.setGlobal(domain, { projectIds })
     return { projectIds }
   }
 
@@ -329,6 +351,25 @@ export class ProjectController extends TypertRemoteService {
       if (!unchanged) await orders.put(projectId, { sessionIds })
     }
     return { orders: next }
+  }
+
+  /**
+   * Choose where a New Session with no stated destination lands.
+   *
+   * The stored global is spread before the write because `Domain.global.set`
+   * replaces the whole singleton rather than merging into it: sending only the
+   * target would drop `projectIds` and make every project disappear from the
+   * sidebar.
+   * @param request - the chosen destination.
+   * @returns the stored choice.
+   */
+  @Remote('setNewSessionTarget')
+  async setNewSessionTarget(
+    request: ProjectSetNewSessionTargetRequest,
+  ): Promise<ProjectNewSessionTargetValue> {
+    const domain = await this.ready()
+    await this.setGlobal(domain, { newSessionTarget: request.target })
+    return { target: request.target }
   }
 
   /**

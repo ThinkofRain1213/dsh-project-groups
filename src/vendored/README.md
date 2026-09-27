@@ -97,6 +97,7 @@ source with a comment naming the seam.
 | `rows/Rows.tsx` | the row menu's delete label and the menu's aria-label follow `group.kind` | small change; a project's delete removes a record, not a registry entry |
 | `locales.ts` | project copy (`project.add`, `project.create.*`, `rename.project.title`, `delete.project*`, `field.projectName`, `create`, `actions.project.aria`) in both dictionaries | add the keys |
 | `navigation.ts` | `startSession` without a target resolves the Host's default Workspace instead of guessing (**behaviour change**, see below) | restore the shipped guess, or re-apply |
+| `navigation.ts` | the service takes an optional `placeUnscoped` callback, applied only when `beforeOpen` is absent, so the caller can file an unscoped New Session (**behaviour change**, see below) | re-add the parameter and the `beforeOpen ??` composition |
 | `index.ts` | `apply` takes an optional `groupingOverride`, an optional `ProjectActions`, and optional `expansionsOverride` / `ordersOverride`, forwarding all into the inject face | re-add the parameters and the hook/verb fields |
 
 Two invariants keep these patches honest:
@@ -124,6 +125,19 @@ default it does nothing: no guess, no cleared selection.
 
 Rationale: every Session this plugin creates lives in that one Workspace, so the
 destination should not depend on whatever the user last did.
+
+Which **project** that Session joins is then a second question, and it belongs to
+the caller: `startSession` takes an optional `placeUnscoped` callback, and when it
+is present an unscoped call routes the landed Session through it. The callback is
+given the new Session and the one the user was looking at; the caller owns the
+project model and decides. Absent, the Session is left where the default Workspace
+resolution put it.
+
+This is the one place every unscoped entry converges, which is why the seam is
+here rather than in the browser: the shell's New Session button and its shortcut,
+and any plugin that starts a Session without a target, all reach it. A row's own
+＋ never does — it states its destination through `beforeOpen`, and `beforeOpen`
+wins.
 
 **2. The Ungrouped bucket's ＋ button works.**
 
@@ -302,6 +316,7 @@ browser probes that drive a live instance. They are run by hand rather than by
 | `scripts/probe-cross-group.mjs` | drags Sessions between projects and out to Ungrouped | spawns a server |
 | `scripts/probe-drop-highlight.mjs` | checks the cross-group highlight is on the group section while the pointer is on the header row, and that the section itself accepts no drop | spawns a server |
 | `scripts/probe-ungrouped-plus.mjs` | drives the Ungrouped ＋ after a project's ＋, and reads the Host's assignment table to see where the Session landed | spawns a server |
+| `scripts/probe-new-session-target.mjs` | writes the destination setting over the plugin's own RPC, then drives the shell's New Session button under each value | spawns a server |
 
 `probe-plugin-toggle.mjs` owns its lifecycle deliberately: localStorage is scoped
 to an origin, and an origin includes the port, so running the two profiles on

@@ -46,6 +46,7 @@ import { apply as applyVendored, inject as vendoredInject } from '../vendored/cl
 import type { ProjectActions } from '../vendored/client/index.ts'
 import { clientExpansions, clientGrouping, clientOrders, installProjectModel, projectModel } from './grouping.ts'
 import { ProjectModel } from './projects.ts'
+import { recentProject, resolveTarget } from './target.ts'
 import { projectGroupsRemote } from './remote.ts'
 import { PROJECT_NAMESPACE } from '../protocol.ts'
 
@@ -73,6 +74,31 @@ const projectActions: ProjectActions = {
   unassignSession: async (sessionId) => { await requireModel().unassign(sessionId) },
   setProjectExpanded: async (projectId, expanded) => { await requireModel().setExpanded(projectId, expanded) },
   setProjectOrders: async (orders) => { await requireModel().setOrders(orders) },
+  placeUnscopedSession: ({ sessionId, currentSessionId, updatedAt }) => {
+    // Not `requireModel`: this runs on a New Session click, and a missing model
+    // must leave the Session where the navigation put it rather than throw out
+    // of a navigation callback. Ungrouped is the outcome either way, which is
+    // also what the caller's default resolves to.
+    const model = projectModel()
+    if (model === undefined) return
+    const projectId = resolveTarget(
+      model.target(),
+      currentSessionId,
+      id => model.projectOf(id),
+      () => recentProject(model.list(), updatedAt, id => model.membersOf(id)),
+    )
+    // A Session with no project has no assignment record — that absence is what
+    // "Ungrouped" means, so it is a delete rather than a write.
+    const placement = projectId === undefined
+      ? model.unassign(sessionId)
+      : model.assign(sessionId, projectId)
+    void placement.catch((reason: unknown) => {
+      // Logged rather than surfaced, like the row's own filing: the Session was
+      // created and opened, so a placement failure must not read as a failed New
+      // Session.
+      console.warn('place new session rejected:', reason)
+    })
+  },
 }
 
 /** @returns the started model, or throws when the Remote namespace is absent. */

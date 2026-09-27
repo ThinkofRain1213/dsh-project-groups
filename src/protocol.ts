@@ -10,6 +10,9 @@
  * These are plain data shapes. Nothing crosses that is not JSON, which is what
  * lets both codecs be pass-throughs (see `src/client/remote.ts`).
  */
+import type { NewSessionTarget } from './spec.ts'
+
+export type { NewSessionTarget }
 
 /** The Cordis service key owning these methods, and the default wire namespace. */
 export const PROJECT_SERVICE_KEY = 'projectController'
@@ -55,6 +58,15 @@ export interface ProjectBaseline {
    * and why this map is written whole rather than per member.
    */
   readonly orders: Readonly<Record<string, readonly string[]>>
+  /**
+   * Where a New Session with no stated destination lands.
+   *
+   * A project row's ＋ and the Ungrouped bucket's ＋ both state a destination of
+   * their own and never consult this; it governs the unscoped entries — the
+   * shell's New Session button and its shortcut, and any plugin that starts a
+   * Session without a target.
+   */
+  readonly newSessionTarget: NewSessionTarget
 }
 
 /** One ordered change after a generation's baseline. */
@@ -159,4 +171,19 @@ export interface ProjectSetOrdersRequest {
 /** `setOrders` result: the map the Host actually holds. */
 export interface ProjectOrdersValue {
   readonly orders: Readonly<Record<string, readonly string[]>>
+}
+
+/**
+ * `setNewSessionTarget` request: choose where an unscoped New Session lands.
+ *
+ * Only the target travels. The Host spreads the stored global before writing, so
+ * the project order it also holds survives — `global.set` replaces the whole
+ * singleton rather than merging into it.
+ */
+export interface ProjectSetNewSessionTargetRequest {
+  readonly target: NewSessionTarget
+}
+/** `setNewSessionTarget` result: the stored choice. */
+export interface ProjectNewSessionTargetValue {
+  readonly target: NewSessionTarget
 }

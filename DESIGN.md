@@ -1417,6 +1417,72 @@ startSession(group.workspaceId, filedUnder === undefined ? undefined : ...)
   （依据：官方归档后**不猜、让用户选**；我们的"未分组"就是那个合法默认）。
 - **第三步**：设置卡片 UI（`settings.plugin.item` 槽位，照 `平滑光标` 先例）。
 
+#### 第二步 ✅ 已完成（2026-09-27）
+
+**设置**：`spec.ts` 的 `global` 加 `newSessionTarget`
+（`z.enum(['ungrouped','current','recent']).default('ungrouped')`）。
+**单例，不建表**；`version` 保持 1。
+
+**向后兼容（实测，非推理）**：`storage-domain/src/index.ts:151` 在打开时用
+`globalSpec.schema.parse(snapshot.global)` 解析，而 zod 的 `.default()` **在
+parse 时生效** → 旧存档（缺字段）读出 `'ungrouped'`。用 node 直接验证过 zod 4.6.5，
+并有 host 单测固定。
+
+**⚠️ 类型检查抓到的一个真 bug**：`Domain.global.set` 是**整体替换**而非合并
+（`domain.ts:194`），而 `create` / `remove` / `reorder` **三处**都写
+`{ projectIds }` —— 加上新字段后，**每一次都会抹掉用户的设置**。
+修法是加一个私有 `setGlobal(domain, patch)` 展开当前值，**四处统一走它**。
+这是"加字段"暴露出的既有隐患，不是新引入的。
+
+**解析策略**（`src/client/target.ts`，纯函数，可单测）：
+
+```
+ungrouped → undefined
+current   → ownerOf(currentSessionId) ?? undefined    ← 无当前会话落未分组
+recent    → recentProject()
+```
+
+**`recentProject` 照搬官方 `recentWorkspace`**（`ui-workspace/navigation.ts:428`）：
+
+- 取项目内成员会话 `updatedAt` 最大值
+- **空项目回退 `project.createdAt`**（否则刚建的空项目永远选不中）
+- **严格 `>`** → 平局保留先出现的（项目显示顺序）
+
+**接缝**：`UiWorkspaceService` 构造时接一个可选 `placeUnscoped(sessionId, currentSessionId)`，
+`startSession` 里 `beforeOpen ?? placeUnscoped`：
+
+- **`beforeOpen` 优先** —— 项目行和未分组行的 ＋ 各自声明落点，**永不受设置影响**
+- 只有**没有 `beforeOpen`** 的入口（外壳新建按钮、快捷键、`ui-agent-preset`、
+  `ui-schedule`）才走设置
+
+**为什么接缝必须在服务里**：`ui-agent-preset` 和 `ui-schedule` 都声明
+`inject: ['uiWorkspace']`，而官方那份被我们 disabled → 它们拿到的**必然**是我们的
+实例 → **一处接缝全覆盖**。在 `WorkspaceBrowser` 打补丁覆盖不到它们。
+
+**职责划分**：`vendored` 只提供它独有的数据（会话 `updatedAt`，因为只有它有
+`sessions`），`src/client/` 做全部决策（只有它知道"项目"）。
+
+**校验**：`pnpm check` **298 项全绿**（host 71 + client 81）。
+
+**反向对照**：旧 bundle 上 **5 项失败**（含"设置被忽略、恒落未分组"）。
+
+**我修掉的探针缺陷**（两轮，都是"探针错、产品对"）：
+
+1. **改文件 + reload 不生效**：Host 把解析后的 global **缓存在内存**
+   （`domain.ts:188`），domain 打开后只改内存 → 文件改动对运行中的进程不可见。
+   改为**走真实 RPC**（`POST /api/projectGroups/setNewSessionTarget`，即第三步卡片要用的端点）。
+2. **计数式断言**：空白会话是**复用/迁移**的，不累积，所以 `length === 2` 恒不成立。
+   改为**追踪那个会话的身份与归属**（与第一步探针同型的错误）。
+3. **`current` 与 `recent` 在多数场景下答案相同** → 那两条断言在旧 bundle 上也 PASS。
+   补了一个**能分开两者**的场景（新建一个更晚的空项目：`recent` 选它，`current` 仍选原项目），
+   旧 bundle 上该判别项失败。
+
+#### 第三步（待做）
+
+设置卡片 UI：`settings.plugin.item` 槽位（照 `平滑光标` 先例），
+读 `model.newSessionTarget$`、写 `model.setNewSessionTarget`。**两者第二步已就绪**，
+第三步是纯 UI。
+
 ### L3 — 行内动作适配
 - [ ] 会话行感知所属项目（hover 卡 / 菜单上下文）
 - [ ] 项目自身的重命名 / 删除 / 排序（新对象）

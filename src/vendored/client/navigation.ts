@@ -144,6 +144,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
    * @param sessions - pure Session Controller.
    * @param view - the browser's viewing-store write set (one instance shared with its registration).
    * @param notify - show one notice through the Workspace notice channel.
+   * @param placeUnscoped - optional destination for an unscoped New Session. The
+   * caller decides where it goes; this service only supplies the Session that
+   * landed and the one the user was looking at. Absent, the Session is left where
+   * the default Workspace resolution put it, which is the shipped behaviour.
    */
   constructor(
     ctx: Context,
@@ -152,6 +156,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     private readonly sessions: ISessions,
     private readonly view: Pick<WorkspaceViewStoreActions, 'pinSessionOrder'>,
     private readonly notify: (toast: RowToast) => void,
+    private readonly placeUnscoped?: (sessionId: SessionId, currentSessionId: SessionId | undefined) => void,
   ) {
     super(ctx, 'uiWorkspace')
     ctx.effect(() => {
@@ -233,12 +238,19 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       return
     }
     // No target means every unscoped entry: the sidebar shell's New Session
-    // button and its shortcut, ui-schedule, ui-agent-preset, the Ungrouped
-    // bucket, and this plugin's own caller-supplied groups. They all resolve
-    // the Host's default Workspace. The shipped behaviour guessed instead —
-    // the current Session's Workspace, then the most recently used one — which
-    // made the destination depend on whatever the user last did.
-    void this.startSessionInDefaultWorkspace(beforeOpen)
+    // button and its shortcut, ui-schedule, ui-agent-preset, and this plugin's
+    // own caller-supplied groups. They all resolve the Host's default Workspace.
+    // The shipped behaviour guessed instead — the current Session's Workspace,
+    // then the most recently used one — which made the destination depend on
+    // whatever the user last did.
+    //
+    // `beforeOpen` wins when it is present: a caller that states a destination
+    // (a project row's ＋, the Ungrouped bucket's ＋) has already decided, and the
+    // placement policy is only for the entries that state none.
+    const prepared = beforeOpen ?? (this.placeUnscoped === undefined
+      ? undefined
+      : (sessionId: SessionId) => { this.placeUnscoped?.(sessionId, this.mainReference?.sessionId) })
+    void this.startSessionInDefaultWorkspace(prepared)
   }
 
   /** Open the New Session flow in one already-known Workspace. */

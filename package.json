@@ -72,6 +72,7 @@
     "probe:cross-group": "node scripts/probe-cross-group.mjs",
     "probe:drop-highlight": "node scripts/probe-drop-highlight.mjs",
     "probe:ungrouped-plus": "node scripts/probe-ungrouped-plus.mjs",
+    "probe:new-session-target": "node scripts/probe-new-session-target.mjs",
     "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {

@@ -26,7 +26,7 @@
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { GroupSource } from '../vendored/client/tree.ts'
-import type { ProjectBaseline, ProjectFollowFrame, ProjectValue } from '../protocol.ts'
+import type { ProjectBaseline, ProjectFollowFrame, ProjectValue, NewSessionTarget } from '../protocol.ts'
 
 /** The Remote face this model drives; structurally the mounted namespace. */
 export interface ProjectRemote {
@@ -39,6 +39,7 @@ export interface ProjectRemote {
   unassign(request: { sessionId: string }): Promise<RemoteOutcome<unknown>>
   setExpanded(request: { projectId: string; expanded: boolean }): Promise<RemoteOutcome<unknown>>
   setOrders(request: { orders: Readonly<Record<string, readonly string[]>> }): Promise<RemoteOutcome<unknown>>
+  setNewSessionTarget(request: { target: NewSessionTarget }): Promise<RemoteOutcome<unknown>>
 }
 
 /** Minimal result shape the mounted namespace answers with. */
@@ -65,6 +66,14 @@ interface ProjectState {
    * exactly what recency ordering wants.
    */
   readonly orders: Readonly<Record<string, readonly string[]>>
+  /**
+   * Where a New Session with no stated destination lands.
+   *
+   * Read through {@link ProjectModel.target} by the placement policy. A project
+   * row's ＋ and the Ungrouped bucket's ＋ state their own destination and never
+   * consult it.
+   */
+  readonly newSessionTarget: NewSessionTarget
 }
 
 const EMPTY_STATE: ProjectState = Object.freeze({
@@ -72,6 +81,7 @@ const EMPTY_STATE: ProjectState = Object.freeze({
   assignments: Object.freeze({}),
   expansions: Object.freeze({}),
   orders: Object.freeze({}),
+  newSessionTarget: 'ungrouped',
 })
 
 /** Unwrap one Remote outcome, turning a failure into a thrown error. */
@@ -147,6 +157,22 @@ export class ProjectModel {
     },
   }
 
+  /**
+   * Where an unscoped New Session lands.
+   *
+   * Unlike {@link grouping}, {@link expansions} and {@link orders}, this is never
+   * handed to the vendored browser: the sidebar renders groups and knows nothing
+   * about New Session destinations. It exists for the settings card and for the
+   * placement policy, both of which live in `src/client/`.
+   */
+  readonly newSessionTarget$: HostObservable<NewSessionTarget> = {
+    getSnapshot: () => this.state.newSessionTarget,
+    subscribe: (listener) => {
+      this.listeners.add(listener)
+      return () => { this.listeners.delete(listener) }
+    },
+  }
+
   /** @returns projects in display order. */
   list(): readonly ProjectValue[] {
     return this.state.projects
@@ -160,6 +186,18 @@ export class ProjectModel {
   /** @returns the id of the project owning this Session, or undefined. */
   projectOf(sessionId: SessionId): string | undefined {
     return this.state.assignments[sessionId]
+  }
+
+  /** @returns the Session ids filed under this project, in no particular order. */
+  membersOf(projectId: string): readonly SessionId[] {
+    return Object.entries(this.state.assignments)
+      .filter(([, owner]) => owner === projectId)
+      .map(([sessionId]) => sessionId as SessionId)
+  }
+
+  /** @returns where an unscoped New Session should land. */
+  target(): NewSessionTarget {
+    return this.state.newSessionTarget
   }
 
   /**
@@ -287,6 +325,32 @@ export class ProjectModel {
     }
   }
 
+  /**
+   * Choose where a New Session with no stated destination lands.
+   *
+   * Optimistic like {@link setExpanded}, and for the same reason: the settings
+   * card should reflect the choice in the frame it is clicked in. The Host stays
+   * authoritative — its `follow` frame replaces this state wholesale — so a
+   * refusal is corrected rather than left wrong.
+   * @param target - the chosen destination.
+   */
+  async setNewSessionTarget(target: NewSessionTarget): Promise<void> {
+    const previous = this.state.newSessionTarget
+    if (previous === target) return
+    this.state = Object.freeze({ ...this.state, newSessionTarget: target })
+    for (const listener of [...this.listeners]) listener()
+    try {
+      unwrap(await this.remote.setNewSessionTarget({ target }), 'set new session target')
+    } catch (error: unknown) {
+      // Only revert when the Host has not already answered with something newer.
+      if (this.state.newSessionTarget === target) {
+        this.state = Object.freeze({ ...this.state, newSessionTarget: previous })
+        for (const listener of [...this.listeners]) listener()
+      }
+      throw error
+    }
+  }
+
   private acceptFrame(frame: ProjectFollowFrame): void {
     if (frame.type === 'baseline') {
       this.accept(frame.value)
@@ -314,15 +378,21 @@ export class ProjectModel {
     // Compare by value: the Host re-projects on every change, and a frame that
     // carries the same state must not invalidate the snapshot the browser
     // compares by identity.
+    //
+    // `newSessionTarget` reads through a default for the same reason `orders`
+    // reads through `?? {}`: a Host that predates the field degrades to the
+    // shipped behaviour rather than throwing in the sidebar's render path.
+    const newSessionTarget = baseline.newSessionTarget ?? 'ungrouped'
     if (
       sameProjects(this.state.projects, projects)
       && sameAssignments(this.state.assignments, assignments)
       && sameExpansions(this.state.expansions, expansions)
       && sameOrders(this.state.orders, orders)
+      && this.state.newSessionTarget === newSessionTarget
     ) {
       return
     }
-    this.state = Object.freeze({ projects, assignments, expansions, orders })
+    this.state = Object.freeze({ projects, assignments, expansions, orders, newSessionTarget })
     this.derived = undefined
     for (const listener of [...this.listeners]) listener()
   }

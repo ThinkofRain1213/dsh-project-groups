@@ -95,6 +95,47 @@ export const expansionRecord = z.object({
 export type ExpansionRecord = z.infer<typeof expansionRecord>
 
 /**
+ * Where a New Session with no stated destination lands.
+ *
+ * The three entries cover the states a Session can already be in — loose, or
+ * inside some project — plus "the project that was used most recently". A fourth,
+ * "one specific project", is deliberately absent: it needs a project picker and a
+ * policy for what happens when that project is deleted, which is a design of its
+ * own. Adding it later is a compatible change (see the schema note below).
+ */
+export const newSessionTarget = z.enum(['ungrouped', 'current', 'recent'])
+
+/** One stored destination choice. */
+export type NewSessionTarget = z.infer<typeof newSessionTarget>
+
+/**
+ * Durable shape of the global singleton: the project display order plus the
+ * destination policy for unscoped New Sessions.
+ *
+ * `newSessionTarget` carries a default rather than being optional, and that is
+ * what makes adding it compatible: the domain parses the stored global through
+ * this schema on open (`storage-domain/src/index.ts`), so a unit written before
+ * the field existed reads back as `'ungrouped'` instead of `undefined`. Verified
+ * against the installed zod, and pinned by a host test.
+ */
+export const globalRecord = z.object({
+  projectIds: z.array(z.string()),
+  newSessionTarget: newSessionTarget.default('ungrouped'),
+})
+
+/** The stored global singleton. */
+export type GlobalRecord = z.infer<typeof globalRecord>
+
+/**
+ * Value served before the first global write.
+ *
+ * Typed rather than written inline: an inline literal widens `newSessionTarget`
+ * to `string`, which makes the domain's global handle a union of the schema's
+ * output and the widened initial, and every write then has to satisfy both.
+ */
+export const initialGlobal: GlobalRecord = { projectIds: [], newSessionTarget: 'ungrouped' }
+
+/**
  * Durable shape of one project's manual session order. The key is the project id.
  *
  * This mirrors the browser view store's `sessionOrderByAccount`, which the
@@ -133,8 +174,8 @@ export const projectDomainSpec = defineDomain({
   name: PROJECT_DOMAIN_NAME,
   version: 1,
   global: {
-    schema: z.object({ projectIds: z.array(z.string()) }),
-    initial: { projectIds: [] },
+    schema: globalRecord,
+    initial: initialGlobal,
   },
   tables: {
     projects: domainTable<ProjectId, ProjectRecord>(projectRecord),

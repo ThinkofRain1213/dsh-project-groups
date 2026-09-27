@@ -60,7 +60,7 @@ const groupsOf = (model, expanded = []) => deriveGroups(
  * model's read path, its unwrapping and its change notification are all real.
  */
 function fakeRemote({ failOn } = {}) {
-  const state = { projects: [], assignments: {}, expansions: {}, orders: {} }
+  const state = { projects: [], assignments: {}, expansions: {}, orders: {}, newSessionTarget: 'ungrouped' }
   const calls = []
   const ok = value => Promise.resolve({ ok: true, value })
   const guard = name => {
@@ -133,6 +133,14 @@ function fakeRemote({ failOn } = {}) {
       )
       landed()
       return ok({ orders: state.orders })
+    },
+    async setNewSessionTarget({ target }) {
+      calls.push(['setNewSessionTarget', target])
+      const refused = guard('setNewSessionTarget')
+      if (refused !== undefined) return refused
+      state.newSessionTarget = target
+      landed()
+      return ok({ target })
     },
     async reorder({ projectId, beforeId }) {
       calls.push(['reorder', projectId, beforeId])
@@ -622,6 +630,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
     unassign: async () => ({ ok: true, value: {} }),
     setExpanded: async () => ({ ok: true, value: {} }),
     setOrders: async () => ({ ok: true, value: {} }),
+    setNewSessionTarget: async () => ({ ok: true, value: {} }),
     follow: () => (async function* () {})(),
   })
   let survived = true
@@ -632,7 +641,131 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   }
   check('a baseline without an orders field does not throw', survived)
   check('and reads as no manual order', Object.keys(legacy.orders.getSnapshot()).length === 0)
+  check('and a baseline without a destination reads as Ungrouped',
+    legacy.target() === 'ungrouped', String(legacy.target()))
   stop()
+}
+
+// 21. The New Session destination: stored, reported, and optimistic.
+{
+  const { model, remote, stop } = await started()
+  await model.create('a')
+  await model.start()
+  check('a fresh model starts at Ungrouped', model.target() === 'ungrouped', String(model.target()))
+
+  await model.setNewSessionTarget('recent')
+  check('the write reached the namespace',
+    remote.calls.some(c => c[0] === 'setNewSessionTarget'), JSON.stringify(remote.calls.map(c => c[0])))
+  check('the choice is locally visible immediately', model.target() === 'recent', String(model.target()))
+
+  await model.start()
+  check('and the Host projection carries it', model.target() === 'recent', String(model.target()))
+
+  // The observable the settings card will read. Counted rather than pinned to a
+  // number: the model notifies once for the optimistic write and again when the
+  // Host's `follow` frame lands, and that is the intended shape — the assertion
+  // that matters is that a change notifies and an identical value does not.
+  let notified = 0
+  const unsubscribe = model.newSessionTarget$.subscribe(() => { notified += 1 })
+  await model.setNewSessionTarget('current')
+  const afterChange = notified
+  check('the observable notifies on a change', afterChange > 0, String(afterChange))
+  check('and answers the new value', model.newSessionTarget$.getSnapshot() === 'current',
+    String(model.newSessionTarget$.getSnapshot()))
+  await model.setNewSessionTarget('current')
+  check('an identical choice does not notify again', notified === afterChange, String(notified))
+  unsubscribe()
+  stop()
+}
+
+// 22. A refused destination write reverts, so the card never shows a choice the
+//     Host did not store.
+{
+  const { model, stop } = await started({ failOn: 'setNewSessionTarget' })
+  await model.create('a')
+  await model.start()
+  let threw = false
+  try {
+    await model.setNewSessionTarget('recent')
+  } catch {
+    threw = true
+  }
+  check('a refused destination write rejects', threw)
+  check('and the optimistic choice was rolled back', model.target() === 'ungrouped', String(model.target()))
+  stop()
+}
+
+// 23. `resolveTarget` — the policy itself, as a pure function.
+{
+  const { resolveTarget } = await import('../src/client/target.ts')
+  const ownerOf = id => (id === 'in-project' ? 'p1' : undefined)
+  const recent = () => 'p2'
+
+  check('ungrouped resolves to no project',
+    resolveTarget('ungrouped', 'in-project', ownerOf, recent) === undefined)
+  check('current follows the Session the user is looking at',
+    resolveTarget('current', 'in-project', ownerOf, recent) === 'p1')
+  check('current in Ungrouped resolves to no project',
+    resolveTarget('current', 'loose', ownerOf, recent) === undefined)
+  // Archiving the current Session clears the selection; the Host answers that
+  // state with a picker rather than a guess, and Ungrouped is our legal default.
+  check('current with no current Session resolves to no project',
+    resolveTarget('current', undefined, ownerOf, recent) === undefined)
+  check('recent follows the most recently active project',
+    resolveTarget('recent', 'in-project', ownerOf, recent) === 'p2')
+  check('recent ignores the current Session',
+    resolveTarget('recent', 'in-project', ownerOf, () => undefined) === undefined)
+}
+
+// 24. `recentProject` — mirrors the Host's own `recentWorkspace`, including its
+//     two edge rules.
+{
+  const { recentProject } = await import('../src/client/target.ts')
+  const project = (projectId, createdAt) => ({
+    projectId, title: projectId, docPath: '', createdAt, updatedAt: createdAt,
+  })
+  const members = mapping => id => mapping[id] ?? []
+
+  // Most recent activity wins, regardless of display order. Times are epoch
+  // milliseconds, the same unit the Session summaries carry — a small literal
+  // here would lose to any project's `createdAt` and the assertion would be
+  // measuring the wrong thing.
+  const early = Date.parse('2026-01-01T00:00:00Z')
+  const late = Date.parse('2026-02-01T00:00:00Z')
+  check('the project with the latest Session wins',
+    recentProject(
+      [project('p1', '2026-01-01T00:00:00Z'), project('p2', '2026-01-01T00:00:00Z')],
+      { s1: early, s2: late },
+      members({ p1: ['s1'], p2: ['s2'] }),
+    ) === 'p2')
+
+  // An empty project falls back to its own createdAt, or it could never be picked.
+  check('an empty project falls back to its createdAt',
+    recentProject(
+      [project('p1', '2026-01-01T00:00:00Z'), project('p2', '2026-06-01T00:00:00Z')],
+      {},
+      members({}),
+    ) === 'p2')
+
+  // Strict `>` keeps the earlier project on a tie, matching the Host.
+  check('a tie keeps the earlier project in display order',
+    recentProject(
+      [project('p1', '2026-06-01T00:00:00Z'), project('p2', '2026-06-01T00:00:00Z')],
+      {},
+      members({}),
+    ) === 'p1')
+
+  check('no projects resolves to nothing',
+    recentProject([], {}, members({})) === undefined)
+
+  // A Session id with no reported time must not drag its project down: p1 has one
+  // live Session and one unknown, p2 has only unknown, so p1 wins on the live one.
+  check('an unknown Session time does not drag its project down',
+    recentProject(
+      [project('p1', '2026-01-01T00:00:00Z'), project('p2', '2026-01-01T00:00:00Z')],
+      { s1: late },
+      members({ p1: ['s1', 'gone'], p2: ['also-gone'] }),
+    ) === 'p1')
 }
 
 await tick()

@@ -122,6 +122,34 @@ export interface ProjectActions {
   setProjectExpanded: (projectId: string, expanded: boolean) => Promise<void>
   /** Replace the manual order of every caller-supplied project at once. */
   setProjectOrders: (orders: Readonly<Record<string, readonly string[]>>) => Promise<void>
+  /**
+   * Place a Session that an **unscoped** New Session opened.
+   *
+   * A row's own ＋ states a destination and never reaches this; it governs the
+   * entries that state none — the sidebar shell's New Session button and its
+   * shortcut, and any plugin starting a Session without a target. The caller
+   * decides where it goes; this browser only supplies what it alone can see.
+   *
+   * Absent, an unscoped New Session is left where the navigation put it, which is
+   * the shipped behaviour.
+   */
+  placeUnscopedSession?: ((input: UnscopedPlacement) => void) | undefined
+}
+
+/**
+ * What the browser knows about an unscoped New Session that the caller does not.
+ *
+ * `updatedAt` is here because the region already holds the Session list; the
+ * caller owns the project model but has no view of Session activity, and "the
+ * most recently used project" needs exactly that.
+ */
+export interface UnscopedPlacement {
+  /** The Session that was just created. */
+  readonly sessionId: SessionId
+  /** The Session the user was looking at, when there is one. */
+  readonly currentSessionId: SessionId | undefined
+  /** Session id → last activity, for the "most recent project" policy. */
+  readonly updatedAt: Readonly<Record<string, number>>
 }
 
 /**
@@ -166,8 +194,23 @@ export function apply(
   const rowToast = createSnapshotStore<RowToastState | null>(null)
   let toastSeq = 0
   const notify = (toast: RowToast): void => { rowToast.set({ ...toast, seq: ++toastSeq }) }
+  // The unscoped-placement callback. `updatedAt` is assembled here because this
+  // is the only half holding the Session list; the caller owns the project model
+  // and has no view of Session activity.
+  const placeUnscoped = projectActions?.placeUnscopedSession === undefined
+    ? undefined
+    : (sessionId: SessionId, currentSessionId: SessionId | undefined): void => {
+      const byId = sessions.list.getSnapshot().byId
+      projectActions.placeUnscopedSession?.({
+        sessionId,
+        currentSessionId,
+        updatedAt: Object.fromEntries(
+          Object.entries(byId).map(([id, summary]) => [id, summary?.updatedAt ?? 0]),
+        ),
+      })
+    }
   const uiWorkspace = new UiWorkspaceService(
-    ctx, ctx.remote.directoryPicker, workspaces, sessions, viewInstance.actions, notify,
+    ctx, ctx.remote.directoryPicker, workspaces, sessions, viewInstance.actions, notify, placeUnscoped,
   )
   ctx.slots.provideRoot({ hooks: { workspaces: workspaces.list } })
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-workspace: dictionaries')

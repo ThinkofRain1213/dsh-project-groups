@@ -437,5 +437,69 @@ function bench() {
     JSON.stringify(backend.units.get(PROJECT_DOMAIN_NAME).tables.orders[a]))
 }
 
+// 14. The New Session destination is stored on the global singleton, and writing
+//     it must not disturb the project order that shares that singleton.
+{
+  const { controller, backend } = bench()
+  const a = (await controller.create({ title: 'a' })).project.projectId
+  const b = (await controller.create({ title: 'b' })).project.projectId
+
+  check('a fresh registry defaults to Ungrouped',
+    (await controller.baseline()).newSessionTarget === 'ungrouped',
+    (await controller.baseline()).newSessionTarget)
+
+  await controller.setNewSessionTarget({ target: 'recent' })
+  check('the choice is reported by the baseline',
+    (await controller.baseline()).newSessionTarget === 'recent',
+    (await controller.baseline()).newSessionTarget)
+
+  // `global.set` replaces the whole singleton, so this is the regression that
+  // matters: writing the target must leave the order intact.
+  check('writing the target did NOT drop the project order',
+    (await controller.baseline()).projectIds.join(',') === `${b},${a}`,
+    (await controller.baseline()).projectIds.join(','))
+
+  // And the reverse direction: reordering must not reset the choice.
+  await controller.reorder({ projectId: a, beforeId: b })
+  check('reordering did NOT reset the destination choice',
+    (await controller.baseline()).newSessionTarget === 'recent',
+    (await controller.baseline()).newSessionTarget)
+  check('and the reorder still took effect',
+    (await controller.baseline()).projectIds.join(',') === `${a},${b}`,
+    (await controller.baseline()).projectIds.join(','))
+
+  // Deleting must not reset it either.
+  await controller.remove({ projectId: a })
+  check('deleting a project did NOT reset the destination choice',
+    (await controller.baseline()).newSessionTarget === 'recent',
+    (await controller.baseline()).newSessionTarget)
+
+  check('the durable unit holds the choice',
+    backend.units.get(PROJECT_DOMAIN_NAME).global.newSessionTarget === 'recent',
+    JSON.stringify(backend.units.get(PROJECT_DOMAIN_NAME).global))
+}
+
+// 15. A unit written before `newSessionTarget` existed still opens, and reads
+//     back the schema's default rather than `undefined`.
+{
+  const { controller, backend } = bench()
+  await controller.create({ title: 'legacy' })
+  // Simulate a medium written by an older build: the global has no such field.
+  const unit = backend.units.get(PROJECT_DOMAIN_NAME)
+  const legacy = { projectIds: [...unit.global.projectIds] }
+  check('the fixture really lacks the field', !('newSessionTarget' in legacy), JSON.stringify(legacy))
+  unit.global = legacy
+
+  // A separate Context, as a restart has: the stored value is re-parsed on open.
+  const reopened = new ProjectController(benchContext(backend))
+  const baseline = await reopened.baseline()
+  check('a unit without the field still opens', baseline.projects.length === 1,
+    JSON.stringify(baseline.projects.map(p => p.title)))
+  check('and reads back the default destination', baseline.newSessionTarget === 'ungrouped',
+    String(baseline.newSessionTarget))
+  check('with its project order intact', baseline.projectIds.length === 1,
+    baseline.projectIds.join(','))
+}
+
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)
 process.exit(failures.length === 0 ? 0 : 1)
