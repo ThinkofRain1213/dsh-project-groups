@@ -828,10 +828,21 @@ function SessionTree({
             // Expand even when no Session ends up created: a collapsed group
             // would swallow the new row and read as "the click did nothing".
             recordExpansion(group.key, true)
-            // A project row files what it creates under itself; every other row
-            // only creates it. Ungrouped means precisely "filed under nothing",
-            // so filing there would be a contradiction, and a real Workspace row
-            // predates projects entirely.
+            // How this row files the Session it creates. A project row files it
+            // under itself and the Ungrouped bucket files it under nothing; both
+            // state a destination, which is what separates them from the unscoped
+            // entries — the shell's New Session button and its shortcut — where
+            // nothing states one and the caller's policy decides.
+            //
+            // The Ungrouped case must be stated rather than left as "no callback".
+            // Sending none made the click indistinguishable from an unscoped one:
+            // it resolved the default Workspace, reused the blank Session already
+            // there, and inherited whatever project that Session was filed under,
+            // so clicking ＋ under Ungrouped created nothing under Ungrouped.
+            //
+            // A real Workspace row files nothing — it predates projects — and
+            // keeping that branch explicit is what stops such a row from being
+            // unassigned if this browser is ever composed without an override.
             //
             // The filing rides `beforeOpen`, which the navigation runs once the
             // Session exists and before it becomes the main view. A rejection is
@@ -840,14 +851,20 @@ function SessionTree({
             // best-effort by design — a navigation superseded mid-flight never
             // opens its Session, and an unfiled Session is the right outcome for
             // an abandoned click.
-            const filedUnder = group.kind === 'project' ? group.key : undefined
+            const isProject = group.kind === 'project'
+            const isUngrouped = group.key === UNGROUPED_KEY
+            const file = isProject && assignSession !== undefined
+              ? (sessionId: SessionId) => assignSession(sessionId, group.key)
+              : isUngrouped && unassignSession !== undefined
+                ? (sessionId: SessionId) => unassignSession(sessionId)
+                : undefined
             startSession(
               group.workspaceId,
-              filedUnder === undefined || assignSession === undefined
+              file === undefined
                 ? undefined
                 : (sessionId) => {
-                  void assignSession(sessionId, filedUnder).catch((reason: unknown) => {
-                    console.warn('file session under project rejected:', reason)
+                  void file(sessionId).catch((reason: unknown) => {
+                    console.warn('file session rejected:', reason)
                   })
                 },
             )

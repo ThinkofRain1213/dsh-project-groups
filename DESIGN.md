@@ -1337,6 +1337,86 @@ setter 必须**幂等**（同状态返回原引用），否则每个 dragover �
 **保存点**：`a013bc1`（改动前）、`e68996e`（回滚后重做的基线）、
 tag `save/l2b3-highlight-whole-group` / 分支 `keep/l2b3-highlight-whole-group`（第一版实现）。
 
+### 新会话落点（三步走）— 第一步 ✅ 已完成（2026-09-27）
+
+**背景**：用户报"未分组 ＋ 失效"。实测复现出完整链条，也牵出了设计层的选择。
+
+#### 根因
+
+`WorkspaceBrowser.tsx` 的 `onCreate` 只给**项目行**传 `beforeOpen`：
+
+```tsx
+const filedUnder = group.kind === 'project' ? group.key : undefined
+startSession(group.workspaceId, filedUnder === undefined ? undefined : ...)
+```
+
+**未分组行**（`kind !== 'project'`）→ `beforeOpen` 为 `undefined` → **与顶部"新会话"按钮
+完全同一条路径**：
+
+1. 未分组没有 workspaceId → `startSession(undefined, undefined)`
+2. → 解析默认工作区
+3. → `reuseOrCreateBlank` **复用该工作区的空白会话**（`navigation.ts:184`）
+4. → 那个会话**带着旧项目的 `assignments` 条目**
+5. → **没有任何一层清除它** → 新会话出现在旧项目下
+
+**关键**：`beforeOpen` 是**唯一**能表达"归档意图"的机制（`navigation.ts:422` 在会话存在后、
+成为主视图前调用）。未分组行不用它，就被当成了"无意图"。
+
+**更准确的表述**：这是**我们自己的架构缺口**，不是官方 bug。官方没有"归属"这一层，
+所以官方那个按工作区复用的逻辑无害；在我们的模型里它变成"归属被继承"。
+
+#### 第一步的修法
+
+让未分组行**也表态**——传 `beforeOpen` 去 `unassign`，从"无作用域"变成"显式意图"。
+
+**三分支**（对应三种行）：
+
+| 分支 | 行 | 动作 |
+|---|---|---|
+| `isProject` | 项目行 | `assign(sessionId, group.key)` |
+| `isUngrouped` | 未分组行 | `unassign(sessionId)` |
+| 否则 | 真实工作区行 | **不归档** |
+
+**为什么第三分支要显式写出**：它在本组合下**不可达**（`clientGrouping` 恒为数组 →
+`deriveGroups` 必走 `groupBySource`），但若将来**不带 override 复用这个组件**，
+真实工作区行会落进"否则"——**若被 unassign，会静默解除一个真实工作区会话的归属**。
+显式写出比依赖外部前提安全，且重读补丁的人立刻看懂。
+
+**用 `key === UNGROUPED_KEY` 判别**，与同文件 `canReceiveDrag`（`:445`）**同一套判法**，
+避免两套并存。
+
+- [x] `WorkspaceBrowser.tsx`：`onCreate` 的归档分派（**唯一改动点**）
+- [x] 动词缺失时 `file` 为 `undefined` → 不传 `beforeOpen` → **退回改动前行为**（对通用组合安全）
+- [x] `console.warn` 文案统一为 `'file session rejected:'`
+- [x] `pnpm check` **262 项全绿**
+
+#### 验证（含反向对照）
+
+`probe-ungrouped-plus.mjs` 走用户报的路径（建项目 → 点项目＋ → 点未分组＋），
+读 Host 落盘的 `assignments` 表断言**归属**：
+
+| | 旧 bundle | 新 bundle |
+|---|---|---|
+| 未分组＋ 后会话在哪 | **甲** ❌ | **未分组** ✅ |
+| `assignments` | 归甲 ❌ | **空** ✅ |
+
+**我修掉的探针缺陷**：最初断言"未分组＋ 会**新增**一个会话"（`filter !before.includes`），
+但实际是**复用同一个空白会话**（`reuseOrCreateBlank` 的预期行为）——
+所以断言恒失败，而**产品是对的**。改为**追踪那个会话的归属**。
+
+#### 这一步是"半修"
+
+**顶部"新会话"按钮仍被劫持**——它走 `navigation.ts`，不经过 `WorkspaceBrowser`。
+**第二步修它。**
+
+#### 后续两步（已冻结设计）
+
+- **第二步**：设置存储 + `startSession` 按设置分派（覆盖顶部按钮、快捷键、
+  `ui-agent-preset`、`ui-schedule`）。选项：1 未分组 / 2 当前会话所在项目 /
+  3 最后活跃的会话所在项目 / 4 指定项目（留后）。**选项2 无当前会话时落未分组**
+  （依据：官方归档后**不猜、让用户选**；我们的"未分组"就是那个合法默认）。
+- **第三步**：设置卡片 UI（`settings.plugin.item` 槽位，照 `平滑光标` 先例）。
+
 ### L3 — 行内动作适配
 - [ ] 会话行感知所属项目（hover 卡 / 菜单上下文）
 - [ ] 项目自身的重命名 / 删除 / 排序（新对象）

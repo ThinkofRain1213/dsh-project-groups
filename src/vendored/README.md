@@ -85,7 +85,7 @@ source with a comment naming the seam.
 | `contract/slots.ts` | adds a mandatory `grouping` hook to `WorkspaceBrowserInjected.hooks`, plus the `GroupSource` type import | re-add the one field + import |
 | `rows/WorkspaceBrowser.tsx` | consumes `useGrouping`, threads `groupingOverride` into `SessionTree`, uses it for `ungroupedMemberIds` / `expandedGroups` / the two `owningGroupKey` call sites | re-apply the same six edits |
 | `rows/WorkspaceBrowser.tsx` | `onCreate` drops its `if (group.workspaceId !== undefined)` guard and always expands (**behaviour change**, see below) | remove the guard again |
-| `rows/WorkspaceBrowser.tsx` | `onCreate` also files what a project row created, through the optional `assignSession` verb and the `beforeOpen` callback | re-apply the dispatch |
+| `rows/WorkspaceBrowser.tsx` | `onCreate` files what a row creates: a project row under itself through `assignSession`, the Ungrouped bucket under **nothing** through `unassignSession` (see below) | re-apply the three-way `file` dispatch |
 | `rows/WorkspaceBrowser.tsx` | expansion is routed by key ownership: caller-supplied keys go through `setProjectExpanded` / `projectExpansion`, every other key through the view store (see below) | re-apply `isCallerOwned` / `recordExpansion` / `hasExpansion` and the merge in `expandedGroups` |
 | `rows/WorkspaceBrowser.tsx` | caller-supplied groups get the same two-mode member ordering the Workspace rows get, from `orderedProjects` + the `orders` hook; `commitSessionDrag` resolves a caller key after the Workspace lookup; `saveSessionOrder` and the order menu dispatch by key ownership (see below) | re-apply `orderedProjects` / `allProjectOrders`, the `?? groupingOverride?.find(...)` in `commitSessionDrag`, and the two dispatches |
 | `rows/WorkspaceBrowser.tsx` | a Session can be dragged **between** groups: `DragState.overGroupKey` names the target, a row drop is positional and a header drop is not, and `commitCrossGroupDrag` files it through `assignSession` / `unassignSession` before writing the order (see below) | re-apply `overGroupKey`, `canReceiveDrag`, `insertIntoTargetOrder`, `commitCrossGroupDrag`, and the `groupDrop` wiring |
@@ -138,6 +138,23 @@ than a decision — and one upstream test pins the inert behaviour
 
 Consequence for re-sync: that upstream test asserts the opposite of what this
 copy does. Expect it to fail against our tree; it is not a regression.
+
+Making the button work was not enough on its own. Its handler sent **no**
+`beforeOpen` callback, which made the click indistinguishable from an unscoped one
+— the shell's New Session button, whose destination the caller's policy decides.
+The click then resolved the default Workspace, reused the blank Session already
+sitting there, and inherited whatever project that Session had been filed under.
+Since every project shares one Workspace (a project has no directory), using any
+project's ＋ once was enough to make the Ungrouped ＋ create under that project
+from then on.
+
+So `onCreate` now states the destination for both rows: a project row files under
+itself through `assignSession`, the Ungrouped bucket files under nothing through
+`unassignSession`, and a real Workspace row — which predates projects — files
+nothing at all. The third branch is unreachable in this composition (the override
+is always an array, so the region always groups by source) but is kept explicit so
+that composing this browser *without* an override cannot silently unassign a real
+Workspace's Session.
 
 **3. A caller-owned group's expansion is stored by the caller, not here.**
 
@@ -284,6 +301,7 @@ browser probes that drive a live instance. They are run by hand rather than by
 | `scripts/probe-order-mode.mjs` | switches the order menu and reads the Host's stored records | spawns a server; **needs an empty `dshHome`** (it asserts the arriving state) |
 | `scripts/probe-cross-group.mjs` | drags Sessions between projects and out to Ungrouped | spawns a server |
 | `scripts/probe-drop-highlight.mjs` | checks the cross-group highlight is on the group section while the pointer is on the header row, and that the section itself accepts no drop | spawns a server |
+| `scripts/probe-ungrouped-plus.mjs` | drives the Ungrouped ＋ after a project's ＋, and reads the Host's assignment table to see where the Session landed | spawns a server |
 
 `probe-plugin-toggle.mjs` owns its lifecycle deliberately: localStorage is scoped
 to an origin, and an origin includes the port, so running the two profiles on
