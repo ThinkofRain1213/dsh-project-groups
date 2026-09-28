@@ -319,6 +319,7 @@ browser probes that drive a live instance. They are run by hand rather than by
 | `scripts/probe-new-session-target.mjs` | writes the destination setting over the plugin's own RPC, then drives the shell's New Session button under each value | spawns a server |
 | `scripts/probe-settings-card.mjs` | drives this plugin's own Plugin manager page: the card renders at all, its menu is themed in both colour schemes, and a choice drives the New Session button | spawns a server |
 | `scripts/probe-recent-blank.mjs` | rewrites two projects' `createdAt` with the Host stopped, so the one holding a reused blank Session must lose to the newer one | spawns a server, restarts it |
+| `scripts/probe-new-session-motion.mjs` | records the sidebar frame by frame while a project row's ＋ is pressed, on a blank Session that has been collapsed and re-created, so a placement that renders the previous owner for one frame shows up as a glide instead of a fade | spawns a server; the pre-fix bundle must fail its two cross-project checks |
 
 `probe-plugin-toggle.mjs` owns its lifecycle deliberately: localStorage is scoped
 to an origin, and an origin includes the port, so running the two profiles on

@@ -4,10 +4,32 @@
  * ## Where the data lives
  *
  * The Host owns it: `src/index.ts` keeps the durable table under
- * `$DSH_HOME/storages/`, and this class mirrors the projection it streams. Every
- * verb here calls the Remote method and lets the resulting `follow` frame update
- * the state — nothing is applied optimistically, so the sidebar can never show a
- * project the Host did not accept.
+ * `$DSH_HOME/storages/`, and this class mirrors the projection it streams.
+ *
+ * ## Optimistic writes
+ *
+ * Most verbs call the Remote method and let the resulting `follow` frame update
+ * the state, so the sidebar can never show a project the Host did not accept.
+ *
+ * Five are optimistic instead, because the interaction they serve is a **direct
+ * manipulation the user is watching**: a state that only lands after a round trip
+ * reads as lag — or, for an assignment, as the row rendering under the project it
+ * is leaving before gliding to the one it is joining.
+ *
+ *   - `assign` / `unassign` — a drag, a drop, and a New Session's filing;
+ *   - `setExpanded` — folding a row;
+ *   - `setOrders` — a sort gesture;
+ *   - `setNewSessionTarget` — the settings card.
+ *
+ * Each writes locally first, notifies, then calls the Host, and reverts **only
+ * when no newer local value has superseded it**, which keeps a slow refusal from
+ * undoing a fast correction. `assign`/`unassign` additionally hold their writes in
+ * {@link ProjectModel.pendingPlacements} until the Host echoes them, because a
+ * baseline produced *before* the write would otherwise undo it for one render.
+ * The Host stays authoritative throughout: `follow` replaces this state wholesale.
+ *
+ * The judgement, in one line: **optimistic when the user is watching the
+ * consequence of their own gesture.** Everything else waits for the Host.
  *
  * ## Why the grouping observable caches its snapshot
  *
@@ -15,6 +37,9 @@
  * per read would re-render every consumer on each store ping. The derived
  * `GroupSource[]` is therefore rebuilt only when the projection actually
  * changes, which is the same discipline the shipped `derive()` helper enforces.
+ *
+ * Because the groups are derived from the assignment map, every write to that map
+ * must invalidate this cache — see {@link ProjectModel.applyAssignments}.
  *
  * ## Why Ungrouped is the fallback rather than a project
  *
@@ -100,6 +125,32 @@ export class ProjectModel {
   private state: ProjectState = EMPTY_STATE
   private derived: readonly GroupSource[] | undefined
   private readonly listeners = new Set<() => void>()
+  /**
+   * Placements written locally but not yet echoed by the Host.
+   *
+   * Session id → the target the user chose (`undefined` for Ungrouped) and the
+   * token of that particular write. Overlaid onto every incoming baseline while
+   * it lives: a frame produced *before* our write carries the previous owner, and
+   * letting it through would revert the row for one render — the very move the
+   * optimistic write exists to prevent.
+   *
+   * The **token**, not the value, identifies a write. Two writes of the *same*
+   * target can be in flight for one Session (B → A → B), and the oldest one
+   * failing must not clear the newest one's entry.
+   *
+   * Entries are retired when the Host echoes them, which is what makes this
+   * self-terminating: the Host re-projects a full baseline after every landed
+   * write, so "the frame carries our value" is "our write has landed". No timer.
+   *
+   * Known limit: a write the Host accepts but never echoes leaves its entry in
+   * place, pinning that one Session's owner locally. The preconditions that make
+   * this harmless are that the owner is written only through this class and that
+   * one client is connected. If either stops holding, the fix is a generation
+   * number on the baseline — not a timeout.
+   */
+  private readonly pendingPlacements = new Map<SessionId, { readonly projectId: string | undefined; readonly token: number }>()
+  /** Monotonic write id; see {@link pendingPlacements}. */
+  private placementSeq = 0
 
   /**
    * @param remote - the mounted `projectGroups` namespace.
@@ -254,12 +305,97 @@ export class ProjectModel {
 
   /** File a Session under a project, replacing any previous assignment. */
   async assign(sessionId: SessionId, projectId: string): Promise<void> {
-    unwrap(await this.remote.assign({ sessionId, projectId }), 'assign session')
+    await this.place(sessionId, projectId)
   }
 
   /** Return a Session to Ungrouped. */
   async unassign(sessionId: SessionId): Promise<void> {
-    unwrap(await this.remote.unassign({ sessionId }), 'unassign session')
+    await this.place(sessionId, undefined)
+  }
+
+  /**
+   * Replace the assignment map, invalidate the derived grouping, and notify.
+   *
+   * Clearing `derived` is not optional the way it is for the other optimistic
+   * setters: the sidebar's groups are **derived from this map** and the derived
+   * snapshot is cached by identity (`groupingSnapshot`), so an assignment written
+   * without this would leave the row rendered under its previous owner, with no
+   * error anywhere to say so.
+   * @param assignments - the complete map to store.
+   */
+  private applyAssignments(assignments: Readonly<Record<string, string>>): void {
+    this.state = Object.freeze({ ...this.state, assignments: Object.freeze(assignments) })
+    this.derived = undefined
+    for (const listener of [...this.listeners]) listener()
+  }
+
+  /**
+   * One entry replaced, every other entry preserved.
+   *
+   * `delete` rather than assigning `undefined`: absence is what Ungrouped *means*,
+   * and both `sameAssignments` and `groupingSnapshot` walk `Object.keys`, so a
+   * present key holding `undefined` would count as an owner.
+   * @param assignments - the map to copy.
+   * @param sessionId - the Session to place.
+   * @param projectId - the owner, or `undefined` for Ungrouped.
+   * @returns the new map.
+   */
+  private withPlacement(
+    assignments: Readonly<Record<string, string>>,
+    sessionId: SessionId,
+    projectId: string | undefined,
+  ): Record<string, string> {
+    const next: Record<string, string> = { ...assignments }
+    if (projectId === undefined) delete next[sessionId]
+    else next[sessionId] = projectId
+    return next
+  }
+
+  /**
+   * File a Session under a project, or return it to Ungrouped, optimistically.
+   *
+   * Optimistic because the sidebar renders this map directly. When a New Session
+   * is clicked into a project, its row is created holding whatever assignment the
+   * reused blank Session already carried — so a write that waits for the Host
+   * renders that row under the project it is *leaving*, and only then glides to
+   * the one it is joining. That is exactly why one project's ＋ faded while
+   * another project's ＋ moved: the two differ solely in whether the owner
+   * changed.
+   *
+   * The Host stays authoritative: `follow` replaces this state wholesale, so a
+   * refusal is corrected rather than left wrong.
+   * @param sessionId - the Session to file.
+   * @param projectId - the owning project, or `undefined` for Ungrouped.
+   */
+  private async place(sessionId: SessionId, projectId: string | undefined): Promise<void> {
+    // `Record<string, string>` types an absent key as `string`, but absence is a
+    // real state here — it is what Ungrouped means.
+    const before = this.state.assignments[sessionId] as string | undefined
+    // Already there. Returning early is what keeps "the same project's ＋" a fade:
+    // no state change, no notification, so the row's key is new in the next commit
+    // and `AnimatedRows` fades it instead of gliding it.
+    if (before === projectId) return
+
+    const token = ++this.placementSeq
+    this.pendingPlacements.set(sessionId, { projectId, token })
+    this.applyAssignments(this.withPlacement(this.state.assignments, sessionId, projectId))
+    try {
+      const outcome = projectId === undefined
+        ? await this.remote.unassign({ sessionId })
+        : await this.remote.assign({ sessionId, projectId })
+      // Unwrapped by hand rather than through `unwrap`, which throws before the
+      // rollback below could run.
+      if (!outcome.ok) throw new Error(outcome.error?.message ?? 'place session failed')
+    } catch (error: unknown) {
+      // Only revert when this write has not already been superseded. Reverting
+      // against the *current* map rather than a whole-map snapshot is deliberate:
+      // the unit of this write is one Session, so a rollback must not discard a
+      // concurrent placement of a different one.
+      if (this.pendingPlacements.get(sessionId)?.token !== token) throw error
+      this.pendingPlacements.delete(sessionId)
+      this.applyAssignments(this.withPlacement(this.state.assignments, sessionId, before))
+      throw error
+    }
   }
 
   /**
@@ -364,7 +500,23 @@ export class ProjectModel {
 
   private accept(baseline: ProjectBaseline): void {
     const projects = Object.freeze(baseline.projects.map(project => Object.freeze({ ...project })))
-    const assignments = Object.freeze({ ...baseline.assignments })
+    // Retire every placement the Host has now echoed: this frame carries our
+    // value, so the local guess and the authoritative one agree and the overlay
+    // has done its job.
+    for (const [sessionId, entry] of this.pendingPlacements) {
+      if ((baseline.assignments[sessionId] as string | undefined) === entry.projectId) {
+        this.pendingPlacements.delete(sessionId)
+      }
+    }
+    // Overlay what is still in flight. A frame produced before our write carries
+    // the previous owner; accepting it would revert the row for one render and
+    // bring back exactly the move the optimistic write removes.
+    const overlaid: Record<string, string> = { ...baseline.assignments }
+    for (const [sessionId, entry] of this.pendingPlacements) {
+      if (entry.projectId === undefined) delete overlaid[sessionId]
+      else overlaid[sessionId] = entry.projectId
+    }
+    const assignments = Object.freeze(overlaid)
     const expansions = Object.freeze({ ...baseline.expansions ?? {} })
     // Read through `?? {}` rather than assuming the field: a baseline missing it
     // degrades to "no manual order" (members fall back to recency) instead of

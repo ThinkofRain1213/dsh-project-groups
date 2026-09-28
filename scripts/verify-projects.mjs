@@ -58,8 +58,17 @@ const groupsOf = (model, expanded = []) => deriveGroups(
  *
  * It holds the same projection the Host does and applies each verb to it, so the
  * model's read path, its unwrapping and its change notification are all real.
+ *
+ * Two hooks exist for the optimistic-placement tests, which need to observe the
+ * window *between* a local write and the Host's frame:
+ *
+ *  - `holdAssign` names the Sessions whose `assign`/`unassign` parks until
+ *    `releasePlace`, so a test can inspect the in-flight state, push frames into
+ *    it, and order two writes against each other;
+ *  - `deliver` pushes one baseline of an arbitrary projection, which is how a
+ *    stale frame (one produced before the write) is reproduced.
  */
-function fakeRemote({ failOn } = {}) {
+function fakeRemote({ failOn, holdAssign = [], refuseAssignFor } = {}) {
   const state = { projects: [], assignments: {}, expansions: {}, orders: {}, newSessionTarget: 'ungrouped' }
   const calls = []
   const ok = value => Promise.resolve({ ok: true, value })
@@ -72,10 +81,26 @@ function fakeRemote({ failOn } = {}) {
   // optimistic local value — a fake that only ever sends its opening baseline
   // would leave an optimistic write looking like a bug.
   const watchers = new Set()
+  // Hoisted out of `follow` so `deliver` can push a frame the test chose, rather
+  // than only the ones a landed write produces.
+  const queue = [{ type: 'baseline', value: structuredClone(state) }]
+  let wake
+  const push = (value) => {
+    queue.push({ type: 'baseline', value: structuredClone(value) })
+    const pending = wake
+    wake = undefined
+    pending?.()
+  }
   const landed = () => { for (const notify of [...watchers]) notify() }
+  // Resolvers for held placements, released by the test.
+  let releasePlace = []
   return {
     state,
     calls,
+    /** Push one baseline of an arbitrary (possibly stale) projection. */
+    deliver: push,
+    /** Let every held `assign`/`unassign` proceed. */
+    releasePlace: () => { const held = releasePlace; releasePlace = []; for (const resolve of held) resolve() },
     async baseline() { return { ok: true, value: structuredClone(state) } },
     async create({ title }) {
       calls.push(['create', title])
@@ -158,6 +183,15 @@ function fakeRemote({ failOn } = {}) {
       calls.push(['assign', sessionId, projectId])
       const refused = guard('assign')
       if (refused !== undefined) return refused
+      // Held first, refused after release: a test needs a write that is still
+      // *in flight* when a second Session's write lands, so the rollback has
+      // something concurrent to preserve.
+      if (holdAssign.includes(sessionId)) await new Promise(resolve => { releasePlace.push(resolve) })
+      // Refuse one named Session, so a test can let a *different* Session's write
+      // succeed around a refused one without turning `assign` off wholesale.
+      if (refuseAssignFor !== undefined && refuseAssignFor.includes(sessionId)) {
+        return { ok: false, error: { message: 'assign refused by host' } }
+      }
       state.assignments[sessionId] = projectId
       landed()
       return ok({ sessionId, projectId })
@@ -166,6 +200,7 @@ function fakeRemote({ failOn } = {}) {
       calls.push(['unassign', sessionId])
       const refused = guard('unassign')
       if (refused !== undefined) return refused
+      if (holdAssign.includes(sessionId)) await new Promise(resolve => { releasePlace.push(resolve) })
       const removed = Object.hasOwn(state.assignments, sessionId)
       delete state.assignments[sessionId]
       landed()
@@ -173,15 +208,9 @@ function fakeRemote({ failOn } = {}) {
     },
     follow(signal) {
       // An opening baseline, then one fresh projection per landed write — the
-      // shape the real Host's `follow` has.
-      const queue = [{ type: 'baseline', value: structuredClone(state) }]
-      let wake
-      const notify = () => {
-        queue.push({ type: 'baseline', value: structuredClone(state) })
-        const pending = wake
-        wake = undefined
-        pending?.()
-      }
+      // shape the real Host's `follow` has. The queue lives outside so `deliver`
+      // can add a frame the test chose.
+      const notify = () => { push(state) }
       watchers.add(notify)
       signal.addEventListener('abort', () => { watchers.delete(notify); wake?.() }, { once: true })
       return (async function* () {
@@ -847,6 +876,186 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
       members({ p1: ['s1'] }),
       ['loose1'],
     ) === 'p1')
+}
+
+// 25. Placement is optimistic, and survives the frames that predate it.
+//
+//     The reported defect: with a New Session already filed under A, pressing B's
+//     ＋ rendered the row under A first and only then glided it to B — because the
+//     reused blank Session carries its previous assignment, and a write that waits
+//     for the Host renders that intermediate state for one frame. The fix writes
+//     locally before calling the Host, so the first render already shows B.
+//
+//     Each assertion guards a specific way that fix can fail silently.
+{
+  // ── 25a. The write lands locally, and the derived groups follow it. ──
+  //
+  // Clearing the derived-grouping cache is the quietest failure mode in the whole
+  // change: the assignment map would be correct while the sidebar kept rendering
+  // the old groups, with no error anywhere.
+  {
+    const { model, remote, stop } = await started({ holdAssign: ['s1'] })
+    await model.create('A')
+    const projectId = model.list()[0].projectId
+
+    // Deliberately not awaited: the point is that state moved before the Host
+    // answered. The held write is released after the assertions.
+    const pending = model.assign('s1', projectId)
+    check('an assignment lands in the snapshot before the Host answers',
+      model.grouping.getSnapshot().find(source => source.key === projectId)?.sessionIds.includes('s1') === true,
+      JSON.stringify(model.grouping.getSnapshot()))
+    const groups = groupsOf(model, [projectId])
+    check('and the derived groups move the Session in the same beat',
+      groups.find(group => group.key === projectId)?.sessionCount === 1,
+      groups.map(g => `${g.key}:${g.sessionCount}`).join(' '))
+    check('while Ungrouped no longer holds it',
+      groups.find(group => group.key === UNGROUPED_KEY)?.sessionCount === 2,
+      groups.map(g => `${g.key}:${g.sessionCount}`).join(' '))
+
+    remote.releasePlace()
+    await pending.catch(() => {})
+    await tick()
+    stop()
+  }
+
+  // ── 25b. Re-filing where the Session already is notifies nobody. ──
+  //
+  // This is what keeps the *same* project's ＋ a fade: with no state change there
+  // is no notification, so the row's key is new in the next commit and the list
+  // fades it instead of gliding it. It also avoids a pointless Host round trip.
+  {
+    const { model, remote, stop } = await started()
+    await model.create('A')
+    const projectId = model.list()[0].projectId
+    await model.assign('s1', projectId)
+    await tick()
+    let notified = 0
+    const unsubscribe = model.grouping.subscribe(() => { notified += 1 })
+    await model.assign('s1', projectId)
+    await tick()
+    check('re-filing a Session where it already is notifies nobody', notified === 0, String(notified))
+    check('and writes nothing to the Host',
+      remote.calls.filter(([name]) => name === 'assign').length === 1,
+      JSON.stringify(remote.calls.filter(([name]) => name === 'assign')))
+    unsubscribe()
+    stop()
+  }
+
+  // ── 25c. A refusal rolls back that Session, and leaves a concurrent one alone.
+  //
+  // s1 is held then refused; while it is still in flight s2 lands successfully.
+  // Reverting s1 against a whole-map snapshot would discard s2's legitimate
+  // placement — the unit of this write is one Session, so the rollback must be too.
+  {
+    const { model, remote, stop } = await started({ holdAssign: ['s1'], refuseAssignFor: ['s1'] })
+    await model.create('A')
+    const projectId = model.list()[0].projectId
+
+    // In flight, not yet refused: the fake refuses only after the release below.
+    const refused = model.assign('s1', projectId).then(
+      () => 'resolved', () => 'rejected',
+    )
+    await tick()
+    // s2 lands while s1's write is still pending.
+    await model.assign('s2', projectId)
+    await tick()
+    check('a concurrent placement is visible before the first write settles',
+      model.grouping.getSnapshot().find(source => source.key === projectId)?.sessionIds.includes('s2') === true,
+      JSON.stringify(model.grouping.getSnapshot()))
+
+    remote.releasePlace()
+    check('a refused assignment rejects', await refused === 'rejected', await refused)
+    await tick()
+
+    const members = model.grouping.getSnapshot().find(source => source.key === projectId)?.sessionIds ?? []
+    check('a refusal rolls that Session back to no owner',
+      !members.includes('s1'), JSON.stringify(members))
+    check('and leaves a concurrent placement of another Session intact',
+      members.includes('s2'), JSON.stringify(members))
+    stop()
+  }
+
+  // ── 25d. A frame that predates the write does not undo it. ──
+  //
+  // The Host re-projects after every landed write, and one of those baselines can
+  // be produced *before* our optimistic write — carrying the previous owner.
+  // Accepting it would revert the row for one render, which is the whole bug.
+  {
+    const { model, remote, stop } = await started({ holdAssign: ['s1'] })
+    await model.create('A')
+    const projectId = model.list()[0].projectId
+    const pending = model.assign('s1', projectId)
+
+    // A stale projection: the Host has not applied the write yet.
+    remote.deliver({ projects: remote.state.projects, assignments: {}, expansions: {}, orders: {}, newSessionTarget: 'ungrouped' })
+    await tick()
+    check('a baseline produced before the write does not undo it',
+      model.grouping.getSnapshot().find(source => source.key === projectId)?.sessionIds.includes('s1') === true,
+      JSON.stringify(model.grouping.getSnapshot()))
+
+    remote.releasePlace()
+    await pending.catch(() => {})
+    await tick()
+    stop()
+  }
+
+  // ── 25e. The overlay retires once the Host echoes the write. ──
+  //
+  // Otherwise a successful-but-un-echoed write would pin that Session's owner
+  // locally forever, and later Host values would never get through.
+  {
+    const { model, remote, stop } = await started({ holdAssign: ['s1'] })
+    await model.create('A')
+    await model.create('B')
+    const [a, b] = model.list().map(project => project.projectId)
+    const pending = model.assign('s1', a)
+    // A stale frame while the write is still held: the overlay must hold it off.
+    remote.deliver({ projects: remote.state.projects, assignments: {}, expansions: {}, orders: {}, newSessionTarget: 'ungrouped' })
+    await tick()
+    remote.releasePlace()
+    await pending.catch(() => {})
+    await tick()
+    check('the write itself is not pinned once it lands',
+      model.grouping.getSnapshot().find(source => source.key === a)?.sessionIds.includes('s1') === true,
+      JSON.stringify(model.grouping.getSnapshot()))
+    // With the overlay retired, a later Host value wins again. If the entry had
+    // leaked, this authoritative move to B would be silently ignored.
+    remote.deliver({ projects: remote.state.projects, assignments: { s1: b }, expansions: {}, orders: {}, newSessionTarget: 'ungrouped' })
+    await tick()
+    check('and the overlay retired, so a later Host value takes effect',
+      model.grouping.getSnapshot().find(source => source.key === b)?.sessionIds.includes('s1') === true,
+      JSON.stringify(model.grouping.getSnapshot()))
+    stop()
+  }
+
+  // ── 25f. Unassigning removes the key rather than storing `undefined`. ──
+  //
+  // Absence is what Ungrouped means, and both the equality check and the grouping
+  // derivation walk `Object.keys` — a present key holding `undefined` would count
+  // as an owner and render the row under a project that no longer claims it.
+  {
+    const { model, stop } = await started()
+    await model.create('A')
+    const projectId = model.list()[0].projectId
+    await model.assign('s1', projectId)
+    await tick()
+    await model.unassign('s1')
+    await tick()
+    const groups = groupsOf(model, [projectId])
+    check('unassigning drops the Session from the project',
+      groups.find(group => group.key === projectId)?.sessionCount === 0,
+      groups.map(g => `${g.key}:${g.sessionCount}`).join(' '))
+    check('and the Session is back under Ungrouped',
+      groups.find(group => group.key === UNGROUPED_KEY)?.sessionCount === 3,
+      groups.map(g => `${g.key}:${g.sessionCount}`).join(' '))
+    // The map itself must not keep the key: `Object.keys` drives both the
+    // equality check and the grouping derivation.
+    const sources = model.grouping.getSnapshot()
+    check('and no group claims it',
+      sources.every(source => !source.sessionIds.includes('s1')),
+      JSON.stringify(sources))
+    stop()
+  }
 }
 
 await tick()
