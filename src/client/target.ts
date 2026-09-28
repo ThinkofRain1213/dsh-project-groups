@@ -35,7 +35,8 @@ export type SessionTimes = Readonly<Record<string, number>>
  * @param target - the stored policy.
  * @param currentSessionId - the Session the user is looking at, when there is one.
  * @param projectOf - owner lookup for one Session.
- * @param recent - the project holding the most recently active Session.
+ * @param recent - the destination holding the most recently active Session, which
+ * may be Ungrouped (`undefined`).
  * @returns the project to file the new Session under, or `undefined` for Ungrouped.
  */
 export function resolveTarget(
@@ -55,40 +56,66 @@ export function resolveTarget(
 }
 
 /**
- * The project holding the most recently active Session.
+ * The destination `recent` resolves to: the holder of the most recently active
+ * Session, where the holder may be a project **or Ungrouped**.
  *
- * Mirrors the Host's `recentWorkspace` (`packages/client/ui-workspace/src/client/
- * navigation.ts`) so the two behave the same way at their edges:
+ * Ungrouped is a real answer rather than the absence of one. "The last Session I
+ * worked in belongs to no project" is a state the user can be in, and there is no
+ * equivalent in the Host's `recentWorkspace` because every Session there belongs
+ * to some Workspace. So this mirrors that function's edge rules and adds the
+ * third candidate it has no room for.
  *
- *  - a project with no Sessions falls back to its own `createdAt`, so an empty
- *    project can still be chosen — without it, a project the user just created
- *    could never be the answer;
- *  - the comparison is strictly `>`, so a tie keeps the project that comes first
- *    in display order rather than the one that happened to be visited last.
+ * Blank Sessions contribute nothing, because the activity map excludes them: a
+ * blank row carries its creation time, and the Session being placed is itself
+ * blank and already in the list — counting it would let the Session choose its
+ * own destination. See the map's assembly in `vendored/client/index.ts`.
  *
  * @param projects - projects in display order.
- * @param updatedAt - Session id → last activity.
+ * @param activity - Session id → last activity, blank Sessions already excluded.
  * @param members - the Session ids filed under one project.
- * @returns the project id, or `undefined` when there are no projects.
+ * @param loose - the ids in no project, i.e. the Ungrouped bucket. Typed as plain
+ * strings rather than `SessionId`s because it is, by construction, a subset of
+ * `activity`'s own key domain — the caller derives it with `Object.keys`.
+ * @returns the project id, or `undefined` for Ungrouped.
  */
-export function recentProject(
+export function recentDestination(
   projects: readonly ProjectValue[],
-  updatedAt: SessionTimes,
+  activity: SessionTimes,
   members: (projectId: string) => readonly SessionId[],
+  loose: readonly string[],
 ): string | undefined {
   let selected: string | undefined
   let selectedTime = Number.NEGATIVE_INFINITY
+  // Strict `>` keeps whichever candidate was considered first on a tie, so
+  // Ungrouped — considered last — never wins one against a project. That matches
+  // the Host's own rule (a tie follows display order) rather than inventing a
+  // preference for Ungrouped.
+  const consider = (candidate: string | undefined, latest: number): void => {
+    if (latest <= selectedTime) return
+    selected = candidate
+    selectedTime = latest
+  }
+
   for (const project of projects) {
     let latest = Number.NEGATIVE_INFINITY
     for (const sessionId of members(project.projectId)) {
-      const time = updatedAt[sessionId]
+      const time = activity[sessionId]
       if (time !== undefined) latest = Math.max(latest, time)
     }
+    // Without this a project the user just created could never be chosen.
     if (latest === Number.NEGATIVE_INFINITY) latest = Date.parse(project.createdAt)
-    if (selected === undefined || latest > selectedTime) {
-      selected = project.projectId
-      selectedTime = latest
-    }
+    consider(project.projectId, latest)
   }
+
+  let looseLatest = Number.NEGATIVE_INFINITY
+  for (const sessionId of loose) {
+    const time = activity[sessionId]
+    if (time !== undefined) looseLatest = Math.max(looseLatest, time)
+  }
+  // No `createdAt` fallback: Ungrouped is not an entity and has no creation of
+  // its own, so with nothing loose to go on it simply cannot win — which is the
+  // honest answer, and leaves the newest project to take it.
+  consider(undefined, looseLatest)
+
   return selected
 }

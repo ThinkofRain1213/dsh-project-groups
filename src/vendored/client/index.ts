@@ -148,7 +148,11 @@ export interface UnscopedPlacement {
   readonly sessionId: SessionId
   /** The Session the user was looking at, when there is one. */
   readonly currentSessionId: SessionId | undefined
-  /** Session id → last activity, for the "most recent project" policy. */
+  /**
+   * Session id → last activity, **blank Sessions excluded**, for the "most recent
+   * project" policy. A blank row carries a creation time rather than activity, so
+   * it is not evidence of anything; see the assembly above.
+   */
   readonly updatedAt: Readonly<Record<string, number>>
 }
 
@@ -197,16 +201,26 @@ export function apply(
   // The unscoped-placement callback. `updatedAt` is assembled here because this
   // is the only half holding the Session list; the caller owns the project model
   // and has no view of Session activity.
+  //
+  // Blank Sessions are left out. A blank row is the unstarted New Session, and
+  // `reuseOrCreateBlank` reuses one — so the Session being placed right now is
+  // itself blank, already in this map, carrying its own creation time. Counting
+  // it would let the Session decide its own destination, and would hand whatever
+  // project it was last filed under a fresh timestamp it did no work for. A blank
+  // parked in a project is no evidence of work in that project either, so the
+  // exclusion is by the row's own `blank` flag rather than by id.
   const placeUnscoped = projectActions?.placeUnscopedSession === undefined
     ? undefined
     : (sessionId: SessionId, currentSessionId: SessionId | undefined): void => {
       const byId = sessions.list.getSnapshot().byId
+      const activity: Record<string, number> = {}
+      for (const [id, summary] of Object.entries(byId)) {
+        if (summary !== undefined && !summary.blank) activity[id] = summary.updatedAt
+      }
       projectActions.placeUnscopedSession?.({
         sessionId,
         currentSessionId,
-        updatedAt: Object.fromEntries(
-          Object.entries(byId).map(([id, summary]) => [id, summary?.updatedAt ?? 0]),
-        ),
+        updatedAt: activity,
       })
     }
   const uiWorkspace = new UiWorkspaceService(

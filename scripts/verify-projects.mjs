@@ -742,10 +742,16 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
     resolveTarget('recent', 'in-project', ownerOf, () => undefined) === undefined)
 }
 
-// 24. `recentProject` — mirrors the Host's own `recentWorkspace`, including its
-//     two edge rules.
+// 24. `recentDestination` — mirrors the Host's own `recentWorkspace` edge rules,
+//     plus the third candidate the Host has no room for: Ungrouped.
+//
+//     The Host's function returns a Workspace id and every Session there belongs
+//     to one, so it has no "no container" case. Here Ungrouped is a real
+//     destination: when the last Session the user worked in belongs to no
+//     project, `recent` must follow it there rather than falling back to whichever
+//     project happens to be newest.
 {
-  const { recentProject } = await import('../src/client/target.ts')
+  const { recentDestination } = await import('../src/client/target.ts')
   const project = (projectId, createdAt) => ({
     projectId, title: projectId, docPath: '', createdAt, updatedAt: createdAt,
   })
@@ -758,38 +764,88 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   const early = Date.parse('2026-01-01T00:00:00Z')
   const late = Date.parse('2026-02-01T00:00:00Z')
   check('the project with the latest Session wins',
-    recentProject(
+    recentDestination(
       [project('p1', '2026-01-01T00:00:00Z'), project('p2', '2026-01-01T00:00:00Z')],
       { s1: early, s2: late },
       members({ p1: ['s1'], p2: ['s2'] }),
+      [],
     ) === 'p2')
 
   // An empty project falls back to its own createdAt, or it could never be picked.
   check('an empty project falls back to its createdAt',
-    recentProject(
+    recentDestination(
       [project('p1', '2026-01-01T00:00:00Z'), project('p2', '2026-06-01T00:00:00Z')],
       {},
       members({}),
+      [],
     ) === 'p2')
 
   // Strict `>` keeps the earlier project on a tie, matching the Host.
   check('a tie keeps the earlier project in display order',
-    recentProject(
+    recentDestination(
       [project('p1', '2026-06-01T00:00:00Z'), project('p2', '2026-06-01T00:00:00Z')],
       {},
       members({}),
+      [],
     ) === 'p1')
 
-  check('no projects resolves to nothing',
-    recentProject([], {}, members({})) === undefined)
+  check('no projects and nothing loose resolves to nothing',
+    recentDestination([], {}, members({}), []) === undefined)
 
   // A Session id with no reported time must not drag its project down: p1 has one
   // live Session and one unknown, p2 has only unknown, so p1 wins on the live one.
   check('an unknown Session time does not drag its project down',
-    recentProject(
+    recentDestination(
       [project('p1', '2026-01-01T00:00:00Z'), project('p2', '2026-01-01T00:00:00Z')],
       { s1: late },
       members({ p1: ['s1', 'gone'], p2: ['also-gone'] }),
+      [],
+    ) === 'p1')
+
+  // The reported defect: the user's last Session was in no project, and `recent`
+  // sent the New Session to the newest *project* instead of to Ungrouped.
+  check('a looser Session newer than every project resolves to Ungrouped',
+    recentDestination(
+      [project('p1', '2026-01-01T00:00:00Z'), project('p2', '2026-01-01T00:00:00Z')],
+      { s1: early, loose1: late },
+      members({ p1: ['s1'], p2: [] }),
+      ['loose1'],
+    ) === undefined,
+    String(recentDestination(
+      [project('p1', '2026-01-01T00:00:00Z'), project('p2', '2026-01-01T00:00:00Z')],
+      { s1: early, loose1: late },
+      members({ p1: ['s1'], p2: [] }),
+      ['loose1'],
+    )))
+
+  // …but a project that is genuinely newer still wins, or Ungrouped would swallow
+  // every answer the moment anything was loose.
+  check('a project newer than every loose Session still wins',
+    recentDestination(
+      [project('p1', '2026-01-01T00:00:00Z'), project('p2', '2026-01-01T00:00:00Z')],
+      { s2: late, loose1: early },
+      members({ p1: [], p2: ['s2'] }),
+      ['loose1'],
+    ) === 'p2')
+
+  // Ungrouped has no `createdAt`, so an empty Ungrouped bucket cannot win by the
+  // fallback that lets a freshly created project be chosen.
+  check('Ungrouped cannot win on its own with no loose activity',
+    recentDestination(
+      [project('p1', '2026-01-01T00:00:00Z')],
+      {},
+      members({}),
+      ['blank-row'],
+    ) === 'p1')
+
+  // A tie goes to the project, because Ungrouped is considered last and the
+  // comparison is strict — the Host's display-order rule, not a new preference.
+  check('a tie between Ungrouped and a project keeps the project',
+    recentDestination(
+      [project('p1', '2026-01-01T00:00:00Z')],
+      { s1: late, loose1: late },
+      members({ p1: ['s1'] }),
+      ['loose1'],
     ) === 'p1')
 }
 

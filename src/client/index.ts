@@ -51,12 +51,13 @@ import {
   clientExpansions, clientGrouping, clientNewSessionTarget, clientOrders, installProjectModel, projectModel,
 } from './grouping.ts'
 import { ProjectModel } from './projects.ts'
-import { recentProject, resolveTarget } from './target.ts'
+import { recentDestination, resolveTarget } from './target.ts'
 import { projectGroupsRemote } from './remote.ts'
 import { ProjectGroupsCard } from './settings-card.tsx'
 import { en, SETTINGS_NS, zh } from './settings-locales.ts'
 import { PROJECT_NAMESPACE } from '../protocol.ts'
 import type { NewSessionTarget } from '../protocol.ts'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
 export { clientExpansions, clientGrouping, clientNewSessionTarget, clientOrders, projectModel } from './grouping.ts'
 export type { GroupSource } from '../vendored/client/tree.ts'
@@ -93,7 +94,20 @@ const projectActions: ProjectActions = {
       model.target(),
       currentSessionId,
       id => model.projectOf(id),
-      () => recentProject(model.list(), updatedAt, id => model.membersOf(id)),
+      () => recentDestination(
+        model.list(),
+        updatedAt,
+        id => model.membersOf(id),
+        // Ungrouped is a candidate too, so it needs its members. The activity map
+        // holds every Session with real activity, and its keys minus the filed
+        // ones are exactly the Sessions in no project. Sessions the model has
+        // never heard of are loose by this definition, which is correct: this
+        // plugin files nothing anywhere else.
+        //
+        // The cast follows `projects.ts`: `Object.keys` widens to `string`, while
+        // the map is keyed by the branded id it was built from.
+        Object.keys(updatedAt).filter(id => model.projectOf(id as SessionId) === undefined),
+      ),
     )
     // A Session with no project has no assignment record — that absence is what
     // "Ungrouped" means, so it is a delete rather than a write.

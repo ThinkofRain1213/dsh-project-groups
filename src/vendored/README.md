@@ -318,6 +318,7 @@ browser probes that drive a live instance. They are run by hand rather than by
 | `scripts/probe-ungrouped-plus.mjs` | drives the Ungrouped ＋ after a project's ＋, and reads the Host's assignment table to see where the Session landed | spawns a server |
 | `scripts/probe-new-session-target.mjs` | writes the destination setting over the plugin's own RPC, then drives the shell's New Session button under each value | spawns a server |
 | `scripts/probe-settings-card.mjs` | drives this plugin's own Plugin manager page: the card renders at all, its menu is themed in both colour schemes, and a choice drives the New Session button | spawns a server |
+| `scripts/probe-recent-blank.mjs` | rewrites two projects' `createdAt` with the Host stopped, so the one holding a reused blank Session must lose to the newer one | spawns a server, restarts it |
 
 `probe-plugin-toggle.mjs` owns its lifecycle deliberately: localStorage is scoped
 to an origin, and an origin includes the port, so running the two profiles on
