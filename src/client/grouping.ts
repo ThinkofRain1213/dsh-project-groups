@@ -27,6 +27,7 @@
  */
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { GroupSource } from '../vendored/client/tree.ts'
+import type { NewSessionTarget } from '../protocol.ts'
 import type { ProjectModel } from './projects.ts'
 
 /** The override with no projects: one Ungrouped bucket. */
@@ -52,6 +53,8 @@ const pending = new Set<() => void>()
 const pendingExpansions = new Set<() => void>()
 /** The same, for {@link clientOrders}. */
 const pendingOrders = new Set<() => void>()
+/** The same, for {@link clientNewSessionTarget}. */
+const pendingTargets = new Set<() => void>()
 
 /** @returns the live model, once its baseline has landed. */
 export function projectModel(): ProjectModel | undefined {
@@ -85,6 +88,11 @@ export function installProjectModel(started: ProjectModel): void {
   pendingOrders.clear()
   for (const notify of earlyOrders) started.orders.subscribe(notify)
   for (const notify of earlyOrders) notify()
+
+  const earlyTargets = [...pendingTargets]
+  pendingTargets.clear()
+  for (const notify of earlyTargets) started.newSessionTarget$.subscribe(notify)
+  for (const notify of earlyTargets) notify()
 }
 
 /**
@@ -143,5 +151,34 @@ export const clientOrders: HostObservable<Readonly<Record<string, readonly strin
       return () => { pendingOrders.delete(listener) }
     }
     return live.orders.subscribe(listener)
+  },
+}
+
+/**
+ * The stored New Session destination, for this plugin's own settings card.
+ *
+ * Its own seat rather than a read of {@link projectModel} at render time: the
+ * card can register before the Remote baseline lands, and it must follow later
+ * changes (the optimistic write, and the Host's `follow` frame) like every other
+ * observable here.
+ *
+ * Deliberately **not** handed to the vendored browser. That half renders groups
+ * and has no business knowing where an unscoped New Session goes; the choice is
+ * spent in `index.ts` when a Session actually lands, so only the settings card
+ * needs to read it.
+ *
+ * Before the model exists the snapshot is `'ungrouped'`, matching
+ * `EMPTY_STATE.newSessionTarget` and the Host's own default — so the card shows
+ * the value a fresh install would actually use rather than a blank.
+ */
+export const clientNewSessionTarget: HostObservable<NewSessionTarget> = {
+  getSnapshot: () => model?.target() ?? 'ungrouped',
+  subscribe: (listener) => {
+    const live = model
+    if (live === undefined) {
+      pendingTargets.add(listener)
+      return () => { pendingTargets.delete(listener) }
+    }
+    return live.newSessionTarget$.subscribe(listener)
   },
 }

@@ -42,15 +42,23 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol'
+// Type-only: pulls the Plugin manager's SlotMap merge (the
+// 'plugins.bundle.config' entry). Collaborating through a slot, never a value.
+import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import { apply as applyVendored, inject as vendoredInject } from '../vendored/client/index.ts'
 import type { ProjectActions } from '../vendored/client/index.ts'
-import { clientExpansions, clientGrouping, clientOrders, installProjectModel, projectModel } from './grouping.ts'
+import {
+  clientExpansions, clientGrouping, clientNewSessionTarget, clientOrders, installProjectModel, projectModel,
+} from './grouping.ts'
 import { ProjectModel } from './projects.ts'
 import { recentProject, resolveTarget } from './target.ts'
 import { projectGroupsRemote } from './remote.ts'
+import { ProjectGroupsCard } from './settings-card.tsx'
+import { en, SETTINGS_NS, zh } from './settings-locales.ts'
 import { PROJECT_NAMESPACE } from '../protocol.ts'
+import type { NewSessionTarget } from '../protocol.ts'
 
-export { clientExpansions, clientGrouping, clientOrders, projectModel } from './grouping.ts'
+export { clientExpansions, clientGrouping, clientNewSessionTarget, clientOrders, projectModel } from './grouping.ts'
 export type { GroupSource } from '../vendored/client/tree.ts'
 export type { ProjectRemote } from './projects.ts'
 
@@ -119,6 +127,44 @@ export function apply(ctx: Context): void {
   // loudly, which is better than a dead sidebar.
   void mountProjects(ctx)
   applyVendored(ctx, clientGrouping, projectActions, clientExpansions, clientOrders)
+  registerSettingsCard(ctx)
+}
+
+/**
+ * Contribute this plugin's configuration card to its own Plugin manager page.
+ *
+ * The `key` must be this bundle's package name: the page dispatches the keyed
+ * slot by it, and that same key is what makes the page render the section at all
+ * (`config-ledger.ts` projects `plugins.bundle.config`'s keys into the
+ * `configured` flag). A key that does not match the installed bundle name is
+ * silently not rendered, which is why `probe-settings-card.mjs` asserts the card
+ * is present rather than trusting the registration.
+ *
+ * `slots.inject` waits for the Plugins page to declare the slot, so this needs no
+ * ordering assumption and both sides leave together.
+ * @param ctx - client root context.
+ */
+function registerSettingsCard(ctx: Context): void {
+  ctx.effect(() => ctx.locale.register(SETTINGS_NS, { zh, en }), 'project-groups: settings dictionaries')
+  ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
+    name: 'plugins.bundle.config',
+    key: 'dsh-project-groups',
+    locale: SETTINGS_NS,
+    inject: () => ({
+      hooks: { target: clientNewSessionTarget },
+      setTarget: (target: NewSessionTarget) => {
+        // Not `requireModel`: the card can render before the Remote baseline
+        // lands, and a click then must be a no-op rather than a thrown error out
+        // of a React event handler. The optimistic write inside the model is
+        // what makes the card follow the choice immediately.
+        const live = projectModel()
+        if (live === undefined) return
+        void live.setNewSessionTarget(target).catch((reason: unknown) => {
+          console.warn('set new session target rejected:', reason)
+        })
+      },
+    }),
+  }, ProjectGroupsCard))
 }
 
 /**

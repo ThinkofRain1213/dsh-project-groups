@@ -1415,7 +1415,9 @@ startSession(group.workspaceId, filedUnder === undefined ? undefined : ...)
   `ui-agent-preset`、`ui-schedule`）。选项：1 未分组 / 2 当前会话所在项目 /
   3 最后活跃的会话所在项目 / 4 指定项目（留后）。**选项2 无当前会话时落未分组**
   （依据：官方归档后**不猜、让用户选**；我们的"未分组"就是那个合法默认）。
-- **第三步**：设置卡片 UI（`settings.plugin.item` 槽位，照 `平滑光标` 先例）。
+- **第三步**：设置卡片 UI，落在**插件自有页面**（`plugins.bundle.config` 槽位）。
+  这里原本写的是 `settings.plugin.item`——**那个槽位在当前版本不存在**，
+  见下方第三步一节的更正。
 
 #### 第二步 ✅ 已完成（2026-09-27）
 
@@ -1477,11 +1479,100 @@ recent    → recentProject()
    补了一个**能分开两者**的场景（新建一个更晚的空项目：`recent` 选它，`current` 仍选原项目），
    旧 bundle 上该判别项失败。
 
-#### 第三步（待做）
+#### 第三步 ✅ 已完成（2026-09-28）
 
-设置卡片 UI：`settings.plugin.item` 槽位（照 `平滑光标` 先例），
-读 `model.newSessionTarget$`、写 `model.setNewSessionTarget`。**两者第二步已就绪**，
-第三步是纯 UI。
+**设置卡片 UI**，落在**插件自有页面**上。
+
+**槽位：`plugins.bundle.config`**（`ui-plugin-manager/src/client/slot-contract.ts:89`）
+
+```ts
+/** A bundle's own configuration, keyed by the bundle's package name and
+ *  rendered on the bundle's page between its description and its rows. */
+'plugins.bundle.config': { kind: 'keyed'; scope: 'root'; owner: PluginConfigViewProps }
+```
+
+**渲染点**（`PluginManagerPage.tsx:575`）：**描述 → `[data-plugin-config]` → 「包含的组件」**，
+即"侧栏 → 插件 → dsh-project-groups"那一页。
+
+**`key` 必须是我们的 bundle 名 `dsh-project-groups`**，因为：
+
+1. 页面按 `entryKey = pkg.name` 分派这个 keyed 槽位；
+2. **`configured` 就是从这个槽位的 key 投影出来的**
+   （`config-ledger.ts:51` `keysOf('plugins.bundle.config')` → `:66` `bundles`）——
+   **key 不匹配则整段不渲染，且无任何报错**。所以探针必须真的驱动页面，
+   不能只断言"注册成功"。
+
+**先例**：官方 `client-ui-voice-input` 的 `mount.ts:45` 用同一槽位 + 同一写法
+（`key: <自身 bundle 名>`、`locale`、`inject: () => actions`、type-only 导入
+`@deepseek-ai/dsh-client-ui-plugin-manager/client`）。**我们的写法与它同构。**
+
+**⚠️ 一次被推翻的调研结论（记下来，避免重犯）**
+
+我先后给出过三个**错误**方案：
+
+| 说法 | 实际 |
+|---|---|
+| 注册 `settings.plugin.item`（照 `平滑光标`） | 该槽位在 **0.1.7-rc.2 里 0 次出现**（app.asar 实测），纯空转 |
+| 注册 `settings.plugins.tab` | 槽位对，但是**"设置→插件"标签页**，不是插件自有页面 |
+| 用 `PreferenceRow` 下拉行 | 它服务于 `settings.general.item`，**不是**我们的槽位 |
+
+**根因**：一直在"读源码猜"，**没有先找同槽位的完整先例**。
+**方法教训**：先定位"谁用了同一个槽位"，再照抄；猜测式的子品牌/组件复用一律不算依据。
+
+**控件：`Menu` 下拉，不用原生 `<select>`**
+
+官方语音输入的 `识别服务`/`识别语言` 是**原生 `<select>`**，
+而它的弹出层**由操作系统绘制、CSS 管不到** → **深色主题下弹白底**（用户截图实测）。
+`VoiceInput.module.css:29` 只给了闭合态样式，官方全仓 `color-scheme` 仅 1 处（Excel 预览写死 `light`）。
+
+**`Menu`**（`@deepseek-ai/dsh-client-ui-primitives`，在 `PLATFORM_MODULES` 内、外部化零体积）
+自带主题浮层、勾选态、键盘导航。**行布局**照 `PermissionRow`，**CSS 逐字复制**
+（client bundle 纯度门禁禁止跨插件值导入——官方自己也复制）。
+
+**主题实测**（探针 `page.emulateMedia` 双色断言）：
+
+| 主题 | 弹出层填充 |
+|---|---|
+| light | `rgba(248,249,250,0.58)` |
+| dark | `rgba(67,69,74,0.45)` |
+
+**跟随主题**，白底问题不复现。
+
+**注册**
+
+```ts
+ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
+  name: 'plugins.bundle.config',
+  key: 'dsh-project-groups',
+  locale: SETTINGS_NS,
+  inject: () => ({ hooks: { target: clientNewSessionTarget }, setTarget }),
+}, ProjectGroupsCard))
+```
+
+**`form` 不用**：`PluginConfigViewProps.form` 是宿主配置表单；
+我们的设置在自有领域，走自己的 RPC——**语音输入同样无视它**。
+
+**新的可观察量 `clientNewSessionTarget`**（`grouping.ts`）：独立席位，
+含早期订阅者队列（与 `clientExpansions`/`clientOrders` 同型），
+模型未就绪时快照读 `'ungrouped'`（与 `EMPTY_STATE` 一致）。
+**不交给 vendored**：侧栏渲染分组，无需知道落点。
+
+**校验**
+
+- `pnpm check` **302 项全绿**（原 298；新增 4 项：席位早期订阅默认值 / 唤醒 / 读回 / 跟随后续变更）
+- `probe-settings-card.mjs` **13 项全过**
+- **反向对照**：旧 bundle 上 `[data-plugin-config]` **sections: 0**，3 项失败、其余优雅跳过
+- 回归三件套全过（跨组拖拽 / 未分组＋ / 插件开关）
+- 构建纯度：`ui-plugin-manager` 在 `lib/client.js` **0 次**（type-only 导入无运行时代码）
+
+**一个环境陷阱**：`probe-plugin-toggle.mjs` 需要预建 `official` profile
+（`--profile official --from-default-profile web`）。隔离 `DSH_HOME` 下缺它会
+"official exited early with 1"——**是探针环境缺口，不是产品回归**。
+
+#### 仍未做
+
+- **选项4（指定项目）**：需要项目选择器 + "所选项目被删除"的策略。枚举后加，向后兼容。
+- **问题4**：项目行不显示会话数（`GroupNode.sessionCount` 已存在，呈现方式待定）。
 
 ### L3 — 行内动作适配
 - [ ] 会话行感知所属项目（hover 卡 / 菜单上下文）

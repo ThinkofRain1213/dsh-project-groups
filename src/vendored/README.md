@@ -317,6 +317,7 @@ browser probes that drive a live instance. They are run by hand rather than by
 | `scripts/probe-drop-highlight.mjs` | checks the cross-group highlight is on the group section while the pointer is on the header row, and that the section itself accepts no drop | spawns a server |
 | `scripts/probe-ungrouped-plus.mjs` | drives the Ungrouped ＋ after a project's ＋, and reads the Host's assignment table to see where the Session landed | spawns a server |
 | `scripts/probe-new-session-target.mjs` | writes the destination setting over the plugin's own RPC, then drives the shell's New Session button under each value | spawns a server |
+| `scripts/probe-settings-card.mjs` | drives this plugin's own Plugin manager page: the card renders at all, its menu is themed in both colour schemes, and a choice drives the New Session button | spawns a server |
 
 `probe-plugin-toggle.mjs` owns its lifecycle deliberately: localStorage is scoped
 to an origin, and an origin includes the port, so running the two profiles on

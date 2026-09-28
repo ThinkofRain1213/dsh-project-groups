@@ -1,0 +1,67 @@
+/* New Session destination: label plus the destination menu. */
+
+/*
+ * The row geometry is the official settings-row one — `PermissionRow` and
+ * `PreferenceRow` in the checkout carry this same block, copied rather than
+ * imported because the client bundle purity gate forbids a value import from
+ * another plugin (tsdown.config.ts). Copying it is what upstream itself does.
+ */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 0;
+}
+
+.rowText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 48px;
+}
+
+.title {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.desc {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/*
+ * The trigger pill takes the theme's module-backed fill rather than the native
+ * `<select>` the voice-input card uses: a SELECT's popup is drawn by the
+ * operating system and ignores CSS, so it renders light on a dark theme. The
+ * Menu draws its own themed surface instead.
+ */
+.selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  height: 36px;
+  padding: 0 14px;
+  border: none;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-module-platform);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.selector:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.chevron {
+  flex: none;
+}

@@ -28,7 +28,7 @@ globalThis.window = { __ModuleLoader__: { load: () => {} } }
 
 const { ProjectModel } = await import('../src/client/projects.ts')
 const { deriveGroups, UNGROUPED_KEY } = await import('../src/vendored/client/tree.ts')
-const { clientExpansions, clientGrouping, clientOrders, installProjectModel } = await import('../src/client/grouping.ts')
+const { clientExpansions, clientGrouping, clientNewSessionTarget, clientOrders, installProjectModel } = await import('../src/client/grouping.ts')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -383,29 +383,39 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   stop()
 }
 
-// 10. Early subscribers on both seats are woken when the model arrives.
+// 10. Early subscribers on every seat are woken when the model arrives.
 //
 //     The browser registers its hooks during the vendored `apply`, which can
-//     precede the Remote baseline, so both observables must hold their early
+//     precede the Remote baseline, so the observables must hold their early
 //     listeners and hand them to the model on install. This is the one place the
-//     install happens, so both seats are exercised together — a later install
+//     install happens, so every seat is exercised together — a later install
 //     would replace the module-level model and leave a subscriber bound to the
 //     old one.
 {
   const seenGroups = []
   const seenExpansions = []
+  const seenTargets = []
   const unsubscribeGroups = clientGrouping.subscribe(() => { seenGroups.push(clientGrouping.getSnapshot().length) })
   const unsubscribeExpansions = clientExpansions.subscribe(() => { seenExpansions.push(clientExpansions.getSnapshot()) })
+  // The settings card takes this seat, and it can register before the baseline
+  // too — so it gets the same early-subscriber treatment.
+  const unsubscribeTargets = clientNewSessionTarget.subscribe(() => { seenTargets.push(clientNewSessionTarget.getSnapshot()) })
   check('a snapshot read before install is the empty override',
     clientGrouping.getSnapshot().length === 0)
   check('and the expansion seat reads empty before install',
     Object.keys(clientExpansions.getSnapshot()).length === 0)
+  check('and the destination seat reads the Host default before install',
+    clientNewSessionTarget.getSnapshot() === 'ungrouped',
+    clientNewSessionTarget.getSnapshot())
 
   const { model, stop } = await started()
   await model.create('early')
   await model.start()
   const projectId = model.list()[0].projectId
   await model.setExpanded(projectId, true)
+  // A stored destination the model will carry, so the wake-up is a real change
+  // rather than a repeat of the default the early reader already saw.
+  await model.setNewSessionTarget('recent')
   installProjectModel(model)
 
   check('installing the model wakes an early grouping subscriber', seenGroups.length > 0,
@@ -417,8 +427,23 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   check('and its next read sees the recorded expansion',
     clientExpansions.getSnapshot()[projectId] === true,
     JSON.stringify(clientExpansions.getSnapshot()))
+  check('installing the model wakes an early destination subscriber', seenTargets.length > 0,
+    `notified ${seenTargets.length}x`)
+  check('and its next read sees the stored destination',
+    clientNewSessionTarget.getSnapshot() === 'recent',
+    clientNewSessionTarget.getSnapshot())
+
+  // A later change reaches the seat that was subscribed before install, not just
+  // the listener count the install produced.
+  const before = seenTargets.length
+  await model.setNewSessionTarget('current')
+  check('and the early subscriber follows later changes',
+    seenTargets.length > before && clientNewSessionTarget.getSnapshot() === 'current',
+    JSON.stringify({ before, after: seenTargets.length, value: clientNewSessionTarget.getSnapshot() }))
+
   unsubscribeGroups()
   unsubscribeExpansions()
+  unsubscribeTargets()
   stop()
 }
 

@@ -40,6 +40,7 @@
         "@deepseek-ai/dsh-client-shortcuts",
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-session",
         "@deepseek-ai/dsh-client-ui-sidebar"
@@ -73,6 +74,7 @@
     "probe:drop-highlight": "node scripts/probe-drop-highlight.mjs",
     "probe:ungrouped-plus": "node scripts/probe-ungrouped-plus.mjs",
     "probe:new-session-target": "node scripts/probe-new-session-target.mjs",
+    "probe:settings-card": "node scripts/probe-settings-card.mjs",
     "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {
@@ -91,6 +93,7 @@
     "@deepseek-ai/dsh-client-store": "0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-conversation": "0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-layout": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-primitives": "0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-renderer": "0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-session": "0.1.7-rc.2",
