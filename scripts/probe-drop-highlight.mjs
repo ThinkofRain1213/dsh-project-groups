@@ -21,6 +21,7 @@
  */
 import { spawn } from 'node:child_process'
 import { chromium } from 'playwright-core'
+import { installRowKeyHelpers } from './lib/row-key.mjs'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
 const PORT = 17657
@@ -49,6 +50,7 @@ const url = await new Promise((resolve, reject) => {
 
 const browser = await chromium.launch({ headless: true })
 const page = await browser.newPage()
+await installRowKeyHelpers(page)
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -72,7 +74,7 @@ const sessionsUnder = (title) => page.evaluate((text) => {
   if (section === undefined) return []
   const scope = section.closest('div[class*="groupSection"]') ?? section.parentElement
   return [...scope.querySelectorAll('[data-row-key^="session:"]')]
-    .map(node => node.getAttribute('data-row-key').replace('session:', ''))
+    .map(node => window.__sessionIdOf(node.getAttribute('data-row-key')) ?? '')
 }, title)
 
 const projectRow = (title) => page.locator('[data-row-key^="workspace:"]', { hasText: title }).first()

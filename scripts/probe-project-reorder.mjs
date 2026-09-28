@@ -13,6 +13,7 @@
  */
 import { spawn } from 'node:child_process'
 import { chromium } from 'playwright-core'
+import { installRowKeyHelpers, sessionIdOf } from './lib/row-key.mjs'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
 if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
@@ -52,6 +53,7 @@ function boot(profile) {
 
 const browser = await chromium.launch({ headless: true })
 const page = await browser.newPage()
+await installRowKeyHelpers(page)
 const errors = []
 page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
 page.on('pageerror', (error) => { errors.push(`pageerror: ${error.message}`) })
@@ -137,7 +139,9 @@ try {
   await createProjectSession('second session')
 
   const beforeKeys = await sessionRowsUnder(unique)
-  const before = beforeKeys.map(key => key.replace('session:', ''))
+  // Parsed Node-side: `sessionRowsUnder` returns row keys (strings), and this map
+  // runs outside the page, where the injected `window.__sessionIdOf` does not exist.
+  const before = beforeKeys.map(key => sessionIdOf(key) ?? '')
   console.log(`sessions in the project, in order: ${JSON.stringify(before)}`)
   check('the project holds two Sessions', before.length === 2, JSON.stringify(before))
   if (before.length !== 2) throw new Error('cannot reorder without two rows')
@@ -165,7 +169,7 @@ try {
   })
   await page.waitForTimeout(3000)
 
-  const after = (await sessionRowsUnder(unique)).map(key => key.replace('session:', ''))
+  const after = (await sessionRowsUnder(unique)).map(key => sessionIdOf(key) ?? '')
   console.log(`sessions in the project, after the drag: ${JSON.stringify(after)}`)
   check('the drag reordered the project\'s Sessions',
     after.length === 2 && after[0] === before[1] && after[1] === before[0],
@@ -181,7 +185,7 @@ try {
   await page.reload({ waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(7000)
   await dismissModals()
-  const reloaded = (await sessionRowsUnder(unique)).map(key => key.replace('session:', ''))
+  const reloaded = (await sessionRowsUnder(unique)).map(key => sessionIdOf(key) ?? '')
   console.log(`sessions after reload: ${JSON.stringify(reloaded)}`)
   check('the new order survives a reload (it is on the Host)',
     reloaded.length === 2 && reloaded[0] === before[1] && reloaded[1] === before[0],

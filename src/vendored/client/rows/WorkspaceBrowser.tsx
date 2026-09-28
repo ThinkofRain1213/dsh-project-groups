@@ -39,7 +39,7 @@ import {
   owningSourceKey,
   pinCurrentBlank, reconcileManualOrder, sessionMemberIds, UNGROUPED_KEY,
 } from '../tree.ts'
-import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './Rows.tsx'
+import { ProjectRowItem, SearchResultItem, SessionNodeItem, sessionRowKey } from './Rows.tsx'
 import { AnimatedRows } from './AnimatedRows.tsx'
 import { FLAT_SESSION_ORDER_KEY, type SessionGroupBy } from '../stores.ts'
 import { WorkspacePickFlow } from '../WorkspacePicker.tsx'
@@ -688,7 +688,11 @@ function SessionTree({
     rowKeys.push(`workspace:${group.key}`)
     const childRows = group.expanded ? children.map(child => renderGroup(child, depth + 1)) : []
     const sessions = visible.rows
-    for (const node of sessions) rowKeys.push(`session:${node.id}`)
+    // Invariant: these keys must match the `data-row-key` the rows below render,
+    // in the same order — `AnimatedRows` pairs the two by position. Both sides call
+    // `sessionRowKey` for that reason; writing the string out here instead would let
+    // them drift, and a drift shows up as wrong motion rather than as an error.
+    for (const node of sessions) rowKeys.push(sessionRowKey(node.id, group.key))
     if (collapsed.hiddenCount > 0) rowKeys.push(`overflow:${group.key}`)
     const activeDrag = workspaceDrag
     const markerOver = dragRowId !== undefined && activeDrag !== null
@@ -946,6 +950,10 @@ function SessionTree({
             <SessionNodeItem
               key={node.id}
               node={node}
+              // Must equal the matching entry `rowKeys` pushed above; see the note
+              // there. `key` stays the bare id so React re-parents the row rather
+              // than remounting it when the Session changes group.
+              rowKey={sessionRowKey(node.id, group.key)}
               currentId={current}
               now={now}
               onOpen={open}

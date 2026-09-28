@@ -1728,6 +1728,88 @@ ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
 5. **每个探针要独立 `DSH_HOME`**。四个探针共用一个 home 会让项目累积，
    而其中三个断言的是**精确项目数**（1 或 2）⇒ **假失败**（我犯过）。
 
+## 新会话的行身份带上项目（2026-09-28）
+
+### 问题
+
+点项目 A 的 ＋，再点项目 B 的 ＋，**同一个空白会话从 A 的组平移到 B 的组**——
+横跨整个侧栏滑过去。官方从不这样。
+
+### 根因（逐帧实测）
+
+`AnimatedRows` 判断"淡入还是平移"**只看 key 在上一帧是否存在**
+（`AnimatedRows.tsx:92-105`）：
+
+```ts
+const previousRow = snapshot.positions.get(key)
+if (previousRow === undefined) { fade(); continue }   // key 新 → 淡入
+if (dx === 0 && dy === 0) continue                     // 没动 → 什么都不做
+glide()                                                // 同 key 换位置 → 平移
+```
+
+官方跨工作区时，A、B 各持**不同**的会话 ⇒ 不同 key ⇒ `opacity→opacity` 淡入。
+我们 A、B 是**同一个**会话（所有项目共用默认工作区）⇒ 同一 key 换了位置 ⇒ 平移。
+
+**实测**（项目行 ＋，逐帧密集采样）：
+
+| 场景 | 关键指标 |
+|---|---|
+| A＋（首次） | y 有 12 个中间位置，`transform+opacity→transform+opacity` |
+| A＋（再来） | 无动画 |
+| **B＋** | **y 有 12 个中间位置，`transform+opacity→transform+opacity`** ← bug |
+| 跨组拖拽 | 74 采样点只有 2 个 y 值 ⇒ 瞬移（与 key 无关，拖拽期间 `ready=false` 关了动画） |
+
+**官方 blank→real 实测**（官方 profile 发首条消息）：同一 id、同一分组、
+**DOM 节点同一对象**、0 位移 0 淡入 —— 即**原地 patch，连淡入都没有**。
+原因：行 key 恒为 `session:<id>`，`blank` 只改标题与尾部单元（`Rows.tsx:49,720,734`）。
+
+### 修法
+
+**只改行的"动画身份"，让它带上所属项目；后端与数据面一行不动。**
+
+```ts
+export function sessionRowKey(id, groupKey) {
+  return groupKey === undefined ? `session:${id}` : `session:${id}@${groupKey}`
+}
+```
+
+| 场景 | key | 结果 | 对照官方 |
+|---|---|---|---|
+| A＋ 首次 | 新 | 淡入 | ✅ |
+| A＋ 再来 | 不变 | 无行为 | ✅ |
+| **B＋** | `…@A` → `…@B` | **淡出 + 淡入** | ✅ 跨工作区同构 |
+| **空白→真会话** | **不变**（同组） | **零动画原地 patch** | ✅ 与官方逐项一致 |
+| 跨组拖拽 | 拖拽期间动画被关 | 瞬移 | ✅ 不变 |
+
+**关键不变式**：`blank` **不进** key。进了就会让每次首次发消息变成交叉淡入，
+直接违背上面那条官方实测。
+
+改动 4 处：`Rows.tsx`（helper + 可选 `rowKey` prop + `data-row-key`）、
+`WorkspaceBrowser.tsx`（`rowKeys` 与行 prop 两处，**必须同源同序**，因为
+`AnimatedRows` 按位置配对）。`navigation.ts` / `tree.ts` / `stores.ts` /
+`src/index.ts` / `spec.ts` **均未改动**。
+
+### 验证
+
+- `scripts/probe-row-key-motion.mjs`（新增，**16 项断言**）：四种转换 + 拖拽回归。
+  反向对照（改前）**恰好失败 4 条**跨项目断言。
+- `scripts/lib/row-key.mjs`（新增）：`@` 之后 id 的解析**只有这一处实现**，
+  避免各探针各写一份而静默比错。
+- 数据面复核：`@` **不落盘**（localStorage 无 `@`、无 `session:`）；
+  关插件后官方侧栏恢复且**会话一条不丢**（`消失的会话: []`）。
+- `pnpm check`：**13 suites / 321 断言全绿**（数量与改前一致，未新增/删除断言）。
+
+### 边界
+
+- **不碰后端复用**："草稿变成真会话后才新建下一个"是官方 `reuseOrCreateBlank`
+  的现成行为（只在 `summary.blank` 为真时复用）。
+- **顶栏新会话按钮无需改码**：其落点在 `beforeOpen` 里**同步**完成，
+  渲染时 key 已算对（`probe-new-session-target.mjs` / `probe-settings-card.mjs` 覆盖）。
+- **flat 单列表模式保持官方 key 逐字节不变**（无组可换）。
+- 约 10 个既有探针改为经 `scripts/lib/row-key.mjs` 取 id；其中
+  `probe-project-reorder.mjs` 的解析在 **Node 侧**，用 `sessionIdOf` 而非
+  `window.__sessionIdOf`（后者只在页面内存在）。
+
 ### L3 — 行内动作适配
 - [ ] 会话行感知所属项目（hover 卡 / 菜单上下文）
 - [ ] 项目自身的重命名 / 删除 / 排序（新对象）

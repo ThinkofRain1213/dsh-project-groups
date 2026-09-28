@@ -19,6 +19,7 @@ import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { chromium } from 'playwright-core'
+import { installRowKeyHelpers } from './lib/row-key.mjs'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
 if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
@@ -55,6 +56,7 @@ function boot(profile) {
 
 const browser = await chromium.launch({ headless: true })
 const page = await browser.newPage()
+await installRowKeyHelpers(page)
 const errors = []
 page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
 page.on('pageerror', (error) => { errors.push(`pageerror: ${error.message}`) })
@@ -82,7 +84,7 @@ const sessionsUnder = (headingText) => page.evaluate((text) => {
   if (section === undefined) return []
   const scope = section.closest('div[class*="groupSection"]') ?? section.parentElement
   return [...scope.querySelectorAll('[data-row-key^="session:"]')]
-    .map(node => node.getAttribute('data-row-key').replace('session:', ''))
+    .map(node => window.__sessionIdOf(node.getAttribute('data-row-key')) ?? '')
 }, headingText)
 
 /** The Ungrouped bucket's Session ids, in rendered order. */
@@ -92,7 +94,7 @@ const ungroupedSessions = () => page.evaluate(() => {
   if (header === undefined) return null
   const scope = header.closest('div[class*="groupSection"]') ?? header.parentElement
   return [...scope.querySelectorAll('[data-row-key^="session:"]')]
-    .map(node => node.getAttribute('data-row-key').replace('session:', ''))
+    .map(node => window.__sessionIdOf(node.getAttribute('data-row-key')) ?? '')
 })
 
 /** The persisted ordering mode. */

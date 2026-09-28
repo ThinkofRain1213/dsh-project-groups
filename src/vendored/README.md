@@ -99,6 +99,9 @@ source with a comment naming the seam.
 | `navigation.ts` | `startSession` without a target resolves the Host's default Workspace instead of guessing (**behaviour change**, see below) | restore the shipped guess, or re-apply |
 | `navigation.ts` | the service takes an optional `placeUnscoped` callback, applied only when `beforeOpen` is absent, so the caller can file an unscoped New Session (**behaviour change**, see below) | re-add the parameter and the `beforeOpen ??` composition |
 | `index.ts` | `apply` takes an optional `groupingOverride`, an optional `ProjectActions`, and optional `expansionsOverride` / `ordersOverride`, forwarding all into the inject face | re-add the parameters and the hook/verb fields |
+| `rows/Rows.tsx` | adds `sessionRowKey(id, groupKey)`: a Session row's animation identity carries its owning group (`session:<id>@<groupKey>`) instead of the bare id (**behaviour change**, see below) | re-add the helper and its doc block |
+| `rows/Rows.tsx` | `SessionNodeItem` takes an optional `rowKey`, and its `data-row-key` is `rowKey ?? sessionRowKey(node.id)` | re-add the prop and the fallback |
+| `rows/WorkspaceBrowser.tsx` | the grouped view passes `sessionRowKey(node.id, group.key)` twice — into `rowKeys` and into the row's `rowKey` — in the same order | re-apply both call sites together |
 
 Two invariants keep these patches honest:
 
@@ -282,6 +285,42 @@ Three supporting changes:
     the shipped strays-only rule, and the archived-only view still hides an empty
     bucket.
 
+**6. A Session row's animation key carries its group.**
+
+Shipped: a Session row's `data-row-key` is `session:<id>`, and `AnimatedRows` reads
+that attribute to decide, per commit, whether a row is new (entry fade) or merely
+moved (glide). Upstream gets away with a key that says nothing about the group,
+because a Session's group there is its Workspace — assigned at creation and never
+re-filed — so a row never changes group at all.
+
+Here it does. Every project shares the one default Workspace (a project has no
+directory), and the blank New Session is a single Session that the front end
+re-files between projects. Under the shipped key, A's ＋ then B's ＋ is the same key
+in a new position, which `AnimatedRows` renders as a **glide**: the row travels
+across the sidebar from one project to the other. Measured frame by frame, that
+transition has twelve intermediate positions and a
+`transform+opacity→transform+opacity` animation. Upstream's own cross-Workspace
+transition, by contrast, fades: `opacity→opacity`, no transform.
+
+So the grouped view now passes `sessionRowKey(node.id, group.key)`, which yields
+`session:<id>@<groupKey>`. The same Session under a new group becomes a *different*
+key — the old one leaves and the new one arrives, both fading — and the Session id
+itself is untouched, so nothing outside `AnimatedRows` can tell the difference.
+
+`blank` is deliberately **not** folded into the key: a blank New Session becoming
+real stays in its group, so its key does not change and the row is patched in place
+with **no** animation. That is what upstream does, measured as one surviving DOM
+node with zero movement and zero fade, and folding `blank` in would replace it with
+a cross-fade on every first prompt.
+
+The flat "In one list" view is left on the shipped key: its rows have no group to
+change, so it keeps upstream's string byte for byte.
+
+Both call sites must agree — `rowKeys` (the ordered array `AnimatedRows` diffs) and
+the row's own `data-row-key` — because the two are paired by position. They call the
+same helper for that reason. `scripts/probe-row-key-motion.mjs` asserts the four
+transitions, and fails two of its cross-project checks against the shipped key.
+
 ## Keeping it in sync
 
 Upstream ships this package at the same version as the whole harness line, so a
@@ -320,6 +359,7 @@ browser probes that drive a live instance. They are run by hand rather than by
 | `scripts/probe-settings-card.mjs` | drives this plugin's own Plugin manager page: the card renders at all, its menu is themed in both colour schemes, and a choice drives the New Session button | spawns a server |
 | `scripts/probe-recent-blank.mjs` | rewrites two projects' `createdAt` with the Host stopped, so the one holding a reused blank Session must lose to the newer one | spawns a server, restarts it |
 | `scripts/probe-new-session-motion.mjs` | records the sidebar frame by frame while a project row's ＋ is pressed, on a blank Session that has been collapsed and re-created, so a placement that renders the previous owner for one frame shows up as a glide instead of a fade | spawns a server; the pre-fix bundle must fail its two cross-project checks |
+| `scripts/probe-row-key-motion.mjs` | samples every Session row each animation frame across all four transitions (a project's ＋, the same ＋ again, another project's ＋, a blank becoming real) plus a cross-group drag, so a glide shows as a run of intermediate positions and a fade as `opacity→opacity`; asserts the blank→real case has no animation at all | spawns a server; the shipped `session:<id>` key must fail its four cross-project checks |
 
 `probe-plugin-toggle.mjs` owns its lifecycle deliberately: localStorage is scoped
 to an origin, and an origin includes the port, so running the two profiles on

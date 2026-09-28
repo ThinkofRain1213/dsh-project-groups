@@ -77,6 +77,7 @@
     "probe:settings-card": "node scripts/probe-settings-card.mjs",
     "probe:recent-blank": "node scripts/probe-recent-blank.mjs",
     "probe:new-session-motion": "node scripts/probe-new-session-motion.mjs",
+    "probe:row-key-motion": "node scripts/probe-row-key-motion.mjs",
     "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {

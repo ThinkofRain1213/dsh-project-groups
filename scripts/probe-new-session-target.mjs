@@ -21,6 +21,7 @@ import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { chromium } from 'playwright-core'
+import { installRowKeyHelpers } from './lib/row-key.mjs'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
 if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
@@ -58,6 +59,7 @@ const token = new URL(url).searchParams.get('token') ?? ''
 
 const browser = await chromium.launch({ headless: true })
 const page = await browser.newPage()
+await installRowKeyHelpers(page)
 const logs = []
 page.on('console', (message) => { if (message.type() === 'error') logs.push(message.text()) })
 
@@ -132,7 +134,7 @@ const sessionsUnder = (headingText) => page.evaluate((text) => {
   if (section === undefined) return []
   const scope = section.closest('div[class*="groupSection"]') ?? section.parentElement
   return [...scope.querySelectorAll('[data-row-key^="session:"]')]
-    .map(node => node.getAttribute('data-row-key').replace('session:', ''))
+    .map(node => window.__sessionIdOf(node.getAttribute('data-row-key')) ?? '')
 }, headingText)
 
 const projectRow = (title) => page.locator('[data-row-key^="workspace:"]', { hasText: title }).first()
@@ -165,7 +167,7 @@ const clickPlus = async (row) => {
 const blankSessionId = () => page.evaluate(() => {
   const row = [...document.querySelectorAll('[data-row-key^="session:"]')]
     .find(node => (node.textContent ?? '').includes('新会话'))
-  return row?.getAttribute('data-row-key')?.replace('session:', '') ?? null
+  return window.__sessionIdOf(row?.getAttribute('data-row-key'))
 })
 
 /**
