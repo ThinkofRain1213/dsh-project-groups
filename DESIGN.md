@@ -1811,14 +1811,60 @@ export function sessionRowKey(id, groupKey) {
   `window.__sessionIdOf`（后者只在页面内存在）。
 
 ### L3 — 行内动作适配
-- [ ] 会话行感知所属项目（hover 卡 / 菜单上下文）
-- [ ] 项目自身的重命名 / 删除 / 排序（新对象）
-- [ ] 归档 / 取消归档在项目分组下的回落行为
+- [ ] 会话行感知所属项目（hover 卡 / 菜单上下文）—— hover 卡仍只有标题与时间
+  （`Rows.tsx` 的 `SessionHoverContent`），**没有项目**
+- [x] 项目自身的重命名 / 删除 / 排序（新对象）—— 已实现（`WorkspaceBrowser.tsx:880-881` 的
+  `kind: 'project'` 分派 + `:2015/:2050` 的对话框标题，以及 `reorderProject` 拖拽）
+- [x] 归档 / 取消归档在项目分组下的回落行为 —— 已实现：归档行**留在原项目**下灰显、
+  不可打开；`groupBySource` 对每个会话走官方 `sessionVisible`
+  （`archivedFilter` 三态 default/show/only）；插件**不写**官方归档集合
+
+### 已知未适配（用户 2026-09-28 提出，记录在案）
+
+**1. 搜索结果仍按"工作区"分组，未适配项目。**
+
+用户截图：搜索 "你" 时，结果行下面显示的是 **"默认工作区" / "重要"**，而不是所属**项目**。
+
+原因（已核到代码）：搜索走的是**另一条与 `groupBySource` 无关**的派生路径
+`deriveSearchResults`（`tree.ts:553`），它的实参是**官方 `workspaces`**：
+
+```
+WorkspaceBrowser.tsx:1159  deriveSearchResults(list, workspaces, query, ...)
+                                                        ^^^^^^^^^^ 官方工作区列表
+tree.ts   workspaceBySession ← 由 workspaces[].sessionIds 建表
+tree.ts   labelOf(summary) = workspaceBySession.get(id) ?? workspaceLabel(summary.cwd)
+```
+
+所以它认的是**官方 cwd 归属**（默认工作区），与插件的 `assignments` 表毫无关系。
+截图里的"重要"**已核实是一个真实工作区**，不是项目名：桌面 profile 的
+`workspace.json` 里 `a77ef37c-…` 的 `title` 就是 `重要`、`path` 是 `D:\下载\重要`。
+即 `labelOf` 的第二来源 `workspaceLabel(summary.cwd)` 命中了一个非默认工作区。
+
+**修法方向**（未实施）：让 `SearchResults` 也接受 `groupingOverride`，`labelOf`
+优先查"会话 → 项目"的归属表，查不到再回落官方的 `workspaceBySession` / `cwd`。
+需要动 `deriveSearchResults` 的签名与调用点各一处。
+
+### 上游版本
+
+**2. DSH 已发布 `0.2.0-rc.1`，本插件尚未同步。**（用户 2026-09-28 告知）
+
+- 当前 vendor 上游：**0.1.7-rc.2**（`src/vendored/README.md` 的 Provenance 表）
+- 本机已安装的 DSH 也仍是 **0.1.7-rc.2**（实测 `app.asar` 内
+  `@deepseek-ai/dsh-desktop` 与 `dsh-desktop-runtime` 都是该版本）⇒
+  **升级动作与插件无关，是用户手动装新版本**
+- 用户决定：**先不升级，保持稳定**。理由是要先测「同步上游」这件事本身
+- 因此 `src/vendored/` 的 22 个源文件与 6 条 patch 现在都停在 0.1.7-rc.2
+- 升级时要走 `src/vendored/README.md` 的 "Keeping it in sync" 流程：
+  fetch 对应 tag → 重拷 `packages/client/ui-workspace/src/client/` → **逐条重打 6 条 patch**
+  → 重跑 `compare-bundle.mjs` 与全部探针
+- **风险点**：本次的 `sessionRowKey`（patch 6）依赖 `AnimatedRows` 的 `previousRow === undefined`
+  判据与 `Rows.tsx` 的 `data-row-key`，升级时若上游改了这两处，需要重新确认那条不变式
 
 ### L4 — 默认工作区与新会话
-- [ ] 默认工作区探测（按 path）
-- [ ] 补建（mkdir + `workspace/create`）
-- [ ] 新会话（带 workspaceId）+ 自动归类
+- [x] 默认工作区探测（按 path）—— 已实现（`initializeDefault`，纯读）
+- [ ] 补建（mkdir + `workspace/create`）—— **未实现**，源码里无 `mkdir` / `workspace/create`；
+  默认工作区被删时**没有自愈路径**
+- [x] 新会话（带 workspaceId）+ 自动归类 —— 已实现（`navigation.ts` 的 `placeUnscoped`）
 
 ### L5 — 工作文档
 - [ ] `docPath` 编辑 UI
