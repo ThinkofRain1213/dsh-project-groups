@@ -110,6 +110,8 @@ source with a comment naming the seam.
 | `contract/slots.ts` | adds `BaseWorkspaceRoute`: which of three outcomes the caller's 底层工作区 setting resolved to | re-add the union |
 | `navigation.ts` | the service takes an optional `resolveBaseWorkspace` callback, consulted by an unscoped `startSession` **before** the official default (**behaviour change**, see below). Omitted, the flow is unchanged | re-add the parameter and the two branches |
 | `index.ts` | `ProjectActions` gains an optional `resolveBaseWorkspace`, passed as the constructor's last argument | re-add the field and the pass-through |
+| `session-actions/BaseWorkspaceMissing.tsx` | the 重新指定底层工作区 button now consumes the report and calls `chooseBaseWorkspace`, handing the user to the settings card | re-add the `settle()` before the call |
+| `contract/slots.ts` | `BaseWorkspaceDialogInjected.chooseBaseWorkspace` is documented as wired (step 3a); the type is unchanged | no code change beyond the doc |
 
 Two invariants keep these patches honest:
 
@@ -388,6 +390,33 @@ would create the Session and drop the filing.
 Omitted, the flow is byte-for-byte the shipped one — that is the "plugin off, official
 behaviour" guarantee. `startSessionInDefaultWorkspace` is untouched, so the
 `defaultWorkspaceFailed` notice and the host-lookup test that pins it are unaffected.
+
+**9. The missing-workspace report hands off to the chooser.**
+
+The dialog's 重新指定底层工作区 button used to render disabled: it needed a chooser, and the
+chooser lives on this plugin's settings card, in another package. This patch wires it —
+`settle()` first, then `chooseBaseWorkspace` — so the report does not follow the user to
+the other page and stack over the dialog they are being sent to.
+
+The navigation itself is the caller's (see `src/client/index.ts`): the plugin manager
+publishes `pluginNavigation.openBundle(name)`, which does `selectPanel('plugins')` and
+`setView({ kind: 'package', name })` in one call, measured to mount our card from a
+third-party cordis fiber. Two details of that service are worth recording, because both
+change how it must be reached:
+
+- it is published from **inside the manager's page slot** and disposed with it
+  (`ctx.reflect.provide` followed by a `yield` disposer, a couple of hundred characters
+  inside a `slots.register` body), so declaring it in `inject` would gate the whole plugin
+  on a service that comes and goes. The ungated `ctx.get` is the read;
+- the official voice-input plugin's `inject: ['pluginNavigation']` is a **sub-fiber**
+  (`ctx.inject([...], registerUi)`), so it is not a pattern that transfers to a plugin
+  which must keep working without the manager.
+
+Opening the chooser is a second handoff, dialog → card, and it rides a snapshot store
+rather than a prop because the card generally mounts **after** the request: `openBundle`
+navigates, the card is created by that render. A snapshot read returns live state, so a
+card mounted later still sees the request, and consuming it (setting `null`) is what stops
+the chooser from reopening whenever the card remounts.
 
 ## Keeping it in sync
 

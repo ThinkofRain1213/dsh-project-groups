@@ -101,7 +101,14 @@ function BaseWorkspaceMissingForm({ request, settle, rebuild, choose, t }: {
           <Button
             variant="outline"
             disabled={busy || choose === undefined}
-            onClick={choose}
+            onClick={() => {
+              // The chooser lives on the settings card, so this hands the user to another page.
+              // The report is consumed **first**: a report left pending would still be on screen
+              // when the user arrives there, stacking a dialog about a missing Workspace over
+              // the one asking them to pick a replacement.
+              settle()
+              choose?.()
+            }}
           >
             {t('baseMissing.respecify')}
           </Button>

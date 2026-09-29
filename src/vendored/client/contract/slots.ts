@@ -578,8 +578,9 @@ export type BaseWorkspaceRoute =
  *
  * Both repairs are **optional**, and that is what lets the dialog ship before the
  * features behind them: with a callback absent, its button renders disabled rather
- * than pretending to act. `rebuildBaseWorkspace` arrives with the Host-side directory
- * creation; `chooseBaseWorkspace` with the settings picker.
+ * than pretending to act. `chooseBaseWorkspace` is wired by step 3a (it navigates to
+ * the settings card and asks its chooser to open); `rebuildBaseWorkspace` still awaits
+ * step 3b's Host-side directory creation.
  */
 export interface BaseWorkspaceDialogInjected {
   hooks: {
@@ -590,7 +591,12 @@ export interface BaseWorkspaceDialogInjected {
   settleBaseWorkspaceMissing: () => void
   /** Create the missing Workspace again; absent until the rebuild lands. */
   rebuildBaseWorkspace: (() => Promise<void>) | undefined
-  /** Open the Workspace picker; absent until the settings chooser lands. */
+  /**
+   * Take the user to the settings card and open its chooser.
+   *
+   * The dialog closes itself first: the chooser lives on another page, so a report left on
+   * screen would follow the user there and stack over it.
+   */
   chooseBaseWorkspace: (() => void) | undefined
 }
 

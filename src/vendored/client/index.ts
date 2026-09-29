@@ -401,10 +401,10 @@ export function apply(
       notify({ kind: 'stoppedAndArchived', sessionId })
     },
   })
-  // The two repairs arrive with their own steps: `rebuildBaseWorkspace` once the Host
-  // can create the directory, `chooseBaseWorkspace` once the settings picker exists.
-  // Until then the dialog renders their buttons disabled, which is why the caller
-  // supplies them rather than this region inventing an action.
+  // `chooseBaseWorkspace` is wired by step 3a: it navigates to the settings card and asks that
+  // card's chooser to open. `rebuildBaseWorkspace` still awaits step 3b's Host-side directory
+  // creation, so its button stays disabled. A missing callback keeps a button disabled rather
+  // than letting this region invent an action.
   const baseWorkspaceInjected = (): BaseWorkspaceDialogInjected => ({
     hooks: { baseWorkspaceRequest },
     settleBaseWorkspaceMissing: () => { baseWorkspaceRequest.set(null) },

@@ -47,6 +47,8 @@ import type { TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol'
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import { apply as applyVendored, inject as vendoredInject } from '../vendored/client/index.ts'
 import type { ProjectActions } from '../vendored/client/index.ts'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { WorkspaceSource } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import {
   clientBaseWorkspace, clientExpansions, clientGrouping, clientNewSessionTarget, clientOrders,
@@ -77,6 +79,32 @@ export const inject = vendoredInject
  * turn the setting's stored **path** into a Workspace id.
  */
 let workspacesRegistry: WorkspaceSource | undefined
+
+/**
+ * The root context, captured by {@link apply}.
+ *
+ * {@link projectActions} is built at module load while the context only exists once `apply`
+ * runs, so the verbs that need an ungated `ctx.get` read it from here. Ungated on purpose for
+ * `pluginNavigation`, which the manager disposes with its page slot.
+ */
+let clientContext: Context | undefined
+
+/**
+ * A request to open the base-workspace chooser, raised by the missing-workspace dialog and
+ * consumed by the settings card.
+ *
+ * An object rather than a boolean: a **repeat** request has to be a new value to be observable,
+ * and a value left at `true` cannot change. The card consumes it by setting `null`, so the value
+ * only ever alternates and never accumulates. Same shape, and the same reason, as the vendored
+ * half's own `baseWorkspaceRequest`.
+ */
+const chooserRequest = createSnapshotStore<BaseWorkspaceChooserRequest | null>(null)
+
+/** The request the chooser store carries; see {@link chooserRequest}. */
+export interface BaseWorkspaceChooserRequest {
+  /** Which behaviour is wanted. Only `'pick'` exists: open the chooser on the settings card. */
+  readonly kind: 'pick'
+}
 
 /**
  * The verbs the browser's row menu and drag drive.
@@ -141,9 +169,30 @@ const projectActions: ProjectActions = {
     if (model === undefined) return null
     return await model.defaultWorkspacePath()
   },
-  // The two repairs are deliberately absent in this step: `rebuildBaseWorkspace`
-  // needs the Host-side directory creation and `chooseBaseWorkspace` the settings
-  // picker. The dialog renders both buttons disabled until they exist.
+  // `rebuildBaseWorkspace` still awaits step 3b (Host-side directory creation), so its
+  // button stays disabled. `chooseBaseWorkspace` is wired below by step 3a.
+  chooseBaseWorkspace: () => {
+    // `ctx.get`, not the property read. The manager publishes this service from **inside its
+    // page slot** and disposes it with that slot (measured: `ctx.reflect.provide` followed by a
+    // `yield` disposer, a couple of hundred characters inside a `slots.register` body), so
+    // declaring it in `inject` would gate the whole plugin on a service that comes and goes —
+    // projects, grouping and persistence would die with the Plugins page. The official
+    // voice-input plugin's `inject: ['pluginNavigation']` is a sub-fiber
+    // (`ctx.inject([...], registerUi)`), not a pattern that transfers to a plugin that must work
+    // without the manager.
+    const navigation = clientContext?.get('pluginNavigation') as
+      | { openBundle: (name: string) => void }
+      | undefined
+    // One call does both halves — measured from a third-party fiber: `selectPanel('plugins')`
+    // then `setView({ kind: 'package', name })`, which mounts our card. Optional-chained so a
+    // composition without the manager still opens the chooser by the store alone: the card
+    // reads it wherever it is, and if the user is already on the Plugins page no navigation
+    // was needed anyway.
+    navigation?.openBundle('dsh-project-groups')
+    // Written **after** the navigation request. The card may not be mounted yet, which is
+    // fine — a snapshot read returns live state, so a card that mounts later still sees it.
+    chooserRequest.set({ kind: 'pick' })
+  },
   resolveBaseWorkspace: () => {
     const model = projectModel()
     // No model yet — the Remote baseline has not landed — means the shipped flow,
@@ -184,6 +233,7 @@ export function apply(ctx: Context): void {
   // Read once, like the settings card does: this plugin's client inject list names the
   // Workspace controller, and `ctx.get` is the ungated lookup.
   workspacesRegistry = (ctx.get('workspaces') as { list: WorkspaceSource } | undefined)?.list
+  clientContext = ctx
   // Mount before registering the browser so the model's baseline can land while
   // the sidebar is still being assembled. A failure here is contained: the
   // sidebar then renders one Ungrouped bucket and the project verbs refuse
@@ -225,7 +275,12 @@ function registerSettingsCard(ctx: Context): void {
         // observables, and a present-but-undefined key would break the renderer's
         // binding. Absent, the chooser reports "暂无工作区".
         ...(workspaces === undefined ? {} : { workspaces: workspaces.list }),
+        // The dialog's "open the chooser" request. A hook rather than a prop because the
+        // request arrives while the card may not be mounted yet: the card reads the store on
+        // first render, so a request written before it mounted is not lost.
+        chooserRequest,
       },
+      settleBaseWorkspaceChooser: () => { chooserRequest.set(null) },
       setTarget: (target: NewSessionTarget) => {
         // Not `requireModel`: the card can render before the Remote baseline
         // lands, and a click then must be a no-op rather than a thrown error out

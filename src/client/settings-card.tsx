@@ -12,11 +12,12 @@
  * written through its own Remote, exactly as the official voice-input bundle
  * ignores `form` in favour of its `configure` Remote.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { IconChevronDownOutlineRegular, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { WorkspaceSource } from '@deepseek-ai/dsh-api-workspace-controller/client'
-import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { HostObservable, InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { BaseWorkspaceSetting, NewSessionTarget } from '../protocol.ts'
+import type { BaseWorkspaceChooserRequest } from './index.ts'
 import type { clientBaseWorkspace, clientNewSessionTarget } from './grouping.ts'
 import type { SETTINGS_NS } from './settings-locales.ts'
 import { BaseWorkspacePicker } from './base-workspace-picker.tsx'
@@ -44,7 +45,15 @@ export interface ProjectGroupsCardInjected {
      * composed, in which case the chooser reports "暂无工作区" rather than throwing.
      */
     workspaces?: WorkspaceSource | undefined
+    /**
+     * A request from elsewhere — today the missing-workspace dialog — to open the
+     * chooser. Read on first render as well as on change, which is what makes it
+     * survive the card not being mounted when the request was raised.
+     */
+    chooserRequest: HostObservable<BaseWorkspaceChooserRequest | null>
   }
+  /** Consume the chooser request so a repeat is a new value rather than a silent no-op. */
+  settleBaseWorkspaceChooser: () => void
   /** Persist one destination. Resolves after the Host accepts it. */
   setTarget: (target: NewSessionTarget) => void
   /** Persist the base-workspace choice. Resolves after the Host accepts it. */
@@ -63,7 +72,8 @@ export type ProjectGroupsCardProps =
  * @returns the settings rows.
  */
 export function ProjectGroupsCard({
-  useTarget, setTarget, useBaseWorkspace, setBaseWorkspace, useWorkspaces, t,
+  useTarget, setTarget, useBaseWorkspace, setBaseWorkspace, useWorkspaces,
+  useChooserRequest, settleBaseWorkspaceChooser, t,
 }: ProjectGroupsCardProps) {
   const target = useTarget(value => value)
   const [open, setOpen] = useState(false)
@@ -77,6 +87,18 @@ export function ProjectGroupsCard({
   const workspaceSnapshot = useWorkspaces === undefined ? undefined : useWorkspaces(value => value)
   const workspaces = workspaceSnapshot?.items ?? []
   const [picking, setPicking] = useState(false)
+
+  // A request from the missing-workspace dialog. Read on mount as well as on change, which is
+  // what makes it survive the ordering 3a creates: the request is written as the dialog
+  // navigates here, so the card often mounts *after* the write. A snapshot read returns live
+  // state, so the effect below sees it either way; consuming it (setting `null`) is what makes
+  // a second request a new value rather than a repeat that never changes.
+  const chooserRequest = useChooserRequest(value => value)
+  useEffect(() => {
+    if (chooserRequest === null) return
+    setPicking(true)
+    settleBaseWorkspaceChooser()
+  }, [chooserRequest, settleBaseWorkspaceChooser])
 
   // The Workspace the setting names, when it is still registered. Matched by **path**:
   // re-registering a directory mints a new id (see `spec.ts`), so an id comparison
