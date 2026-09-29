@@ -93,6 +93,7 @@ source with a comment naming the seam.
 | `tree.ts` | under a grouping override the Ungrouped bucket always renders, empty included — it is the drop target that takes a Session back out of a caller-supplied group (see below) | re-apply the `archivedFilter !== 'only'` alternative |
 | `navigation.ts` | `startSession` takes an optional `beforeOpen` callback and threads it into `openWorkspace`, so a caller can act on the Session that lands (a project row files it). Omitted, the flow is unchanged | re-add the parameter and the pass-through |
 | `rows/WorkspaceBrowser.tsx` | rename/delete dialogs and the group drag take a `kind`-tagged row (`RowRequest`), so a caller-supplied project row drives the same affordances as a Workspace row; the header's add control runs `createProject` when the composition supplies one, and the dialog titles/labels switch on that kind | re-apply the dispatch, the two dialog blocks, and the drag wiring |
+| `rows/WorkspaceBrowser.tsx` | a **project** drop resolves its anchor against `groupingOverride`'s order and honours the side the marker showed, so the landed position equals the line the user saw (see below) | re-apply the `projectIds` lookup, the `half` from `activeDrag.over`, and the next-sibling anchor |
 | `rows/Rows.tsx` | labels the Ungrouped bucket by **empty label** rather than missing `workspaceId` | one-line change; a caller-supplied group has no Workspace id but does have a label |
 | `rows/Rows.tsx` | the row menu's delete label and the menu's aria-label follow `group.kind` | small change; a project's delete removes a record, not a registry entry |
 | `locales.ts` | project copy (`project.add`, `project.create.*`, `rename.project.title`, `delete.project*`, `field.projectName`, `create`, `actions.project.aria`) in both dictionaries | add the keys |
@@ -442,6 +443,33 @@ the same DOM element throughout (marked it in one stage, found the mark on the o
 focused). The explicit move stays as insurance against that structure changing — reorder the
 footers and the reuse stops — and the probe's focus assertion passes either way, which is
 recorded rather than presented as proof.
+
+**11. A project drop lands where its marker showed.**
+
+Dragging one project onto another put the insertion line above the hovered row but released the
+row below it. Two independent causes, both in the **project** branch (upstream has no projects, so
+neither is a deviation from it):
+
+- **`'after'` meant "append to the end".** The branch passed `undefined`, and the Host's `reorder`
+  reads `beforeId === undefined` as `rest.length` — last. So a marker drawn under a project landed
+  the row at the bottom of the list unless that project was already last. The Workspace branch
+  resolves `'after'` to the next sibling; the project branch now does too, and `anchor === rowId`
+  is skipped because the Host filters the moving id out first and would reject it as unknown.
+- **The committed side was recomputed instead of the one shown.** `drop` fires at release, so
+  movement across the row's mid-point after the last `dragover` flips `workspaceGroupHalf`'s
+  comparison — and the commit clears the drag state before React repaints, so the line the user saw
+  is already gone and the row lands on a side that was never marked. The project branch now honours
+  `activeDrag.over.half` when that marker names the same row.
+
+Both fixes are **scoped to the project branch on purpose.** The recomputation is upstream's own
+`dropWorkspace`, and this repo's session path depends on re-reading live state rather than a closed
+one ("a handler's closed state can predate the last `dragOver`"). Changing it for Workspace or
+Session rows would deviate from upstream and re-open the staleness it exists to avoid, so those
+paths are untouched.
+
+A probe drives both scenarios against the running app and asserts the landed order, not just the
+marker; each reverse control fails exactly its own two checks, landing on `B,C,A,D` and `B,C,D,A`
+respectively — the two wrong positions the report describes.
 
 ## Keeping it in sync
 

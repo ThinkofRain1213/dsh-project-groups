@@ -621,12 +621,34 @@ function SessionTree({
     workspaceDropCommitted.current = true
     setWorkspaceDrag(null)
     if (activeDrag.kind === 'project') {
-      // Project order is the caller's list, not a Workspace tree: every project
-      // is a sibling, and the anchor is whichever row the marker names.
-      if (over.id === activeDrag.rowId) return
+      // Project order is the caller's list, not a Workspace tree: every project is a
+      // sibling, and the anchor resolves the same way the Workspace branch below
+      // resolves it — `'after'` names the **next** row, not "no anchor".
+      //
+      // Passing `undefined` for `'after'` read as "append to the end" to the Host
+      // (`reorder`: `beforeId === undefined ? rest.length : …`), so a marker drawn
+      // under one project landed the row at the bottom of the list whenever the
+      // hovered row was not already last. Resolving the next sibling, as the
+      // Workspace branch does for its own rows, keeps the landed position equal to
+      // the marker in every case; a drop under the final row really does append.
+      const projectIds = groupingOverride?.map(source => source.key) ?? []
+      const rowIndex = projectIds.indexOf(over.id)
+      if (rowIndex === -1) return
+      // Commit the side the marker showed, not a side recomputed from the release point.
+      // `dropWorkspace` measures the side again from the drop event's coordinates, which is the
+      // shipped behaviour for Workspace rows (kept below, unchanged); but `drop` fires at release,
+      // so a few pixels of movement after the last `dragover` flip the mid-point test and the row
+      // lands on the side the user never saw marked. `activeDrag.over` **is** that last hovered
+      // marker, so when it names this same row it is the side to honour.
+      const half = activeDrag.over?.id === over.id ? activeDrag.over.half : over.half
+      const anchor = half === 'before' ? over.id : projectIds[rowIndex + 1]
+      // A drop whose anchor is the moving row is not a move. It also cannot be sent:
+      // the Host filters the moving id out before looking the anchor up, so it would
+      // reject it as an unknown project.
+      if (anchor === activeDrag.rowId) return
       const commit = reorderProject === undefined
         ? Promise.reject(new Error('no project model'))
-        : reorderProject(activeDrag.rowId, over.half === 'before' ? over.id : undefined)
+        : reorderProject(activeDrag.rowId, anchor)
       commit.catch((reason: unknown) => { console.warn('project reorder rejected:', reason) })
       return
     }
