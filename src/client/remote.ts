@@ -98,6 +98,7 @@ export const projectGroupsRemote: TypertRemoteContribution = {
     unary('setExpanded', ['request'], 'ProjectExpansionValue'),
     unary('setOrders', ['request'], 'ProjectOrdersValue'),
     unary('setNewSessionTarget', ['request'], 'ProjectNewSessionTargetValue'),
+    unary('setBaseWorkspace', ['request'], 'ProjectBaseWorkspaceValue'),
     unary('defaultWorkspacePath', [], 'ProjectDefaultWorkspacePathValue'),
     {
       id: `dsh-project-groups#${PROJECT_NAMESPACE}/follow`,

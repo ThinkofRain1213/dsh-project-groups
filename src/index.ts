@@ -27,15 +27,17 @@ import { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { Domain, DomainChanged } from '@deepseek-ai/dsh-storage-domain'
 import type {} from '@deepseek-ai/dsh-storage-domain'
-import { PROJECT_DOMAIN_NAME, projectDomainSpec, type GlobalRecord, type ProjectRecord } from './spec.ts'
+import { PROJECT_DOMAIN_NAME, projectDomainSpec, type BaseWorkspaceSetting, type GlobalRecord, type ProjectRecord } from './spec.ts'
 import { defaultWorkspacePath as deriveDefaultWorkspacePath } from './default-workspace.ts'
 import {
   PROJECT_NAMESPACE, PROJECT_SERVICE_KEY,
   type ProjectAssignRequest, type ProjectAssignmentValue, type ProjectBaseline,
+  type ProjectBaseWorkspaceValue,
   type ProjectCreateRequest, type ProjectDeleteRequest, type ProjectExpansionValue,
   type ProjectFollowFrame, type ProjectOrderValue, type ProjectOrdersValue,
   type ProjectNewSessionTargetValue,
   type ProjectRenameRequest, type ProjectRenameValue, type ProjectReorderRequest,
+  type ProjectSetBaseWorkspaceRequest,
   type ProjectSetExpandedRequest, type ProjectSetNewSessionTargetRequest, type ProjectSetOrdersRequest,
   type ProjectUnassignRequest, type ProjectUnassignValue,
   type ProjectValue, type ProjectValueResult,
@@ -177,6 +179,7 @@ export class ProjectController extends TypertRemoteService {
       // The stored global is parsed through the spec's schema on open, so a unit
       // written before this field existed already reads back as its default.
       newSessionTarget: domain.global.get().newSessionTarget,
+      baseWorkspace: domain.global.get().baseWorkspace,
     }
   }
 
@@ -372,6 +375,35 @@ export class ProjectController extends TypertRemoteService {
     const domain = await this.ready()
     await this.setGlobal(domain, { newSessionTarget: request.target })
     return { target: request.target }
+  }
+
+  /**
+   * Choose the Workspace every New Session this plugin opens lands in.
+   *
+   * `'default'` **clears** `path` and `name` rather than leaving them stored: the
+   * resolver branches on `mode`, but a leftover path would keep matching a Workspace
+   * that is no longer the setting, and any "is it still there" reading would consult
+   * the wrong one.
+   *
+   * A `'specified'` write without a path is refused rather than stored: it would be a
+   * setting that can never resolve, which is the very failure this feature reports.
+   *
+   * The write goes through {@link setGlobal}, which spreads the stored singleton —
+   * writing it whole would drop `projectIds` and empty the sidebar.
+   * @param request - the chosen mode and, for `'specified'`, the Workspace.
+   * @returns the setting as stored.
+   */
+  @Remote('setBaseWorkspace')
+  async setBaseWorkspace(request: ProjectSetBaseWorkspaceRequest): Promise<ProjectBaseWorkspaceValue> {
+    const domain = await this.ready()
+    if (request.mode === 'specified' && (request.path ?? '') === '') {
+      throw new Error('a specified base workspace needs a path')
+    }
+    const next: BaseWorkspaceSetting = request.mode === 'default'
+      ? { mode: 'default' }
+      : { mode: 'specified', path: request.path, name: request.name ?? '' }
+    await this.setGlobal(domain, { baseWorkspace: next })
+    return next
   }
 
   /**

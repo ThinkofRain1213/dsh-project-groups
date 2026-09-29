@@ -65,3 +65,160 @@
 .chevron {
   flex: none;
 }
+
+/*
+ * The base-workspace card row.
+ *
+ * Copied from `dsh-client-ui-theme`'s `AppearanceRow` — the three-card 外观 row the
+ * user asked this to match — rather than imported: the client bundle's purity gate
+ * rejects a value import from a package outside PLATFORM_MODULES / INLINE_SAFE, and
+ * `ui-theme` is in neither. Copied CSS is what upstream itself does for shared row
+ * geometry (see the note on `.row`).
+ *
+ * Every value is a theme variable, so both colour schemes follow automatically.
+ */
+.group {
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 0;
+  display: flex;
+}
+
+.groupTitle {
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
+}
+
+.cubeRow {
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 8px;
+  display: flex;
+}
+
+/* `flex: 180px` with the row wrapping is what makes two cards share the width. */
+.cube {
+  box-sizing: border-box;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-xl);
+  font: inherit;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  background: 0 0;
+  flex-direction: column;
+  flex: 180px;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  padding: 20px 32px;
+  font-size: 14px;
+  line-height: 22px;
+  display: flex;
+}
+
+.cube:hover:not(.selected) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* The official selected pair: a filled module surface and the bluish border. */
+.selected {
+  background: var(--dsw-alias-bg-module-platform);
+  border-color: var(--dsw-static-neutral-bluish-400);
+}
+
+.cubeName {
+  font-weight: 500;
+}
+
+/*
+ * A path can be longer than the card. `anywhere` breaks it rather than letting it
+ * widen the row; the full value stays reachable through the element's `title`.
+ */
+.cubePath {
+  overflow-wrap: anywhere;
+  text-align: center;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* A chosen Workspace that is no longer registered: stated, not acted on. */
+.cubeWarn {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+/*
+ * The card's own "change" affordance. A `span`, not a `button`, because the card
+ * itself is a button and nesting one is invalid — React logs a validateDOMNesting
+ * error for it, and the browser probes fail on console errors. It needs its own
+ * hover/focus styling and its own Enter/Space handling as a result.
+ */
+.cubeAction {
+  margin-top: 2px;
+  padding: 2px 10px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.cubeAction:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/*
+ * The Workspace chooser dialog's list. `role="listbox"` rows rather than menu rows:
+ * a `menuitem` is only valid inside a menu, and the shipped single-select lists
+ * (`ui-commands`, `ui-input-trigger`, `ui-schedule`) use this vocabulary.
+ */
+.pickerList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0 -8px;
+}
+
+.pickerRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-radius: var(--dsw-radius-md);
+  cursor: pointer;
+}
+
+.pickerRow:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.pickerRowActive {
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.pickerName {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The subtitle that distinguishes two same-titled Workspaces. */
+.pickerPath {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.pickerEmpty {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-tertiary);
+}

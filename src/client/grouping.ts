@@ -27,7 +27,7 @@
  */
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { GroupSource } from '../vendored/client/tree.ts'
-import type { NewSessionTarget } from '../protocol.ts'
+import type { BaseWorkspaceSetting, NewSessionTarget } from '../protocol.ts'
 import type { ProjectModel } from './projects.ts'
 
 /** The override with no projects: one Ungrouped bucket. */
@@ -55,6 +55,8 @@ const pendingExpansions = new Set<() => void>()
 const pendingOrders = new Set<() => void>()
 /** The same, for {@link clientNewSessionTarget}. */
 const pendingTargets = new Set<() => void>()
+/** The same, for {@link clientBaseWorkspace}. */
+const pendingBase = new Set<() => void>()
 
 /** @returns the live model, once its baseline has landed. */
 export function projectModel(): ProjectModel | undefined {
@@ -93,6 +95,11 @@ export function installProjectModel(started: ProjectModel): void {
   pendingTargets.clear()
   for (const notify of earlyTargets) started.newSessionTarget$.subscribe(notify)
   for (const notify of earlyTargets) notify()
+
+  const earlyBase = [...pendingBase]
+  pendingBase.clear()
+  for (const notify of earlyBase) started.baseWorkspace$.subscribe(notify)
+  for (const notify of earlyBase) notify()
 }
 
 /**
@@ -180,5 +187,35 @@ export const clientNewSessionTarget: HostObservable<NewSessionTarget> = {
       return () => { pendingTargets.delete(listener) }
     }
     return live.newSessionTarget$.subscribe(listener)
+  },
+}
+
+/** The base-workspace setting a fresh install uses: the official default Workspace. */
+const DEFAULT_BASE_WORKSPACE: BaseWorkspaceSetting = Object.freeze({ mode: 'default' })
+
+/**
+ * The stored base workspace, for this plugin's own settings card.
+ *
+ * Its own seat, for the same reason as {@link clientNewSessionTarget}: the card can
+ * register before the Remote baseline lands, and it must follow later changes (the
+ * optimistic write, and the Host's `follow` frame).
+ *
+ * Deliberately **not** handed to the vendored browser: that half renders groups, and
+ * the setting is spent elsewhere — by the card that writes it, and by the resolver
+ * that chooses where a New Session lands.
+ *
+ * Before the model exists the snapshot is `{ mode: 'default' }`, which is both what
+ * `EMPTY_STATE` carries and what the Host defaults to — so the card shows the value a
+ * fresh install would actually use rather than a blank.
+ */
+export const clientBaseWorkspace: HostObservable<BaseWorkspaceSetting> = {
+  getSnapshot: () => model?.baseWorkspaceSetting() ?? DEFAULT_BASE_WORKSPACE,
+  subscribe: (listener) => {
+    const live = model
+    if (live === undefined) {
+      pendingBase.add(listener)
+      return () => { pendingBase.delete(listener) }
+    }
+    return live.baseWorkspace$.subscribe(listener)
   },
 }

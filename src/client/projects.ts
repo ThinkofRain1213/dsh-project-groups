@@ -19,7 +19,8 @@
  *   - `assign` / `unassign` — a drag, a drop, and a New Session's filing;
  *   - `setExpanded` — folding a row;
  *   - `setOrders` — a sort gesture;
- *   - `setNewSessionTarget` — the settings card.
+ *   - `setNewSessionTarget` — the settings card;
+ *   - `setBaseWorkspace` — the settings card's base-workspace choice.
  *
  * Each writes locally first, notifies, then calls the Host, and reverts **only
  * when no newer local value has superseded it**, which keeps a slow refusal from
@@ -51,7 +52,9 @@
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { GroupSource } from '../vendored/client/tree.ts'
-import type { ProjectBaseline, ProjectFollowFrame, ProjectValue, NewSessionTarget } from '../protocol.ts'
+import type {
+  BaseWorkspaceSetting, NewSessionTarget, ProjectBaseline, ProjectFollowFrame, ProjectValue,
+} from '../protocol.ts'
 
 /** The Remote face this model drives; structurally the mounted namespace. */
 export interface ProjectRemote {
@@ -65,6 +68,7 @@ export interface ProjectRemote {
   setExpanded(request: { projectId: string; expanded: boolean }): Promise<RemoteOutcome<unknown>>
   setOrders(request: { orders: Readonly<Record<string, readonly string[]>> }): Promise<RemoteOutcome<unknown>>
   setNewSessionTarget(request: { target: NewSessionTarget }): Promise<RemoteOutcome<unknown>>
+  setBaseWorkspace(request: BaseWorkspaceSetting): Promise<RemoteOutcome<unknown>>
   defaultWorkspacePath(): Promise<RemoteOutcome<{ path: string | null }>>
 }
 
@@ -100,6 +104,14 @@ interface ProjectState {
    * consult it.
    */
   readonly newSessionTarget: NewSessionTarget
+  /**
+   * The Workspace every New Session this plugin opens lands in.
+   *
+   * Read through {@link ProjectModel.baseWorkspace} by the resolver and by the settings
+   * card. `'default'` means the official first-use Workspace; `'specified'` means the
+   * Workspace at the stored `path`.
+   */
+  readonly baseWorkspace: BaseWorkspaceSetting
 }
 
 const EMPTY_STATE: ProjectState = Object.freeze({
@@ -108,7 +120,25 @@ const EMPTY_STATE: ProjectState = Object.freeze({
   expansions: Object.freeze({}),
   orders: Object.freeze({}),
   newSessionTarget: 'ungrouped',
+  baseWorkspace: Object.freeze({ mode: 'default' as const }),
 })
+
+/**
+ * Field-wise equality for a base-workspace setting.
+ *
+ * Identity cannot be used: every `follow` frame lands a fresh object, so a card that
+ * re-writes the mode it is already on would issue a redundant round trip on each
+ * render. `name` is compared too — two Workspaces may share a title, so mode+path
+ * alone would read a switch between them as no change.
+ * @param left - one setting.
+ * @param right - the other.
+ * @returns whether the two would store the same value.
+ */
+function sameBaseWorkspace(left: BaseWorkspaceSetting, right: BaseWorkspaceSetting): boolean {
+  return left.mode === right.mode
+    && (left.path ?? '') === (right.path ?? '')
+    && (left.name ?? '') === (right.name ?? '')
+}
 
 /** Unwrap one Remote outcome, turning a failure into a thrown error. */
 function unwrap<T>(outcome: RemoteOutcome<T>, what: string): T {
@@ -225,6 +255,21 @@ export class ProjectModel {
     },
   }
 
+  /**
+   * The base-workspace setting, for the settings card.
+   *
+   * Its own observable for the same reason as {@link newSessionTarget$}: it is a seat
+   * the card reads with its own hook, and it is never handed to the vendored browser,
+   * which renders groups and has no business knowing where Sessions land.
+   */
+  readonly baseWorkspace$: HostObservable<BaseWorkspaceSetting> = {
+    getSnapshot: () => this.state.baseWorkspace,
+    subscribe: (listener) => {
+      this.listeners.add(listener)
+      return () => { this.listeners.delete(listener) }
+    },
+  }
+
   /** @returns projects in display order. */
   list(): readonly ProjectValue[] {
     return this.state.projects
@@ -250,6 +295,11 @@ export class ProjectModel {
   /** @returns where an unscoped New Session should land. */
   target(): NewSessionTarget {
     return this.state.newSessionTarget
+  }
+
+  /** @returns the stored base-workspace setting. */
+  baseWorkspaceSetting(): BaseWorkspaceSetting {
+    return this.state.baseWorkspace
   }
 
   /**
@@ -489,6 +539,32 @@ export class ProjectModel {
   }
 
   /**
+   * Store the base workspace: the Workspace every New Session lands in.
+   *
+   * Optimistic like {@link setNewSessionTarget}, and for the same reason: the card
+   * should show the chosen card as selected in the frame it is confirmed in. The Host
+   * stays authoritative — its `follow` frame replaces this state wholesale — so a
+   * refusal is corrected rather than left wrong.
+   * @param setting - the chosen mode and, for `'specified'`, the Workspace.
+   */
+  async setBaseWorkspace(setting: BaseWorkspaceSetting): Promise<void> {
+    const previous = this.state.baseWorkspace
+    if (sameBaseWorkspace(previous, setting)) return
+    this.state = Object.freeze({ ...this.state, baseWorkspace: Object.freeze({ ...setting }) })
+    for (const listener of [...this.listeners]) listener()
+    try {
+      unwrap(await this.remote.setBaseWorkspace({ ...setting }), 'set base workspace')
+    } catch (error: unknown) {
+      // Only revert when the Host has not already answered with something newer.
+      if (sameBaseWorkspace(this.state.baseWorkspace, setting)) {
+        this.state = Object.freeze({ ...this.state, baseWorkspace: previous })
+        for (const listener of [...this.listeners]) listener()
+      }
+      throw error
+    }
+  }
+
+  /**
    * Ask the Host where the official default Workspace would live.
    *
    * A pure read, used only to label the missing-基层工作区 dialog. A failure is not
@@ -553,16 +629,20 @@ export class ProjectModel {
     // reads through `?? {}`: a Host that predates the field degrades to the
     // shipped behaviour rather than throwing in the sidebar's render path.
     const newSessionTarget = baseline.newSessionTarget ?? 'ungrouped'
+    // Same guard for the base-workspace setting: a Host predating the field means
+    // "the official default Workspace", which is what it already did.
+    const baseWorkspace = baseline.baseWorkspace ?? { mode: 'default' as const }
     if (
       sameProjects(this.state.projects, projects)
       && sameAssignments(this.state.assignments, assignments)
       && sameExpansions(this.state.expansions, expansions)
       && sameOrders(this.state.orders, orders)
       && this.state.newSessionTarget === newSessionTarget
+      && sameBaseWorkspace(this.state.baseWorkspace, baseWorkspace)
     ) {
       return
     }
-    this.state = Object.freeze({ projects, assignments, expansions, orders, newSessionTarget })
+    this.state = Object.freeze({ projects, assignments, expansions, orders, newSessionTarget, baseWorkspace })
     this.derived = undefined
     for (const listener of [...this.listeners]) listener()
   }

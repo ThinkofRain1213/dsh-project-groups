@@ -10,9 +10,9 @@
  * These are plain data shapes. Nothing crosses that is not JSON, which is what
  * lets both codecs be pass-throughs (see `src/client/remote.ts`).
  */
-import type { NewSessionTarget } from './spec.ts'
+import type { BaseWorkspaceSetting, NewSessionTarget } from './spec.ts'
 
-export type { NewSessionTarget }
+export type { BaseWorkspaceMode, BaseWorkspaceSetting, NewSessionTarget } from './spec.ts'
 
 /** The Cordis service key owning these methods, and the default wire namespace. */
 export const PROJECT_SERVICE_KEY = 'projectController'
@@ -67,6 +67,14 @@ export interface ProjectBaseline {
    * Session without a target.
    */
   readonly newSessionTarget: NewSessionTarget
+  /**
+   * The Workspace every New Session this plugin opens lands in.
+   *
+   * The two modes are `'default'` (the official first-use Workspace, resolved by the
+   * Host) and `'specified'` (a Workspace the user pinned, identified by **path** —
+   * see `spec.ts` for why not by id).
+   */
+  readonly baseWorkspace: BaseWorkspaceSetting
 }
 
 /** One ordered change after a generation's baseline. */
@@ -186,6 +194,28 @@ export interface ProjectSetNewSessionTargetRequest {
 /** `setNewSessionTarget` result: the stored choice. */
 export interface ProjectNewSessionTargetValue {
   readonly target: NewSessionTarget
+}
+
+/**
+ * `setBaseWorkspace` request: choose the Workspace every New Session lands in.
+ *
+ * Only the setting travels. The Host spreads the stored global before writing, so the
+ * project order it also holds survives — `global.set` replaces the whole singleton
+ * rather than merging into it.
+ */
+export interface ProjectSetBaseWorkspaceRequest {
+  readonly mode: BaseWorkspaceSetting['mode']
+  /** Required when `mode` is `'specified'`; ignored otherwise. */
+  readonly path?: string
+  /** Display name captured at pick time; ignored otherwise. */
+  readonly name?: string
+}
+
+/** `setBaseWorkspace` result: the stored setting, with `path`/`name` dropped for `'default'`. */
+export interface ProjectBaseWorkspaceValue {
+  readonly mode: BaseWorkspaceSetting['mode']
+  readonly path?: string
+  readonly name?: string
 }
 
 /**

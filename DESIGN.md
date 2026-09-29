@@ -1928,8 +1928,98 @@ fetch `0.2.0-rc.1` tag → 重拷 `packages/client/ui-workspace/src/client/` →
 | 步 | 内容 | 状态 |
 |---|---|---|
 | **1** | **弹窗骨架**：缺失才弹；三个按钮 + **取消可用**，另两个 **disabled** | ✅ **已完成（2026-09-29）** |
-| **2** | **设置卡片**：选默认 / 指定工作区（二选一卡片 + 卡片内「更换…」） | 待做 |
+| **2** | **设置卡片**：选默认 / 指定工作区（二选一卡片 + 卡片内「更换…」） | ✅ **已完成（2026-09-29）** |
 | **3** | **新建能力**：host 建目录 + 注册工作区 | 待做 |
+
+##### 第 2 步实现（2026-09-29）
+
+**形态（用户定稿）**：设置卡片里加一行「底层工作区」，是**两张外观卡片二选一**
+（照抄官方外观行），第二张卡片里放「更换…」，点开是**弹窗**列出所有工作区。
+弹窗**先选中、确认才写盘**，底部是左右对称的 取消 / 确认。
+
+**为什么是弹窗不是下拉框**（用户判断，实测支持）：
+
+| | 下拉框 | **弹窗** |
+|---|---|---|
+| 区分**同名**工作区 | ⚠️ 只能显示标题，做不到 | ✅ 每行显示**路径**副标题 |
+| 定位依赖 | 依赖锚点，滚动列里须 `portal` | 无依赖（`Modal` 自 portal） |
+
+官方自己也把工作区列表放 `Menu` 里（`WorkspacePicker.tsx:112-118`），但那是侧栏
+"在哪新建会话"的**即时动作**，一行标题够用；设置页是**配置**，需要看清选哪一个。
+
+**数据模型**（`src/spec.ts`）：
+
+```ts
+baseWorkspaceSetting = z.object({
+  mode: z.enum(['default', 'specified']),
+  path: z.string().optional(),
+  name: z.string().optional(),
+}).default({ mode: 'default' })   // 带默认 ⇒ 旧记录自动兼容
+```
+
+**只存 `path` 不存 `workspaceId`**——实测重注册同一目录会**换新 id**，存 id 必过期。
+附带好处：删掉再加回同路径，插件**自动重新认上**。
+
+**改动 11 个文件**：
+
+| 文件 | 改动 |
+|---|---|
+| `src/spec.ts` | `baseWorkspaceMode` / `baseWorkspaceSetting`；`globalRecord` 加字段；`initialGlobal` 同步 |
+| `src/protocol.ts` | `ProjectSetBaseWorkspaceRequest` / `ProjectBaseWorkspaceValue`；`ProjectBaseline` 加字段 |
+| `src/index.ts` | `@Remote('setBaseWorkspace')`；`baseline()` 带出新字段 |
+| `src/client/remote.ts` | 注册 descriptor |
+| `src/client/projects.ts` | `ProjectState`+`EMPTY_STATE`+`baseWorkspace$`+getter+**乐观写入** |
+| `src/client/grouping.ts` | `clientBaseWorkspace` observable（含早期订阅者唤醒） |
+| `src/client/index.ts` | 注入面加 `baseWorkspace` / `workspaces` / `setBaseWorkspace` |
+| `src/client/settings-card.tsx` | 新增「底层工作区」行 |
+| `src/client/base-workspace-picker.tsx` | **新增**：选择弹窗 |
+| `src/client/settings-locales.ts` | 17 个新键（zh + en 同键集） |
+| `src/client/settings-card.module.css` | 抄官方外观行 6 条 + 弹窗列表 |
+
+**关键设计**：
+
+1. **`setGlobal` 而非整体写**：`setGlobal` 会 spread 已有 global，整体写会**丢掉
+   `projectIds`**，所有项目从侧栏消失（`setNewSessionTarget` 注释已记同一坑）。
+2. **`'default'` 剥掉 path/name**：否则残留旧路径会让后续判断读错。
+3. **拒绝无 path 的 `'specified'` 写**：存了也解析不出来，正是本功能要消除的故障。
+4. **`sameBaseWorkspace` 按值比较**（含 `name`）：`follow` 每帧新对象，不比字段会重复写盘；
+   只比 mode+path 则"同名不同路径"切换会被误判为无变化。
+5. **卡片是 `<button>`，「更换…」是 `span[role=button]`**：`button > button` 会让
+   React 每次挂载打 `validateDOMNesting` error，而探针断言 console error 为 0。
+   `span` 需自己处理 Enter/Space（原生 button 有内建激活）。
+6. **`WorkspaceSource` 直接当 `HostObservable` 注入**：实测 `{ getSnapshot, subscribe }` 同形，
+   零包装；`ctx.get('workspaces')` 合法（插件 client inject 表含 `dsh-api-workspace-controller`）。
+7. **`Modal` 内联渲染，不注册 slot**：`Modal` 自己 portal 到 body，卡片里直接用本地 state 管开关。
+
+**⚠️ 探针发现并修掉的真实缺陷**：最初「指定工作区」卡片点击直接
+`setBaseWorkspace({ mode: 'specified' })`，而**未选过时没有 path** ⇒ 被 host 守卫
+**拒绝**。改为：**没存 path 就打开选择弹窗**（"选指定"本身就是"选一个"）。
+这是探针第 3 条抓到的，不是我推理出来的。
+
+**验收（`scripts/probe-base-workspace-card.mjs`，全绿）**：
+
+```
+3) 未选过时点「指定工作区」⇒ 打开弹窗而不是写盘   PASS
+3) 未写盘（没有存出无法解析的设置）               PASS
+3) 确认后 mode 变为 specified                    PASS
+4) 弹窗列出多个工作区，每行含路径                 PASS
+5) 点行不写盘（staged）                          PASS
+6) 取消不写盘                                    PASS
+7) 确认才写盘，且存 specified + path             PASS
+8) 点「更换…」只打开弹窗，不改设置                 PASS
+9) 工作区删除后标注「已不存在」，设置未被自动清空    PASS
+9) 弹窗不含已删除的那个                           PASS
+9) 没有嵌套 button 的 React 报错                  PASS
+```
+
+**⚠️ 一处诚实说明**：第 8 条是**守卫，不是判别器**。实测把 `stopPropagation`
+**去掉后该条仍通过**——因为冒泡在本设计下是良性的：`mode:'default'` 时 host 已剥掉
+path，卡片 handler 走"无 path 就开弹窗"分支；有 path 时
+`sameBaseWorkspace` 提前返回。`stopPropagation` 保留作纵深防御，但**探针不能证明它必需**，
+探针注释里已写明，不再宣称"反向对照会失败"。
+
+**`pnpm check`**：**329 断言**（325 + 新 Remote 的 4 条），13 suites 全绿。既有的
+`probe-settings-card`（含"项目顺序未被写坏"）**仍全绿**。
 
 ##### 第 1 步实现（2026-09-29）
 

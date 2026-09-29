@@ -79,6 +79,7 @@
     "probe:new-session-motion": "node scripts/probe-new-session-motion.mjs",
     "probe:row-key-motion": "node scripts/probe-row-key-motion.mjs",
     "probe:base-workspace-dialog": "node scripts/probe-base-workspace-dialog.mjs",
+    "probe:base-workspace-card": "node scripts/probe-base-workspace-card.mjs",
     "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {

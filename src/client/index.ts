@@ -47,8 +47,10 @@ import type { TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol'
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import { apply as applyVendored, inject as vendoredInject } from '../vendored/client/index.ts'
 import type { ProjectActions } from '../vendored/client/index.ts'
+import type { WorkspaceSource } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import {
-  clientExpansions, clientGrouping, clientNewSessionTarget, clientOrders, installProjectModel, projectModel,
+  clientBaseWorkspace, clientExpansions, clientGrouping, clientNewSessionTarget, clientOrders,
+  installProjectModel, projectModel,
 } from './grouping.ts'
 import { ProjectModel } from './projects.ts'
 import { recentDestination, resolveTarget } from './target.ts'
@@ -56,10 +58,11 @@ import { projectGroupsRemote } from './remote.ts'
 import { ProjectGroupsCard } from './settings-card.tsx'
 import { en, SETTINGS_NS, zh } from './settings-locales.ts'
 import { PROJECT_NAMESPACE } from '../protocol.ts'
-import type { NewSessionTarget } from '../protocol.ts'
+import type { BaseWorkspaceSetting, NewSessionTarget } from '../protocol.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
 export { clientExpansions, clientGrouping, clientNewSessionTarget, clientOrders, projectModel } from './grouping.ts'
+export { clientBaseWorkspace } from './grouping.ts'
 export type { GroupSource } from '../vendored/client/tree.ts'
 export type { ProjectRemote } from './projects.ts'
 
@@ -171,12 +174,23 @@ export function apply(ctx: Context): void {
  */
 function registerSettingsCard(ctx: Context): void {
   ctx.effect(() => ctx.locale.register(SETTINGS_NS, { zh, en }), 'project-groups: settings dictionaries')
+  // `ctx.get`, not a property read: cordis gates property access on the fiber's own
+  // declared depends, and this fiber injects the vendored half's service list rather
+  // than the Workspace controller by name.
+  const workspaces = ctx.get('workspaces') as { list: WorkspaceSource } | undefined
   ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
     name: 'plugins.bundle.config',
     key: 'dsh-project-groups',
     locale: SETTINGS_NS,
     inject: () => ({
-      hooks: { target: clientNewSessionTarget },
+      hooks: {
+        target: clientNewSessionTarget,
+        baseWorkspace: clientBaseWorkspace,
+        // Spread rather than assigned as `undefined`: the hooks compartment holds
+        // observables, and a present-but-undefined key would break the renderer's
+        // binding. Absent, the chooser reports "暂无工作区".
+        ...(workspaces === undefined ? {} : { workspaces: workspaces.list }),
+      },
       setTarget: (target: NewSessionTarget) => {
         // Not `requireModel`: the card can render before the Remote baseline
         // lands, and a click then must be a no-op rather than a thrown error out
@@ -186,6 +200,14 @@ function registerSettingsCard(ctx: Context): void {
         if (live === undefined) return
         void live.setNewSessionTarget(target).catch((reason: unknown) => {
           console.warn('set new session target rejected:', reason)
+        })
+      },
+      setBaseWorkspace: (setting: BaseWorkspaceSetting) => {
+        // Same reasoning as `setTarget`, and the same optimistic write behind it.
+        const live = projectModel()
+        if (live === undefined) return
+        void live.setBaseWorkspace(setting).catch((reason: unknown) => {
+          console.warn('set base workspace rejected:', reason)
         })
       },
     }),

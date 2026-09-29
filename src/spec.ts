@@ -108,6 +108,44 @@ export const newSessionTarget = z.enum(['ungrouped', 'current', 'recent'])
 /** One stored destination choice. */
 export type NewSessionTarget = z.infer<typeof newSessionTarget>
 
+/** How the base workspace is chosen. */
+export const baseWorkspaceMode = z.enum(['default', 'specified'])
+
+/** One stored base-workspace mode. */
+export type BaseWorkspaceMode = z.infer<typeof baseWorkspaceMode>
+
+/**
+ * The base workspace: the Workspace every New Session this plugin opens lands in.
+ *
+ * ## Why `path` and not `workspaceId`
+ *
+ * Re-registering the same directory mints a **new** Workspace id (measured: deleting a
+ * registration and creating the same path again yields a new id with an empty
+ * `sessionIds`). A stored id would therefore go stale the moment the user removes and
+ * re-adds the Workspace, while the path keeps resolving. Same reasoning as §3.8's
+ * "find by path, never by title".
+ *
+ * A useful consequence: a Workspace the user deleted and re-added at the same path is
+ * recognised again without them having to re-pick it.
+ *
+ * ## Why `name` is stored at all
+ *
+ * Display only. The card shows it without having to resolve the snapshot, and it is
+ * what makes "'D:\我的项目' is gone" readable rather than a bare path. It is captured
+ * at pick time and goes stale if the Workspace is renamed elsewhere — deliberately:
+ * the plugin must not rewrite the user's setting because someone else edited a title.
+ */
+export const baseWorkspaceSetting = z.object({
+  mode: baseWorkspaceMode,
+  /** Required when `mode` is `'specified'`; absent for `'default'`. */
+  path: z.string().optional(),
+  /** Display name captured when the Workspace was picked. */
+  name: z.string().optional(),
+})
+
+/** The stored base-workspace setting. */
+export type BaseWorkspaceSetting = z.infer<typeof baseWorkspaceSetting>
+
 /**
  * Durable shape of the global singleton: the project display order plus the
  * destination policy for unscoped New Sessions.
@@ -117,10 +155,15 @@ export type NewSessionTarget = z.infer<typeof newSessionTarget>
  * this schema on open (`storage-domain/src/index.ts`), so a unit written before
  * the field existed reads back as `'ungrouped'` instead of `undefined`. Verified
  * against the installed zod, and pinned by a host test.
+ *
+ * `baseWorkspace` uses the same mechanism for the same reason: a global written
+ * before it existed reads back as `{ mode: 'default' }`, which is exactly the
+ * behaviour such an install already had.
  */
 export const globalRecord = z.object({
   projectIds: z.array(z.string()),
   newSessionTarget: newSessionTarget.default('ungrouped'),
+  baseWorkspace: baseWorkspaceSetting.default({ mode: 'default' }),
 })
 
 /** The stored global singleton. */
@@ -133,7 +176,11 @@ export type GlobalRecord = z.infer<typeof globalRecord>
  * to `string`, which makes the domain's global handle a union of the schema's
  * output and the widened initial, and every write then has to satisfy both.
  */
-export const initialGlobal: GlobalRecord = { projectIds: [], newSessionTarget: 'ungrouped' }
+export const initialGlobal: GlobalRecord = {
+  projectIds: [],
+  newSessionTarget: 'ungrouped',
+  baseWorkspace: { mode: 'default' },
+}
 
 /**
  * Durable shape of one project's manual session order. The key is the project id.
