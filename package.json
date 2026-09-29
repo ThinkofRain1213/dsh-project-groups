@@ -86,6 +86,8 @@
     "probe:base-workspace-respecify": "node scripts/probe-base-workspace-respecify.mjs",
     "probe:store-consume-cycle": "node scripts/probe-store-consume-cycle.mjs",
     "probe:rebuild-feasibility": "node scripts/probe-rebuild-feasibility.mjs",
+    "probe:base-workspace-rebuild": "node scripts/probe-base-workspace-rebuild.mjs",
+    "probe:rebuild-default-mode": "node scripts/probe-rebuild-default-mode.mjs",
     "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {

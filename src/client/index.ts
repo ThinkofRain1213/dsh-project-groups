@@ -169,8 +169,13 @@ const projectActions: ProjectActions = {
     if (model === undefined) return null
     return await model.defaultWorkspacePath()
   },
-  // `rebuildBaseWorkspace` still awaits step 3b (Host-side directory creation), so its
-  // button stays disabled. `chooseBaseWorkspace` is wired below by step 3a.
+  // `rebuildBaseWorkspace` is wired below by step 3b.
+  rebuildBaseWorkspace: async () => {
+    // `requireModel`, not the guarded read used by the other verbs: the dialog's runner catches a
+    // rejection and shows it, so a model that has not started must surface as an error there rather
+    // than silently do nothing — the user asked for a directory to be created.
+    await requireModel().rebuildBaseWorkspace()
+  },
   chooseBaseWorkspace: () => {
     // `ctx.get`, not the property read. The manager publishes this service from **inside its
     // page slot** and disposes it with that slot (measured: `ctx.reflect.provide` followed by a

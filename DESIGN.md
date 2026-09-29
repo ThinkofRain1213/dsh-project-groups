@@ -1931,7 +1931,118 @@ fetch `0.2.0-rc.1` tag → 重拷 `packages/client/ui-workspace/src/client/` →
 | **2** | **设置卡片**：选默认 / 指定工作区（二选一卡片 + 卡片内「更换…」） | ✅ **已完成（2026-09-29）** |
 | **2.5** | **路由**：把底层工作区接到新会话上，替掉"只走官方默认" | ✅ **已完成（2026-09-29）** |
 | **3a** | **重新指定**：跳设置卡片 + 自动打开选择弹窗 | ✅ **已完成（2026-09-29）** |
-| **3b** | **重建该工作区**：host 建目录 + 注册工作区 | 待做 |
+| **3b** | **重建该工作区**：host 建目录 + 注册工作区 | ✅ **已完成（2026-09-29）** |
+
+##### 第 3b 步实现（2026-09-29）
+
+**⚠️ 探查中发现一个会让 3b 一半失效的官方硬约束**：
+
+```js
+// dsh-workspace/lib/index.js
+initializeDefault(resolveDirectory) {
+  const state = this.requireState();
+  if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultWorkspaceId);
+  //                                                        ↑ 已删记录 ⇒ undefined
+  // …创建路径【永远不会到达】
+}
+```
+
+**官方文档注释逐字**：
+> *"Repeated requests reuse its durable identity; **deleting that registration permanently
+> disables automatic creation**."*
+
+**schema 注释**：
+> *"First-use Workspace identity, **retained after its registration is deleted**."*
+
+**⇒ 这是官方**有意设计**：`defaultWorkspaceId` 一旦写入就永久保留，删除注册后
+`initializeDefault` 永远返回 `undefined`，且**没有** `setDefault` / `adoptDefault` 可修。**
+
+**实测**（`probe-rebuild-default-mode.mjs`）：
+```
+1) 默认工作区 id=fc9eed09…
+2) 删除注册 ⇒ initializeDefault → null
+3) mkdir + 同路径重新注册 ⇒ 成功，但拿到【新 id】040e2b30…（defaultWorkspaceId 仍指 fc9eed09…）
+4) 重建后 initializeDefault → null   ❌ 仍然解析不到
+```
+
+**⇒ mkdir + create 对 `specified` 是完整修复，对 `default` 是无效修复。**
+
+**用户的场景正是 `specified`**（`{mode:'specified', path:'D:\下载\apk'}`）⇒ 3b 解决实际问题。
+
+**`default` 模式的处理（用户确认采纳方案 A）**：把它**采纳为 `specified`**。
+
+```ts
+const mode = stored.mode
+if (mode === 'default') {
+  await this.setGlobal(domain, {
+    baseWorkspace: { mode: 'specified', path: entity.path ?? path, name: entity.title },
+  })
+}
+```
+
+理由：**只动插件自己的域**，且**结果诚实**（那个工作区现在确实是插件在管的一个路径）。
+**代价**：卡片会从「默认工作区」变成「指定工作区」——所以 `mode` 放进返回值，
+让调用方**看得见**这件事，而不是到卡片上才发现。
+
+**改动 7 个文件**：
+
+| 文件 | 改动 |
+|---|---|
+| `src/protocol.ts` | 加 `ProjectRebuildBaseWorkspaceValue`（含 `mode`）|
+| `src/index.ts` | `@Remote('rebuildBaseWorkspace')`：`mkdir` → `registry.create` →（default 时）采纳 |
+| `src/client/remote.ts` | 注册 descriptor（零参数）|
+| `src/client/projects.ts` | `ProjectRemote` + `ProjectModel.rebuildBaseWorkspace`（**不乐观写入**）|
+| `src/client/index.ts` | 实现 `rebuildBaseWorkspace`（用 `requireModel`，让失败浮出）|
+| `vendored/.../BaseWorkspaceMissing.tsx` | 加"将创建目录"提示 |
+| `vendored/client/locales.ts` + `WorkspaceBrowser.module.css` | 提示文案 + 样式 |
+
+**关键设计**：
+
+1. **Host 自己读设置，不接受调用方传路径** —— 单一真源，弹窗显示的与实际重建的**不可能不一致**。
+2. **`registry.create` 而非 `workspace/create` Remote** —— 后者**只转发 path**，
+   标题会被 `defaultWorkspaceTitle` 从 basename 推导；直调能**保留用户选的名字**。
+   实测：`title: '我给它起的名字'` 存活。
+3. **`entity.path` 回写设置**，而非请求的 path —— registry 返回**规范化后**的路径
+   （`realpathNormalize`），符号链接/大小写差异才不会让设置与注册表对不上。
+4. **`mkdir -p`（`recursive: true`）** —— 已存在时幂等；父目录也没了时是唯一能成的写法。
+5. **`ctx.get` 调用时读**（与 ②.5/③a 一致）—— 实测该服务**1000ms 才出现**
+   （0/250ms 采样 `present: false`）；写进 `inject` 会把整个插件拖到那时才激活。
+   而属性读 `ctx.workspaceRegistry` **始终抛错**（`without inject`），三次采样一致。
+6. **这是本插件唯一不做乐观写入的动词** —— 其余动词改的是"用户正看着的状态"，
+   这一个是**真实磁盘副作用**，失败必须浮到弹窗（所以用 `requireModel`，不是守卫式读取）。
+
+**⚠️ 实现时自己发现并修掉的一个 bug**（探针输出里看出来的）：
+
+```
+重建后设置: {"mode":"specified","path":"…default-workspace","name":"deep"}   ← ❌
+```
+
+`default` 模式下 `stored.name` 属于**另一个路径**（记忆会跨模式保留），
+我最初直接把它传给了 `create` ⇒ **用无关的名字给默认工作区命名**。
+
+**修正**：只有 `specified` 模式才传 stored name（那个名字是**为该路径**捕获的）；
+`default` 模式不传，让 registry 从目录推导。实测变为 `name: 'default-workspace'`。
+
+**验收（`probe-base-workspace-rebuild.mjs`，全绿）**：
+
+```
+1) 目录已创建 + 已注册为工作区 + 弹窗关闭
+2) 重建后 ＋ 落在重建的工作区（不再弹窗）
+3) 标题是用户起的名字，不是 basename
+4) 目录已存在时重建幂等（该路径仍只有一条）
+5) 父目录也不存在 ⇒ mkdir -p 一路建上去
+6) default 模式被采纳为 specified + ＋ 落点正常 + 未沿用旧名字
+7) 弹窗提示将创建目录
+```
+
+**反向对照**（把 `mkdir` 移到 `create` 之后）：**7 条失败**，正是依赖正确顺序的那些。
+
+**⚠️ 一处探针盲点，已如实记录在探针里**：
+第 6 条**对顺序不敏感**——`default-workspace` 目录**本来就存在**（用户桌面上的真实目录），
+所以顺序反了 `create` 仍成功。**要把这个前提做实就得删掉那个真实目录**——
+而它由 OS Documents 派生，**不属于 `DSH_HOME`**，是**用户真实数据**。
+**⇒ 不为一条已被 1/2/5 覆盖的断言冒这个风险。**
+
 
 ##### 第 3 步拆分（2026-09-29 用户决定）
 

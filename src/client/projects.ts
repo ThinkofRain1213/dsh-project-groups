@@ -53,7 +53,8 @@ import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { GroupSource } from '../vendored/client/tree.ts'
 import type {
-  BaseWorkspaceSetting, NewSessionTarget, ProjectBaseline, ProjectFollowFrame, ProjectValue,
+  BaseWorkspaceSetting, NewSessionTarget, ProjectBaseline, ProjectFollowFrame,
+  ProjectRebuildBaseWorkspaceValue, ProjectValue,
 } from '../protocol.ts'
 import { withDefaultMode } from '../protocol.ts'
 
@@ -71,6 +72,7 @@ export interface ProjectRemote {
   setNewSessionTarget(request: { target: NewSessionTarget }): Promise<RemoteOutcome<unknown>>
   setBaseWorkspace(request: BaseWorkspaceSetting): Promise<RemoteOutcome<unknown>>
   defaultWorkspacePath(): Promise<RemoteOutcome<{ path: string | null }>>
+  rebuildBaseWorkspace(): Promise<RemoteOutcome<unknown>>
 }
 
 /** Minimal result shape the mounted namespace answers with. */
@@ -577,6 +579,22 @@ export class ProjectModel {
       }
       throw error
     }
+  }
+
+  /**
+   * Re-create the base Workspace on the Host.
+   *
+   * Deliberately **not** optimistic, unlike every other write in this class. The others change
+   * state the user is already looking at, where a slow round trip reads as lag; this one creates a
+   * directory and a registry row, and a failure has to reach the dialog rather than be painted
+   * over. The resulting state arrives over `follow` like any other Host change.
+   * @returns the repaired Workspace and the setting's mode afterwards.
+   */
+  async rebuildBaseWorkspace(): Promise<ProjectRebuildBaseWorkspaceValue> {
+    return unwrap(
+      await this.remote.rebuildBaseWorkspace(),
+      'rebuild the base workspace',
+    ) as ProjectRebuildBaseWorkspaceValue
   }
 
   /**

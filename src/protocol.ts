@@ -262,3 +262,24 @@ export interface ProjectBaseWorkspaceValue {
 export interface ProjectDefaultWorkspacePathValue {
   readonly path: string | null
 }
+
+/**
+ * `rebuildBaseWorkspace` result: the Workspace that now exists at the base path.
+ *
+ * `mode` reports what the plugin's setting holds **after** the rebuild, and it is part of the
+ * result rather than assumed because the repair is not always purely a filesystem action. In
+ * `'default'` mode the official pointer is deliberately permanent — upstream documents that
+ * "deleting that registration permanently disables automatic creation" — so re-registering the
+ * path mints an id that pointer never adopts. The plugin therefore takes the path over into its
+ * own setting, which its resolver does read, and the caller must be able to see that this is what
+ * happened rather than discovering it as a surprise on the settings card.
+ */
+export interface ProjectRebuildBaseWorkspaceValue {
+  /** The canonical path the registry stored, after `realpathNormalize`. */
+  readonly path: string
+  readonly workspaceId: string
+  /** The Workspace's title as registered. */
+  readonly title: string
+  /** The setting's mode once the rebuild is complete. */
+  readonly mode: BaseWorkspaceSetting['mode']
+}

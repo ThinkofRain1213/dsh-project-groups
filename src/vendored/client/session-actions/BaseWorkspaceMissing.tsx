@@ -129,6 +129,12 @@ function BaseWorkspaceMissingForm({ request, settle, rebuild, choose, t }: {
           ? t('baseMissing.pathUnknown')
           : t('baseMissing.path', { path: request.path })}
       </p>
+      {/* The rebuild is the only action here that writes to the disk, so it says so before it
+        * does. Only shown while it is actually offered: an absent callback means a disabled
+        * button, and describing an action the user cannot take would just be noise. */}
+      {rebuild !== undefined && (
+        <p className={browserCss.baseMissingHint}>{t('baseMissing.rebuildHint')}</p>
+      )}
       {error !== null && <div className={browserCss.renameError} role="alert">{error}</div>}
     </Modal>
   )

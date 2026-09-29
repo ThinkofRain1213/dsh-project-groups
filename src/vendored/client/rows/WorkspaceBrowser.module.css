@@ -641,6 +641,17 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+/*
+ * The rebuild writes to the disk, so it says so before it does. Same type as the path line, on its
+ * own row so the two do not read as one sentence.
+ */
+.baseMissingHint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
 /* The stop-and-archive dialog's list of work that will be stopped. */
 .archiveActivity {
   margin: 0 0 8px;

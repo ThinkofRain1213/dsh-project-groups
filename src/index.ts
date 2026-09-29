@@ -24,6 +24,7 @@
  * (`src/client/remote.ts`).
  */
 import { Context } from '@deepseek-ai/cordis'
+import { mkdir } from 'node:fs/promises'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { Domain, DomainChanged } from '@deepseek-ai/dsh-storage-domain'
 import type {} from '@deepseek-ai/dsh-storage-domain'
@@ -37,6 +38,7 @@ import {
   type ProjectFollowFrame, type ProjectOrderValue, type ProjectOrdersValue,
   type ProjectNewSessionTargetValue,
   type ProjectRenameRequest, type ProjectRenameValue, type ProjectReorderRequest,
+  type ProjectRebuildBaseWorkspaceValue,
   type ProjectSetBaseWorkspaceRequest,
   type ProjectSetExpandedRequest, type ProjectSetNewSessionTargetRequest, type ProjectSetOrdersRequest,
   type ProjectUnassignRequest, type ProjectUnassignValue,
@@ -415,6 +417,85 @@ export class ProjectController extends TypertRemoteService {
       : { mode: 'specified', path: request.path, name: request.name ?? '' }
     await this.setGlobal(domain, { baseWorkspace: next })
     return next
+  }
+
+  /**
+   * Re-create the base Workspace: make its directory, then register it.
+   *
+   * Ordered, because registration requires the directory to exist — the registry resolves the path
+   * with `realpathNormalize` and rejects a non-directory (measured: `workspace/invalid-path` when
+   * the directory is absent, and also when only its parent exists).
+   *
+   * ## Why `mkdir -p`
+   *
+   * The realistic rebuild case is a path whose parents may be gone too. `recursive: true` is
+   * idempotent for a directory that already exists, so it costs nothing in the common case and is
+   * the difference between working and not in the other.
+   *
+   * ## Why the registry is read with `ctx.get` at call time
+   *
+   * The service is provided by `dsh-workspace`, which arrives about a second after this plugin's
+   * `apply` runs (measured: absent at 0 ms and 250 ms, present at 1000 ms). Declaring it in `inject`
+   * would hold this whole plugin inactive until then, and would make every project verb depend on a
+   * service that has nothing to do with them. The ungated read also means a composition without it
+   * degrades to a refused rebuild rather than a dead plugin.
+   *
+   * ## Why `'default'` mode is adopted rather than pointed at
+   *
+   * `initializeDefault` returns `entities.get(defaultWorkspaceId)` as soon as that field is set and
+   * never falls through to creation, so after a deletion a re-registered path is an id the pointer
+   * does not adopt and the dialog would reappear on the next click. Rewriting that pointer would
+   * mean editing another plugin's durable state behind its invariants; instead this plugin records
+   * the rebuilt path as **its own** `'specified'` setting, which its resolver does read. `mode` in
+   * the result reports that, because it changes what the settings card shows.
+   * @returns the Workspace now at the base path, and the setting's mode afterwards.
+   */
+  @Remote('rebuildBaseWorkspace')
+  async rebuildBaseWorkspace(): Promise<ProjectRebuildBaseWorkspaceValue> {
+    const domain = await this.ready()
+    const stored = domain.global.get().baseWorkspace
+    // The Host reads its own setting rather than accepting a path from the caller: one source of
+    // truth, so the dialog cannot rebuild something other than what it displayed.
+    const usesStoredPath = stored.mode === 'specified'
+    const path = usesStoredPath
+      ? (stored.path ?? '')
+      // `'default'` mode names no path of its own; this is the same derivation the dialog showed.
+      : (await deriveDefaultWorkspacePath() ?? '')
+    if (path === '') throw new Error('there is no base workspace path to rebuild')
+    // The stored name is only meaningful for the path it was captured with. In `'default'` mode the
+    // memory belongs to some *other* Workspace (it survives a switch to 默认 by design), so passing
+    // it here would title the default Workspace with an unrelated name. Omitted, the registry
+    // derives one from the directory, which is the honest answer for a path the user never named.
+    const title = usesStoredPath ? stored.name : undefined
+
+    const registry = this.ctx.get('workspaceRegistry') as
+      | { create(path: string, title?: string): Promise<{ id: unknown; path?: string; title?: string }> }
+      | undefined
+    if (registry === undefined) {
+      throw new Error('the Workspace registry is unavailable, so the directory cannot be re-registered')
+    }
+
+    await mkdir(path, { recursive: true })
+    // A title rides along only when the path is the one the name was captured with:
+    // `workspace/create` cannot carry one at all, so going through the registry is what keeps a
+    // rebuilt row named the way the user chose — and what keeps it from borrowing a name that
+    // belongs to a different directory.
+    const entity = await registry.create(path, title)
+
+    const mode = stored.mode
+    if (mode === 'default') {
+      await this.setGlobal(domain, {
+        baseWorkspace: { mode: 'specified', path: entity.path ?? path, name: entity.title },
+      })
+    }
+    return {
+      // The registry answers with the canonical path; write back what it resolved rather than the
+      // request, so a symlink or a case difference cannot leave the setting disagreeing with the row.
+      path: entity.path ?? path,
+      workspaceId: String(entity.id),
+      title: entity.title ?? '',
+      mode: mode === 'default' ? 'specified' : mode,
+    }
   }
 
   /**

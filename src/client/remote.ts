@@ -100,6 +100,7 @@ export const projectGroupsRemote: TypertRemoteContribution = {
     unary('setNewSessionTarget', ['request'], 'ProjectNewSessionTargetValue'),
     unary('setBaseWorkspace', ['request'], 'ProjectBaseWorkspaceValue'),
     unary('defaultWorkspacePath', [], 'ProjectDefaultWorkspacePathValue'),
+    unary('rebuildBaseWorkspace', [], 'ProjectRebuildBaseWorkspaceValue'),
     {
       id: `dsh-project-groups#${PROJECT_NAMESPACE}/follow`,
       service: PROJECT_SERVICE_KEY,
