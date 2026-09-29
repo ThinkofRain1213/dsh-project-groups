@@ -107,6 +107,9 @@ source with a comment naming the seam.
 | `session-actions/BaseWorkspaceMissing.tsx` | **new file**: the `shell.overlay` dialog that reports that case and offers the two repairs | re-add the file and its `shell.overlay` registration |
 | `locales.ts` | six `baseMissing.*` keys in both dictionaries, kept in one contiguous block rather than editing a shipped key | re-add the block |
 | `rows/WorkspaceBrowser.module.css` | `.baseMissingActions` (the column footer), `.baseMissingBody`, `.baseMissingPath` | re-add the three rules |
+| `contract/slots.ts` | adds `BaseWorkspaceRoute`: which of three outcomes the caller's 底层工作区 setting resolved to | re-add the union |
+| `navigation.ts` | the service takes an optional `resolveBaseWorkspace` callback, consulted by an unscoped `startSession` **before** the official default (**behaviour change**, see below). Omitted, the flow is unchanged | re-add the parameter and the two branches |
+| `index.ts` | `ProjectActions` gains an optional `resolveBaseWorkspace`, passed as the constructor's last argument | re-add the field and the pass-through |
 
 Two invariants keep these patches honest:
 
@@ -354,6 +357,37 @@ Layout: the actions are a **column**, not the shared `Modal` footer's right-alig
 row. Three equal row actions get about 77px each in the default card, which is less
 than 「重新指定底层工作区」 needs; a column gives each the card's full width. The
 official plugin-manager dialog does the same (`.installFooter { flex-direction: column }`).
+
+**8. An unscoped New Session lands where the caller says.**
+
+Shipped: `startSession()` without a target resolves the Host's default Workspace, and
+that was patch 2 above. This patch adds a step **before** it: if the caller supplies a
+`resolveBaseWorkspace`, its answer decides.
+
+The callback returns a three-member union, and the third member is the point. "Use the
+official default" and "the setting names a Workspace that is gone" both end up not
+opening a specific Workspace, so an `workspaceId | undefined` return could not tell them
+apart — collapsing them would either silence the report or make the healthy path shout.
+`'missing'` therefore raises `onBaseWorkspaceMissing` with `mode: 'specified'` (the report
+typed `'specified'` from the start; this is the patch that finally produces it) and
+creates **nothing**. Falling back to the official default would be indistinguishable from
+the setting being ignored, which is the defect the whole feature exists to fix.
+
+Which entries reach this: every one that states no destination — the shell's New Session
+button and its shortcut, `ui-schedule`, `ui-agent-preset`, **and a caller-supplied group's
+own ＋**. That last one is easy to miss and is measured: `tree.ts` builds those groups
+with `workspaceId: undefined`, so a project row's ＋ takes this same branch (confirmed by
+watching `workspace/initializeDefault` fire on that click). The routing therefore also
+applies to a project's ＋ and the Ungrouped bucket's ＋.
+
+`beforeOpen` rides through on the `'workspace'` arm, which is what lets a Session land in
+the chosen Workspace **and** still be filed: a project's ＋ files it under that project,
+while the shell's button applies the caller's placement policy. Returning early there
+would create the Session and drop the filing.
+
+Omitted, the flow is byte-for-byte the shipped one — that is the "plugin off, official
+behaviour" guarantee. `startSessionInDefaultWorkspace` is untouched, so the
+`defaultWorkspaceFailed` notice and the host-lookup test that pins it are unaffected.
 
 ## Keeping it in sync
 

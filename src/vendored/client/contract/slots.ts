@@ -552,6 +552,27 @@ export interface BaseWorkspaceMissingRequest {
 }
 
 /**
+ * Where the 底层工作区 setting points, as the navigation needs it.
+ *
+ * A discriminated union rather than `workspaceId | undefined`, because the shipped flow has
+ * **three** outcomes and an optional id can only express two. In particular "the setting
+ * says use the official default" and "the setting names a Workspace that is gone" both end
+ * up *not* opening a specific Workspace, yet only the second must report — collapsing them
+ * would either silence the report or make the healthy path shout.
+ *
+ * `'official'` is a member rather than the absence of an answer so that "no callback was
+ * supplied" and "the setting says use the official default" stay distinguishable; otherwise
+ * a probe could not tell a detached plugin from a default-configured one.
+ */
+export type BaseWorkspaceRoute =
+  /** `'specified'` and still registered: open the New Session in it. */
+  | { readonly kind: 'workspace'; readonly workspaceId: WorkspaceId }
+  /** `'specified'` but no longer registered: report it, and open nothing. */
+  | { readonly kind: 'missing'; readonly path: string | null; readonly name: string | null }
+  /** `'default'`, unset, or not yet known: the shipped official-default flow. */
+  | { readonly kind: 'official' }
+
+/**
  * Missing-基层工作区 dialog share: the pending report, its dismissal, and the two
  * repairs.
  *

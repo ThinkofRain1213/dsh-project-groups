@@ -70,6 +70,15 @@ export type { ProjectRemote } from './projects.ts'
 export const inject = vendoredInject
 
 /**
+ * The Workspace registry snapshot, captured by {@link apply}.
+ *
+ * Module-level like the model itself, because {@link projectActions} is built at module
+ * load while the service only exists once `apply` runs. `resolveBaseWorkspace` needs it to
+ * turn the setting's stored **path** into a Workspace id.
+ */
+let workspacesRegistry: WorkspaceSource | undefined
+
+/**
  * The verbs the browser's row menu and drag drive.
  *
  * Each resolves only after the Host has accepted the write, so a dialog awaiting
@@ -135,6 +144,29 @@ const projectActions: ProjectActions = {
   // The two repairs are deliberately absent in this step: `rebuildBaseWorkspace`
   // needs the Host-side directory creation and `chooseBaseWorkspace` the settings
   // picker. The dialog renders both buttons disabled until they exist.
+  resolveBaseWorkspace: () => {
+    const model = projectModel()
+    // No model yet — the Remote baseline has not landed — means the shipped flow,
+    // **not** a report. `mountProjects` is fire-and-forget, so a New Session click
+    // during boot is a real sequence, and reporting a missing Workspace before
+    // anything is known would be a false alarm on every cold start.
+    if (model === undefined) return { kind: 'official' as const }
+    const setting = model.baseWorkspaceSetting()
+    if (setting.mode !== 'specified') return { kind: 'official' as const }
+    const path = setting.path ?? ''
+    // A `'specified'` setting with no path cannot be produced through the Host (it
+    // refuses that write), but a hand-edited medium could hold one. Read as "unset"
+    // rather than "missing": there is nothing to report and no id to resolve.
+    if (path === '') return { kind: 'official' as const }
+    // Resolved by **path**, never by id: re-registering a directory mints a new id
+    // (measured), so a stored id would go stale while the path keeps resolving. That
+    // is also what lets a delete-and-re-add at the same path re-adopt itself.
+    const items = workspacesRegistry?.getSnapshot().items ?? []
+    const found = items.find(item => item.path === path)
+    return found === undefined
+      ? { kind: 'missing' as const, path, name: setting.name ?? null }
+      : { kind: 'workspace' as const, workspaceId: found.workspaceId }
+  },
 }
 
 /** @returns the started model, or throws when the Remote namespace is absent. */
@@ -149,6 +181,9 @@ function requireModel(): ProjectModel {
  * @param ctx - client root context.
  */
 export function apply(ctx: Context): void {
+  // Read once, like the settings card does: this plugin's client inject list names the
+  // Workspace controller, and `ctx.get` is the ungated lookup.
+  workspacesRegistry = (ctx.get('workspaces') as { list: WorkspaceSource } | undefined)?.list
   // Mount before registering the browser so the model's baseline can land while
   // the sidebar is still being assembled. A failure here is contained: the
   // sidebar then renders one Ungrouped bucket and the project verbs refuse

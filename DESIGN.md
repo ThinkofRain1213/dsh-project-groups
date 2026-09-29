@@ -1929,7 +1929,94 @@ fetch `0.2.0-rc.1` tag → 重拷 `packages/client/ui-workspace/src/client/` →
 |---|---|---|
 | **1** | **弹窗骨架**：缺失才弹；三个按钮 + **取消可用**，另两个 **disabled** | ✅ **已完成（2026-09-29）** |
 | **2** | **设置卡片**：选默认 / 指定工作区（二选一卡片 + 卡片内「更换…」） | ✅ **已完成（2026-09-29）** |
+| **2.5** | **路由**：把底层工作区接到新会话上，替掉"只走官方默认" | ✅ **已完成（2026-09-29）** |
 | **3** | **新建能力**：host 建目录 + 注册工作区 | 待做 |
+
+##### 第 2.5 步实现（2026-09-29）
+
+**为什么必须插这一步**：做完 ② 后用户报「点 ＋ 还是正常出现新会话页面，弹窗不弹」。
+探查确认根因是——**`baseWorkspace` 只写不读**：
+
+```
+全部引用里，唯一的消费者是设置卡片（src/client/index.ts:188）
+没有任何"新建会话"路径引用它
+```
+
+**实测**（设置成"指定一个不存在的工作区"后点 ＋）：
+```
+调用的端点: workspace/initializeDefault, session/create
+缺失弹窗出现: 0 个   创建了会话: 1 次
+```
+
+⇒ 三步走的划分里 **"让新建会话真的用这个设置"没有任何一步认领**。
+③ 讲的是"创建目录"，与"使用设置"是两件事。**这是方案划分的缺口，不是 bug。**
+
+**⚠️ 探查中还推翻了一个我自己的错误结论**：
+我先前说"项目行/未分组的 ＋ 已带明确的 `workspaceId`"。**实测是错的**——
+点项目行 ⊕ 会触发 `workspace/initializeDefault`，说明它**也走 unscoped 分支**。
+代码印证：`tree.ts:473-475` 用 `buildGroup(source.key, undefined, …)` 建组，
+注释明写 *"`workspaceId` stays undefined"*。
+
+**⇒ 实际受影响的入口（5 个）**：侧栏按钮、快捷键、`ui-schedule.onNewTask`、
+`ui-agent-preset`、**项目行 ＋**、**未分组 ＋**。
+
+**改动 6 个文件**：
+
+| 文件 | 改动 |
+|---|---|
+| `contract/slots.ts` | 加 `BaseWorkspaceRoute` 三成员判别联合 |
+| `navigation.ts` | 加可选构造参数 `resolveBaseWorkspace`（第 9 位）；`startSession` 加两个分支 |
+| `vendored/index.ts` | `ProjectActions` 加 `resolveBaseWorkspace`；作为构造最后一位传入 |
+| `client/index.ts` | 实现 `resolveBaseWorkspace`（path → workspaceId 解析）|
+| `client/projects.ts` | **修掉 ② 留下的错误注释**（描述了不存在的 "resolver"）|
+| `vendored/README.md` | patch 清单 + 新增第 8 节 |
+
+**关键设计**：
+
+1. **三成员判别联合，而不是 `workspaceId \| undefined`**
+   —— 因为"设置说用官方"和"设置指向的工作区没了"**都不打开具体工作区**，
+   但**只有后者该报**。用可选 id 表达不出这个区别。`'official'` 是显式成员，
+   使"回调缺席（未装配）"与"设置是默认"**可区分**（否则探针分不清"没接上"和"接上了"）。
+
+2. **`'missing'` 时创建 nothing + 弹窗，绝不静默回退**
+   —— 静默回退到官方默认**与"设置被忽略"无法区分**，**那正是本功能要消除的缺陷**。
+   弹窗类型 ① 当初就留好了 `mode: 'specified'`，**这一步才第一次真正用上它**。
+
+3. **`'workspace'` 分支 `beforeOpen` 照传**（核心）
+   —— 两个入口的 `beforeOpen` 是**不同东西**：侧栏 ＋/schedule 是 **placement 回调**
+   （"新会话落点"），项目 ＋ 是**归档回调**。照传才能"落在指定工作区 **+** 按入口归档"。
+   **提前 return 会创建会话但丢掉归档** ⇒ 项目 ＋ 会归到空。
+
+4. **回调缺席 ⇒ 与今天逐字节相同**
+   —— 这是"插件关了就恢复官方逻辑、互不影响"的落点。
+   `startSessionInDefaultWorkspace` **一个字不改**，所以 `defaultWorkspaceFailed`
+   toast 与 `verify-new-session.mjs:216` 的断言**不受影响**（实测 329 断言全绿）。
+
+5. **三个 `model === undefined` / `path === ''` ⇒ `'official'`**
+   —— `mountProjects` 是 `void` 异步的，**冷启动点 ＋ 误弹窗**是真实风险，必须显式排除。
+   `path === ''` 是 Host 会拒绝的非法态（手改介质可能有），**没有可报告的对象**。
+
+6. **按 path 解析，绝不按 id**
+   —— 实测重注册同目录会换新 id；存 id 必过期。**附带好处**：删掉再加回同路径自动重新认上。
+
+**验收（`scripts/probe-base-workspace-routing.mjs`，6 场景全绿）**：
+
+| 场景 | 结果 |
+|---|---|
+| `specified(A)` ⇒ 点 ＋ | 落在 **A**，未走官方解析 |
+| `specified(已删的工作区)` ⇒ 点 ＋ | **弹窗出现**（含那个路径）+ **0 个会话** |
+| `default` ⇒ 点 ＋ | `initializeDefault` 被调 + 落在官方默认 |
+| **项目行 ＋** | 落在 **A** + **归到该项目**（两条都断言）|
+| 快捷键 `Ctrl+Alt+N` | 落在 **A** |
+| 往返（A → default → A） | 仍落在 **A** |
+
+**探针的关键设计**：**从 `session/create` 的请求体里读 `workspaceId`**。
+只看"调用了哪个端点"**分不出落在哪个工作区**——**这正是 ② 漏掉的那一层**。
+
+**反向对照**（`applyVendored` 时不传 `resolveBaseWorkspace`，即未装配）：
+**8 条断言失败**，所有会话落在官方默认（`21778aa5…`）、**弹窗 0 个**
+—— **精确复现用户报告的现象**。
+
 
 ##### 第 2 步实现（2026-09-29）
 

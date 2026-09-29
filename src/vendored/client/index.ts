@@ -36,6 +36,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import {
   type ArchiveSessionInjected, type BaseWorkspaceDialogInjected, type BaseWorkspaceMissingRequest,
+  type BaseWorkspaceRoute,
   type ForkSessionInjected, menuOpenStateFactory, type PinSessionInjected,
   type SessionArchiveConfirmInjected, type SessionArchiveConfirmRequest,
   type RenameSessionInjected, type RowToast, type RowToastInjected, type RowToastState, type SessionRenameDialogInjected,
@@ -59,6 +60,7 @@ import { en, zh, type WorkspaceKey } from './locales.ts'
 export type { UiWorkspace } from './navigation.ts'
 export type { GroupSource } from './tree.ts'
 export type {
+  BaseWorkspaceRoute,
   DirectoryFlowOwnerProps, DirectoryFlowSlotName, DirectoryPickingHooks, DirectoryPickingInjected,
   MenuOpenState, RowToast, SessionRenameTarget, SessionRowOwnerProps, UseMenuOpenState, WorkspaceBrowserInjected,
   SessionRowScheduleOwnerProps,
@@ -161,6 +163,17 @@ export interface ProjectActions {
    * disabled.
    */
   chooseBaseWorkspace?: (() => void) | undefined
+  /**
+   * Where the 底层工作区 setting points, for the entries that state no destination.
+   *
+   * Those are the shell's New Session button and its shortcut, ui-schedule,
+   * ui-agent-preset, and a caller-supplied group's own ＋ (a project row and the
+   * Ungrouped bucket both carry no `workspaceId` — see `tree.ts`).
+   *
+   * Absent, they resolve the official default exactly as the shipped plugin does, which
+   * is what keeps an unmodified composition unaffected.
+   */
+  resolveBaseWorkspace?: (() => BaseWorkspaceRoute) | undefined
 }
 
 /**
@@ -269,6 +282,9 @@ export function apply(
         // exactly what it already shows.
       })
     },
+    // The last constructor argument: where the caller's 底层工作区 setting points.
+    // Absent, every unscoped New Session resolves the official default as before.
+    projectActions?.resolveBaseWorkspace,
   )
   ctx.slots.provideRoot({ hooks: { workspaces: workspaces.list } })
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-workspace: dictionaries')
@@ -415,8 +431,8 @@ export function apply(
     showArchived: () => { viewInstance.actions.setArchivedFilter('show') },
   })
   const browserInjected = (): WorkspaceBrowserInjected => ({
-    // Explicit group actions keep their target; unscoped New Session inherits
-    // the current Session Workspace before the recent-Workspace fallback.
+    // Explicit group actions keep their target; an unscoped New Session goes wherever the
+    // caller's base-workspace setting points, falling back to the official default.
     startSession: (workspaceId, beforeOpen) => { uiWorkspace.startSession(workspaceId, beforeOpen) },
     open: openSession,
     searchSessions,

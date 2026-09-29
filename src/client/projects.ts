@@ -108,9 +108,10 @@ interface ProjectState {
   /**
    * The Workspace every New Session this plugin opens lands in.
    *
-   * Read through {@link ProjectModel.baseWorkspace} by the resolver and by the settings
-   * card. `'default'` means the official first-use Workspace; `'specified'` means the
-   * Workspace at the stored `path`.
+   * Read by the settings card, and by `resolveBaseWorkspace` in `src/client/index.ts`,
+   * which turns it into where an unscoped New Session actually lands. `'default'` means
+   * the official first-use Workspace; `'specified'` means the Workspace at the stored
+   * `path`.
    */
   readonly baseWorkspace: BaseWorkspaceSetting
 }

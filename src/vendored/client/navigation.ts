@@ -16,7 +16,7 @@ import type {
 } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
-import type { RowToast, BaseWorkspaceMissingRequest } from './contract/slots.ts'
+import type { BaseWorkspaceRoute, RowToast, BaseWorkspaceMissingRequest } from './contract/slots.ts'
 import { pinOrderAccounts, pinOrderSource } from './pin-order.ts'
 import type { WorkspaceViewStoreActions } from './stores.ts'
 
@@ -152,6 +152,18 @@ class UiWorkspaceService extends Service implements UiWorkspace {
    * land because its 底层工作区 is gone. Absent, the flow is exactly the shipped one:
    * the click does nothing. The caller supplies the path, since deriving it needs a
    * Host query this service does not hold.
+   * @param resolveBaseWorkspace - optional: where this plugin's 底层工作区 setting
+   * points, for the entries that state no destination — the shell's New Session
+   * button and its shortcut, ui-schedule, ui-agent-preset, and a caller-supplied
+   * group's own ＋ (those groups carry no `workspaceId`; see `tree.ts`). The service
+   * cannot answer this itself: the setting lives in the plugin's own domain, and
+   * turning its stored **path** into a Workspace id needs a registry snapshot the
+   * caller already holds.
+   *
+   * Synchronous by design. Both inputs are in-process observables
+   * (`clientBaseWorkspace`, `workspaces.list`), so a promise here would put a
+   * suspension point inside a click for no benefit. Absent — an unmodified
+   * composition — the flow is exactly the shipped one.
    */
   constructor(
     ctx: Context,
@@ -162,6 +174,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     private readonly notify: (toast: RowToast) => void,
     private readonly placeUnscoped?: (sessionId: SessionId, currentSessionId: SessionId | undefined) => void,
     private readonly onBaseWorkspaceMissing?: (request: BaseWorkspaceMissingRequest) => void,
+    private readonly resolveBaseWorkspace?: () => BaseWorkspaceRoute,
   ) {
     super(ctx, 'uiWorkspace')
     ctx.effect(() => {
@@ -242,6 +255,31 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       this.openNewSessionIn(workspaceId, beforeOpen)
       return
     }
+    // This plugin's 底层工作区 setting governs every entry that states no destination.
+    // Resolved per click, like the official default below it: caching a Workspace id
+    // would outlive a registration that was deleted, and reporting exactly that is the
+    // `'missing'` arm's whole purpose.
+    const route = this.resolveBaseWorkspace?.()
+    if (route?.kind === 'workspace') {
+      // A stated destination, so it takes the shape a row's ＋ does: `beforeOpen` rides
+      // along, which is what lets a Session land in the chosen Workspace *and* still be
+      // filed. A project row files it under that project; the shell's button applies the
+      // caller's placement policy. Returning early would create the Session and drop the
+      // filing, so a project's ＋ would file into nothing.
+      this.openNewSessionIn(route.workspaceId, beforeOpen)
+      return
+    }
+    if (route?.kind === 'missing') {
+      // The setting names a Workspace that is gone. Create nothing and say why: silently
+      // using the official default would be indistinguishable from the setting being
+      // ignored, which is precisely the defect this path exists to fix.
+      this.onBaseWorkspaceMissing?.({ mode: 'specified', path: route.path, name: route.name })
+      return
+    }
+    // `'official'`, or no callback at all: unchanged. This is also the cold-start path,
+    // where the caller's model has not landed yet and the shipped behaviour is the only
+    // safe answer.
+    //
     // No target means every unscoped entry: the sidebar shell's New Session
     // button and its shortcut, ui-schedule, ui-agent-preset, and this plugin's
     // own caller-supplied groups. They all resolve the Host's default Workspace.
