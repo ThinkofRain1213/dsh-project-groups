@@ -650,9 +650,22 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/*
+ * Without this the paragraph keeps the browser's default `margin-block: 1em` — 14px here — because
+ * nothing in the app resets it (checked: no `p { margin: 0 }` and no universal margin reset exists
+ * in any of the 7,829 shipped source files). `RiskConfirmation` carries the same rule; I copied its
+ * `.warning` and `.warningIcon` and missed this one, which produced both reported symptoms at once:
+ * with `align-items: flex-start` the 14px top margin pushes the text below the icon (which has only
+ * `margin-top: 2px`), and a flex container does not collapse margins, so the same 14px lands above
+ * *and* below and the card grows by ~28px.
+ */
+.baseMissingConfirm > p {
+  margin: 0;
 }
 
 .baseMissingConfirmIcon {

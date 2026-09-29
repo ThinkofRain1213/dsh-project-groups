@@ -149,6 +149,51 @@ try {
     `${String(await dialogs().count())} 个`)
 
   console.log('')
+  console.log('=== 9. 警告行的排版（图标与文本对齐、卡片高度不虚增）===')
+  // Regression guard for a rule I missed when copying `RiskConfirmation`'s warning: no `.warning p`
+  // equivalent, so the paragraph kept the browser default `margin-block: 1em`. With
+  // `align-items: flex-start` that pushed the text below the icon, and because flex does not
+  // collapse margins it also added ~2 × 1em to the card's height. Both were reported as separate
+  // bugs; they were one cause, so both are asserted here.
+  const layout = await page.evaluate(() => {
+    const card = document.querySelector('[role="dialog"][aria-modal="true"]')
+    if (card === null) return null
+    // Targeted by class, not by "first div holding an svg and a p": the dialog's own content div
+    // also holds both (the header's close button contains an svg), and picking that measured the
+    // card's root instead of the warning row — reported as a 53px offset that was an artifact.
+    // A `div` qualifier excludes `baseMissingConfirmIcon`, which is the svg.
+    const warning = card.querySelector('div[class*="baseMissingConfirm"]')
+    if (warning === null) return null
+    const paragraph = warning.querySelector('p')
+    const icon = warning.querySelector('svg')
+    if (paragraph === null || icon === null) return null
+    const top = warning.getBoundingClientRect().top
+    const style = getComputedStyle(paragraph)
+    return {
+      marginTop: style.marginTop,
+      marginBottom: style.marginBottom,
+      warningHeight: Math.round(warning.getBoundingClientRect().height * 100) / 100,
+      textTop: Math.round((paragraph.getBoundingClientRect().top - top) * 100) / 100,
+      iconTop: Math.round((icon.getBoundingClientRect().top - top) * 100) / 100,
+    }
+  })
+  console.log(`  ${JSON.stringify(layout)}`)
+  check('9) 段落没有默认外边距（漏抄的规则已补上）',
+    layout !== null && Number.parseFloat(layout.marginTop) === 0 && Number.parseFloat(layout.marginBottom) === 0,
+    `margin ${String(layout?.marginTop)} / ${String(layout?.marginBottom)}`)
+  // The icon carries `margin-top: 2px` on purpose (it matches `RiskConfirmation`'s `.warningIcon`),
+  // so the two are aligned when the text is exactly 2px below the row's top edge.
+  check('9) 图标与文本顶部对齐（相差 2px，来自图标自身的 margin-top）',
+    layout !== null && Math.abs(layout.textTop - layout.iconTop) <= 3,
+    `文本 ${String(layout?.textTop)} vs 图标 ${String(layout?.iconTop)}`)
+  // Two lines at the 380px card width, so 44px is the correct height, not a symptom: 2 × 22px
+  // line-height, with the paragraph's margin now contributing nothing. Asserted as a bound rather
+  // than a single value, because the copy differs per locale.
+  check('9) 警告行高度只由文本决定（无 margin 虚增）',
+    layout !== null && layout.warningHeight > 0 && layout.warningHeight % 22 === 0,
+    `行高 ${String(layout?.warningHeight)}px（应为 22px 的整数倍）`)
+
+  console.log('')
   console.log('=== 3. 焦点应在「确认重建」按钮上 ===')
   const focused = await page.evaluate(() => {
     const node = document.activeElement
