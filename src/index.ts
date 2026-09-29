@@ -30,7 +30,7 @@ import type {} from '@deepseek-ai/dsh-storage-domain'
 import { PROJECT_DOMAIN_NAME, projectDomainSpec, type BaseWorkspaceSetting, type GlobalRecord, type ProjectRecord } from './spec.ts'
 import { defaultWorkspacePath as deriveDefaultWorkspacePath } from './default-workspace.ts'
 import {
-  PROJECT_NAMESPACE, PROJECT_SERVICE_KEY,
+  PROJECT_NAMESPACE, PROJECT_SERVICE_KEY, withDefaultMode,
   type ProjectAssignRequest, type ProjectAssignmentValue, type ProjectBaseline,
   type ProjectBaseWorkspaceValue,
   type ProjectCreateRequest, type ProjectDeleteRequest, type ProjectExpansionValue,
@@ -406,10 +406,12 @@ export class ProjectController extends TypertRemoteService {
     if (request.mode === 'specified' && (request.path ?? '') === '') {
       throw new Error('a specified base workspace needs a path')
     }
-    const stored = domain.global.get().baseWorkspace
+    // The `'default'` arm routes through the shared helper so this half cannot drift from
+    // the Client's optimistic write, which applies the same rule before the round trip.
+    // The `'specified'` arm stays inline: it is genuinely asymmetric (an absent `name` is
+    // cleared here, where `'default'` retains one).
     const next: BaseWorkspaceSetting = request.mode === 'default'
-      // Retained, not cleared: see the note above.
-      ? { mode: 'default', path: stored?.path, name: stored?.name }
+      ? withDefaultMode(domain.global.get().baseWorkspace)
       : { mode: 'specified', path: request.path, name: request.name ?? '' }
     await this.setGlobal(domain, { baseWorkspace: next })
     return next

@@ -2074,6 +2074,94 @@ const next = request.mode === 'default'
 `probe-base-workspace-write-rejected.mjs` 记录"写入被拒时静默回滚"这一独立缺陷
 （见下）。
 
+##### 第 2 步的第三个缺陷：切换时「指定」卡的副标题闪一帧「未选择」（2026-09-29 修复）
+
+**现象**（用户报）：持久化已正常，但**切回指定的时候，指定这里还是会闪烁一下**。
+
+**逐帧测量**（`probe-base-workspace-toggle-flash.mjs`，`requestAnimationFrame` 采样）：
+
+```
+点「默认工作区」：
+  +0.0ms   pressed=false/true  副标题="scripts"
+  +16.2ms  pressed=true/false  副标题="未选择"    ← ❌ 闪帧
+  +33.0ms  pressed=true/false  副标题="scripts"
+```
+
+**`pressed` 全程正确**（默认一直选中），**闪的只是副标题文字**。
+
+**根因：同一条规则写在两处，而且只有一处写了。**
+
+```ts
+// Host（index.ts）—— 写了：保留记忆
+? { mode: 'default', path: stored?.path, name: stored?.name }
+// 客户端乐观写入（projects.ts）—— 没写：原样采用调用方对象
+this.state = { ...this.state, baseWorkspace: { ...setting } }
+//                                               ↑ setting = { mode: 'default' }，无 path
+```
+
+于是：**乐观写入那帧 `path` 是 `undefined`** ⇒ 卡片走 `path === undefined` 分支
+⇒ 显示「未选择」⇒ 下一帧 Host 的 `follow` 帧把 path 带回来 ⇒ 变回 `scripts`。
+
+**为什么只有 default 方向闪**：点「指定」传的是
+`{mode:'specified', path: chosen.path, name: chosen.title}`，**信息完整**；
+点「默认」传的是光秃秃的 `{mode:'default'}`。**不对称正是证据。**
+
+**修法：把这条规则抽成两半共用的纯函数**（方案 A，放 `protocol.ts`）：
+
+```ts
+export function withDefaultMode(stored: BaseWorkspaceSetting | undefined): BaseWorkspaceSetting {
+  return { mode: 'default', path: stored?.path, name: stored?.name }
+}
+```
+
+| 文件 | 改动 |
+|---|---|
+| `src/protocol.ts` | **加** `withDefaultMode`；文件头文档同步改准 |
+| `src/index.ts` | Host 的 default 分支改调它（删掉手写副本）|
+| `src/client/projects.ts` | 乐观写入**先归一化再比较**；回滚比对改用 `next` |
+| `src/client/settings-card.tsx` | `neverChosen` / `gone` 拆开 |
+
+**为什么选 A 而不新建文件**：这条规则**只有 4 行**，且 `protocol.ts` **已经**装着
+两个"两半必须一致的运行时约定"（`PROJECT_NAMESPACE` 等），**同类**。
+为一个函数新建模块，仪式感大于规则本身。
+**提升触发条件**：这类规则攒到**第二条**时，一起挪到 `src/base-workspace.ts`。
+
+**为什么必须共用而不是"两处各写对"**：规则写在两处就**必然靠人同步**，
+**这次闪帧正是没同步的结果**。共用后"一边有、一边没有"**结构上不可能**。
+
+**`spec.ts` 不能放**（硬约束，实测）：`spec.ts:44` **value-import zod**，
+客户端 value-import 它会把 zod 拉进浏览器 bundle。
+
+**顺带修掉一个未报的缺陷**：**已经是「默认」时再点「默认」会发一次冗余写请求**。
+原因：`sameBaseWorkspace` 拿入参 `{mode:'default'}` 与已存 `{mode:'default',path,name}` 比，
+**永不相等** ⇒ 去重失效。归一化后 `next` 等于 `previous`，**自动修好**。
+
+**改动 4 的必要性**：`neverChosen` 与 `gone` 原本耦合在
+`base.path === undefined || base.path === ''` 上，把"当前没在用它"和"从未选过"混同。
+拆开后「未选择」**只**表示从未选过——**改动 3 保证了这点**（乐观写入不再丢 path），
+**两个改动有依赖顺序**。
+
+**反向对照**（还原 `const next = setting` 那行）：
+
+```
+切到默认: 3 个状态变化，含 1 个中间态：副标题="未选择"
+重复点击产生的请求: 1
+FAIL  切到默认：副标题不出现「未选择」中间态 — ["scripts","未选择","scripts"]
+FAIL  重复点已选中的卡片不产生写请求 — 1 次
+```
+
+**精确复现原始症状**。
+
+**验收**：新探针 9 条断言全绿——三次切换**都无中间态**、副标题**从不出现「未选择」**、
+重复点击 **0 个请求**、整轮结束记忆仍在。
+
+**探针教训（重要）**：`probe-base-workspace-card.mjs` 第 11 节**隔 1800ms 才采样**，
+**跨过了那一帧**，所以上一轮验收漏掉了这个 bug。**必须用 `requestAnimationFrame` 逐帧采样。**
+
+**一处诚实说明**：`lib/client.js` 里出现字符串 `zod` —— 那是**我自己写的注释**被原样
+打进 bundle（"spec.ts 不能放"那段理由），**不是依赖**。实测
+`require("zod")` / `from "zod"` 全为 `False`，**外部 require 集合零新增**，体积 +1.7 KB。
+
 ##### ⚠️ 一个**已确认但未修**的独立缺陷
 
 **写入被拒绝时用户看不到任何解释**——只有 `console.warn`，界面上什么都不显示。

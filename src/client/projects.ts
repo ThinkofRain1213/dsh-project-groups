@@ -55,6 +55,7 @@ import type { GroupSource } from '../vendored/client/tree.ts'
 import type {
   BaseWorkspaceSetting, NewSessionTarget, ProjectBaseline, ProjectFollowFrame, ProjectValue,
 } from '../protocol.ts'
+import { withDefaultMode } from '../protocol.ts'
 
 /** The Remote face this model drives; structurally the mounted namespace. */
 export interface ProjectRemote {
@@ -549,14 +550,27 @@ export class ProjectModel {
    */
   async setBaseWorkspace(setting: BaseWorkspaceSetting): Promise<void> {
     const previous = this.state.baseWorkspace
-    if (sameBaseWorkspace(previous, setting)) return
-    this.state = Object.freeze({ ...this.state, baseWorkspace: Object.freeze({ ...setting }) })
+    // Normalise **before** comparing, so the rule the Host applies on commit is the one
+    // this frame renders. Skipping this is what made the card flash 「未选择」: a
+    // `{ mode: 'default' }` written optimistically carried no `path` while the stored value
+    // did, and the Host's frame put it back one animation frame later.
+    //
+    // It also repairs the no-op guard for free: `{ mode: 'default' }` could never equal a
+    // stored `{ mode: 'default', path, name }`, so re-clicking the already-selected 默认
+    // card issued a redundant write (measured: one round trip per click).
+    const next = setting.mode === 'default' ? withDefaultMode(previous) : setting
+    if (sameBaseWorkspace(previous, next)) return
+    this.state = Object.freeze({ ...this.state, baseWorkspace: Object.freeze({ ...next }) })
     for (const listener of [...this.listeners]) listener()
     try {
-      unwrap(await this.remote.setBaseWorkspace({ ...setting }), 'set base workspace')
+      unwrap(await this.remote.setBaseWorkspace({ ...next }), 'set base workspace')
     } catch (error: unknown) {
       // Only revert when the Host has not already answered with something newer.
-      if (sameBaseWorkspace(this.state.baseWorkspace, setting)) {
+      //
+      // Compared against `next`, not `setting`: the question is "is the normalised value
+      // still on screen", and a raw `{ mode: 'default' }` never equals it, which would
+      // make this branch dead and leave a refused write uncorrected.
+      if (sameBaseWorkspace(this.state.baseWorkspace, next)) {
         this.state = Object.freeze({ ...this.state, baseWorkspace: previous })
         for (const listener of [...this.listeners]) listener()
       }

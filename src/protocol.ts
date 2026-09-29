@@ -7,8 +7,10 @@
  * Client contribution's descriptors and the Host's `@Remote` exports are
  * derived from the same constants.
  *
- * These are plain data shapes. Nothing crosses that is not JSON, which is what
- * lets both codecs be pass-throughs (see `src/client/remote.ts`).
+ * The wire payloads are plain data shapes. Nothing crosses that is not JSON, which is
+ * what lets both codecs be pass-throughs (see `src/client/remote.ts`). The module also
+ * carries the few runtime agreements the two halves must share — the namespace constants
+ * below and `withDefaultMode` — because a rule stated twice is a rule that drifts.
  */
 import type { BaseWorkspaceSetting, NewSessionTarget } from './spec.ts'
 
@@ -19,6 +21,35 @@ export const PROJECT_SERVICE_KEY = 'projectController'
 
 /** The Remote namespace the Client calls (`ctx.remote.projectGroups`). */
 export const PROJECT_NAMESPACE = 'projectGroups'
+
+/**
+ * The setting a `'default'` write stores: switch the mode, **keep the memory**.
+ *
+ * `path`/`name` record which Workspace the user last picked, and switching to 默认 must
+ * not discard that — otherwise switching back has nothing to restore, which is how it was
+ * reported ("切回默认再回来又要重新选").
+ *
+ * ## Why this is a function and not two matching expressions
+ *
+ * The rule has to hold in **both** halves: the Host decides what to persist, and the
+ * Client's optimistic write decides what to render in the frame the user clicked. It was
+ * written out twice — the Host applied it, the Client did not — and the two drifted, which
+ * is what made the card flash 「未选择」 for one animation frame before the Host's frame
+ * corrected it. A single implementation cannot drift.
+ *
+ * Stated here rather than in `spec.ts` because that module imports `zod` as a **value** and
+ * therefore cannot be reached from the browser bundle. This module is already the two
+ * halves' shared vocabulary (see the constants above), so the rule belongs with them.
+ *
+ * Note that the `'specified'` direction is deliberately **not** mirrored here: it is
+ * genuinely asymmetric — a `name` that arrives absent is cleared, where `'default'` retains
+ * one — and forcing the two through one shape would erase that difference.
+ * @param stored - the setting as it stands, or `undefined` before any write.
+ * @returns the `'default'` setting, carrying the remembered Workspace through.
+ */
+export function withDefaultMode(stored: BaseWorkspaceSetting | undefined): BaseWorkspaceSetting {
+  return { mode: 'default', path: stored?.path, name: stored?.name }
+}
 
 /** One project as the Client reads it. */
 export interface ProjectValue {

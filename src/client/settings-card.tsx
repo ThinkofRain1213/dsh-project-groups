@@ -89,8 +89,15 @@ export function ProjectGroupsCard({
   // the choice), so a stale memory deserves the note whichever mode is showing.
   // Reported, never auto-cleared: the user may have removed it by mistake and mean to
   // add it back, and clearing would decide that for them.
-  const gone = base.path !== undefined && base.path !== '' && chosen === null
-  const specifiedLabel = base.path === undefined || base.path === ''
+  //
+  // 「未选择」means **never picked one**, and nothing else. It must not be reachable by a
+  // mode switch: a `'default'` write retains the memory (see `withDefaultMode`), and the
+  // optimistic frame retains it too — so a missing path here really is a fresh setting.
+  // Reading it as "no path on screen right now" is what let a one-frame
+  // `{ mode: 'default' }` render 「未选择」 before flipping back.
+  const neverChosen = base.path === undefined || base.path === ''
+  const gone = !neverChosen && chosen === null
+  const specifiedLabel = neverChosen
     ? t('baseNotChosen')
     : gone
       ? t('baseGone', { name: base.name ?? base.path })

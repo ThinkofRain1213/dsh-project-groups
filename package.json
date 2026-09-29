@@ -81,6 +81,7 @@
     "probe:base-workspace-dialog": "node scripts/probe-base-workspace-dialog.mjs",
     "probe:base-workspace-card": "node scripts/probe-base-workspace-card.mjs",
     "probe:base-workspace-write-rejected": "node scripts/probe-base-workspace-write-rejected.mjs",
+    "probe:base-workspace-toggle-flash": "node scripts/probe-base-workspace-toggle-flash.mjs",
     "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {
