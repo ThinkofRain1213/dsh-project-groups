@@ -111,9 +111,10 @@ source with a comment naming the seam.
 | `navigation.ts` | the service takes an optional `resolveBaseWorkspace` callback, consulted by an unscoped `startSession` **before** the official default (**behaviour change**, see below). Omitted, the flow is unchanged | re-add the parameter and the two branches |
 | `index.ts` | `ProjectActions` gains an optional `resolveBaseWorkspace`, passed as the constructor's last argument | re-add the field and the pass-through |
 | `session-actions/BaseWorkspaceMissing.tsx` | the 重新指定底层工作区 button now consumes the report and calls `chooseBaseWorkspace`, handing the user to the settings card | re-add the `settle()` before the call |
-| `session-actions/BaseWorkspaceMissing.tsx` | the 重建该工作区 button's action is live (step 3b), and the dialog states that a directory will be created before it offers it | re-add the hint paragraph |
-| `locales.ts` | one `baseMissing.rebuildHint` key in both dictionaries, appended to the existing `baseMissing.*` block | re-add the key |
-| `rows/WorkspaceBrowser.module.css` | `.baseMissingHint` | re-add the rule |
+| `session-actions/BaseWorkspaceMissing.tsx` | the 重建该工作区 button's action is live (step 3b) | re-add the `run(rebuild)` call |
+| `session-actions/BaseWorkspaceMissing.tsx` | **two stages in one dialog**: pressing 重建该工作区 switches this card to a confirmation stage (warning icon, the path, 确认重建/返回) rather than opening a second `Modal` | re-add the `stage` state, the focus effect, and both footer branches |
+| `locales.ts` | the confirmation's five keys in both dictionaries; the single `baseMissing.rebuildHint` is gone, its sentence having moved into the confirmation | re-add the five keys |
+| `rows/WorkspaceBrowser.module.css` | `.baseMissingConfirm` / `.baseMissingConfirmIcon` | re-add the two rules |
 | `contract/slots.ts` | `BaseWorkspaceDialogInjected.chooseBaseWorkspace` is documented as wired (step 3a); the type is unchanged | no code change beyond the doc |
 
 Two invariants keep these patches honest:
@@ -419,18 +420,28 @@ Opening the chooser is a second handoff, dialog → card, and it rides a snapsho
 rather than a prop because the card generally mounts **after** the request: `openBundle`
 navigates, the card is created by that render. A snapshot read returns live state, so a
 card mounted later still sees the request, and consuming it (setting `null`) is what stops
-the chooser from reopening whenever the card remounts.
+**10. 重建该工作区 becomes live, and asks before it writes.**
 
-**10. 重建该工作区 becomes live, and says what it will do.**
+The dialog's other repair lands in step 3b: the button's action now exists, and because it
+creates a directory — in `'default'` mode the official default Workspace's own directory — it
+asks first.
 
-The dialog's other repair lands in step 3b: the button's action now exists, so it is no longer
-disabled, and the dialog states that a directory will be created at that path **before** offering
-it — this is the only action in the feature that writes to the disk.
+The confirmation is a **second stage of this card**, not a second `Modal`, and that is
+deliberate: measured, two modals would both sit at `z-index: 1000` and each installs its own
+document-level Escape and Tab handler, so one Escape would close both and the focus trap could
+escape outward. Switching the content of one card gets the confirmation with none of that.
+Escape on the confirm stage therefore steps **back** rather than dismissing: the user declined
+the confirmation, not the attempt, and dismissing would make them click New Session again to
+get back.
 
-Nothing else here changed: the button already received `rebuildBaseWorkspace` through the injected
-face, and the Host side lives in `src/index.ts` (`mkdir` then `workspaceRegistry.create`, with the
-path taken from the plugin's own setting rather than from the caller). See `DESIGN.md` for why the
-`'default'` mode is adopted into `'specified'` rather than repaired in place.
+Focus survives the switch for a reason worth recording, because the obvious reasoning is wrong.
+`Modal` focuses `data-modal-autofocus` in an effect keyed on `[dialog, open]`, which a stage
+switch does not re-run — so it looked necessary to move focus by hand. It is not, today: both
+stages render `div > Button, Button`, so React reconciles by position and the first button is
+the same DOM element throughout (marked it in one stage, found the mark on the other, still
+focused). The explicit move stays as insurance against that structure changing — reorder the
+footers and the reuse stops — and the probe's focus assertion passes either way, which is
+recorded rather than presented as proof.
 
 ## Keeping it in sync
 

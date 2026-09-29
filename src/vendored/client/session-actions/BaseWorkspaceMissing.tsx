@@ -18,17 +18,35 @@
  *
  * Order runs most-active first, so the destructive-feeling "取消" sits last.
  *
+ * ## Two stages, one dialog
+ *
+ * The rebuild writes to the disk — in `'default'` mode to the official default Workspace's own
+ * directory — so it asks first. The confirmation is a **second stage of this card**, not a second
+ * `Modal`: measured, two modals would both sit at `z-index: 1000` and each installs its own
+ * document-level Escape and Tab handler, so one Escape would close both and the focus trap could
+ * escape outward. Switching the content of one card gets the confirmation without any of that.
+ *
  * ## Why the two repairs are optional
  *
- * They arrive in later steps — `rebuildBaseWorkspace` with the Host-side directory
- * creation, `chooseBaseWorkspace` with the settings picker. A disabled button that
- * explains itself is honest; a button that appears to work and does nothing is the bug
+ * Both are wired now, but the callbacks stay optional: a composition that supplies neither renders
+ * both buttons disabled, which is honest. A button that appears to work and does nothing is the bug
  * this whole dialog exists to remove.
  */
-import { useState } from 'react'
-import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import { useEffect, useRef, useState } from 'react'
+import {
+  Button, IconWarningOutlineRegular, Modal,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { BaseWorkspaceDialogProps, BaseWorkspaceMissingRequest } from '../contract/slots.ts'
 import browserCss from '../rows/WorkspaceBrowser.module.css'
+
+/**
+ * Which stage the dialog is showing.
+ *
+ * A named union rather than a boolean: the confirmation is the second of a sequence, and a third
+ * ("the rebuild failed, try again") is plausible, where `isConfirming` would then have to become a
+ * pair of flags that can disagree.
+ */
+type Stage = 'report' | 'confirm'
 
 /**
  * Render the missing-Workspace dialog.
@@ -68,6 +86,24 @@ function BaseWorkspaceMissingForm({ request, settle, rebuild, choose, t }: {
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [stage, setStage] = useState<Stage>('report')
+  const confirmRef = useRef<HTMLButtonElement>(null)
+
+  // `Modal` focuses `data-modal-autofocus` in an effect keyed on `[dialog, open]`, so a stage switch
+  // does not re-run it.
+  //
+  // Measured, because the obvious reasoning is wrong: this is **not** currently load-bearing. Both
+  // stages render `<div><Button/><Button/>…</div>`, so React reconciles by position and the first
+  // button is the *same DOM element* across the switch — marked it in one stage and found the mark
+  // on the other, still focused — and the browser keeps focus on an element that was never replaced.
+  // Removing this effect does not fail the probe today.
+  //
+  // It stays as insurance against exactly that fragile structure: reorder the two stages' footers,
+  // wrap one in a fragment, or give the primary action a different position, and the reuse stops and
+  // focus silently falls to nothing. The cost is one effect that is a no-op in the current layout.
+  useEffect(() => {
+    if (stage === 'confirm') confirmRef.current?.focus()
+  }, [stage])
 
   const run = (action: () => Promise<void>): void => {
     setBusy(true)
@@ -83,58 +119,104 @@ function BaseWorkspaceMissingForm({ request, settle, rebuild, choose, t }: {
     })
   }
 
+  const close = (): void => {
+    // A rebuild in flight cannot be cancelled by closing the dialog — the request is already
+    // sent — so Escape must not pretend otherwise.
+    if (busy) return
+    // On the confirm stage, Escape and a mask click step **back** rather than dismissing the
+    // report: the user declined the confirmation, not the whole attempt, and dismissing would make
+    // them click New Session again to get back here.
+    if (stage === 'confirm') {
+      setStage('report')
+      return
+    }
+    settle()
+  }
+
   return (
     <Modal
       open
-      onClose={() => { if (!busy) settle() }}
+      onClose={close}
       closeLabel={t('close')}
-      title={t('baseMissing.title')}
-      footer={(
-        <div className={browserCss.baseMissingActions}>
-          <Button
-            variant="primary"
-            disabled={busy || rebuild === undefined}
-            onClick={() => { if (rebuild !== undefined) run(rebuild) }}
-          >
-            {t('baseMissing.rebuild')}
-          </Button>
-          <Button
-            variant="outline"
-            disabled={busy || choose === undefined}
-            onClick={() => {
-              // The chooser lives on the settings card, so this hands the user to another page.
-              // The report is consumed **first**: a report left pending would still be on screen
-              // when the user arrives there, stacking a dialog about a missing Workspace over
-              // the one asking them to pick a replacement.
-              settle()
-              choose?.()
-            }}
-          >
-            {t('baseMissing.respecify')}
-          </Button>
-          <Button
-            variant="ghost"
-            disabled={busy}
-            data-modal-autofocus
-            onClick={() => { if (!busy) settle() }}
-          >
-            {t('cancel')}
-          </Button>
-        </div>
-      )}
+      title={stage === 'confirm' ? t('baseMissing.confirmTitle') : t('baseMissing.title')}
+      footer={stage === 'confirm'
+        ? (
+          <div className={browserCss.baseMissingActions}>
+            <Button
+              ref={confirmRef}
+              variant="primary"
+              disabled={busy || rebuild === undefined}
+              onClick={() => { if (rebuild !== undefined) run(rebuild) }}
+            >
+              {busy ? t('baseMissing.confirmBusy') : t('baseMissing.confirmAction')}
+            </Button>
+            <Button variant="outline" disabled={busy} onClick={() => { setStage('report') }}>
+              {t('baseMissing.confirmBack')}
+            </Button>
+          </div>
+        )
+        : (
+          <div className={browserCss.baseMissingActions}>
+            <Button
+              variant="primary"
+              disabled={busy || rebuild === undefined}
+              // The rebuild writes to the disk, so it asks first. This is a stage change, not a
+              // second dialog — see the module note.
+              onClick={() => { setStage('confirm') }}
+            >
+              {t('baseMissing.rebuild')}
+            </Button>
+            <Button
+              variant="outline"
+              disabled={busy || choose === undefined}
+              onClick={() => {
+                // The chooser lives on the settings card, so this hands the user to another page.
+                // The report is consumed **first**: a report left pending would still be on screen
+                // when the user arrives there, stacking a dialog about a missing Workspace over
+                // the one asking them to pick a replacement.
+                settle()
+                choose?.()
+              }}
+            >
+              {t('baseMissing.respecify')}
+            </Button>
+            <Button
+              variant="ghost"
+              disabled={busy}
+              data-modal-autofocus
+              onClick={() => { if (!busy) settle() }}
+            >
+              {t('cancel')}
+            </Button>
+          </div>
+        )}
     >
-      <p className={browserCss.baseMissingBody}>{t('baseMissing.body')}</p>
-      <p className={browserCss.baseMissingPath} role="note">
-        {request.path === null
-          ? t('baseMissing.pathUnknown')
-          : t('baseMissing.path', { path: request.path })}
-      </p>
-      {/* The rebuild is the only action here that writes to the disk, so it says so before it
-        * does. Only shown while it is actually offered: an absent callback means a disabled
-        * button, and describing an action the user cannot take would just be noise. */}
-      {rebuild !== undefined && (
-        <p className={browserCss.baseMissingHint}>{t('baseMissing.rebuildHint')}</p>
-      )}
+      {stage === 'confirm'
+        ? (
+          <>
+            <div className={browserCss.baseMissingConfirm} role="alert">
+              <IconWarningOutlineRegular size={18} className={browserCss.baseMissingConfirmIcon} />
+              <p>{t('baseMissing.confirmBody')}</p>
+            </div>
+            {/* The path again, because the confirmation is precisely about **which** directory is
+              * about to be created — the one thing the user must be able to check here. */}
+            <p className={browserCss.baseMissingPath} role="note">
+              {request.path === null
+                ? t('baseMissing.pathUnknown')
+                : t('baseMissing.path', { path: request.path })}
+            </p>
+          </>
+        )
+        : (
+          <>
+            <p className={browserCss.baseMissingBody}>{t('baseMissing.body')}</p>
+            <p className={browserCss.baseMissingPath} role="note">
+              {request.path === null
+                ? t('baseMissing.pathUnknown')
+                : t('baseMissing.path', { path: request.path })}
+            </p>
+          </>
+        )}
       {error !== null && <div className={browserCss.renameError} role="alert">{error}</div>}
     </Modal>
   )

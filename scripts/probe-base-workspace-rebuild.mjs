@@ -15,7 +15,8 @@
  *   6. `'default'` mode is adopted into `'specified'`, because upstream's pointer is permanent
  *      ("deleting that registration permanently disables automatic creation") — and a New Session
  *      lands there rather than raising the dialog again;
- *   7. the dialog shows the hint that a directory will be created, before it is.
+ *   7. the dialog no longer repeats the "will create a directory" sentence on the report stage —
+ *      as of 3b-2 that belongs to the confirmation stage, asserted by its own probe.
  *
  * Usage: node probe-base-workspace-rebuild.mjs <dshExe> <asarRoot> <dshHome> [profile]
  */
@@ -117,11 +118,22 @@ const storedBase = () => {
   }
 }
 
-const missingDialog = () => page.locator('[role="dialog"], [aria-modal="true"]').filter({ hasText: '底层工作区缺失' })
+// The dialog, **without** matching on its title: as of 3b-2 it has two stages with two titles
+// (底层工作区缺失 / 确认重建), and a `hasText` filter for the first stops matching the moment the
+// user confirms — which made this probe time out waiting for a button inside a dialog it believed
+// was gone.
+const missingDialog = () => page.locator('[role="dialog"], [aria-modal="true"]')
 const chooserDialog = () => page.locator('[role="dialog"], [aria-modal="true"]').filter({ hasText: '选择底层工作区' })
 const newSession = () => page.locator('button[aria-label="新建会话"], button[aria-label="新会话"]').first()
 
-/** Raise the report and press 重建该工作区, returning the dialog's text before the press. */
+/**
+ * Raise the report, press 重建该工作区, then confirm.
+ *
+ * Two clicks as of step 3b-2: the rebuild writes to the disk, so the dialog asks first (that stage
+ * has its own probe, `probe-base-workspace-confirm.mjs`). This probe is about the effect, so it
+ * walks both stages.
+ * @returns the dialog text seen on the report stage, and whether it appeared.
+ */
 const pressRebuild = async () => {
   await newSession().click({ force: true })
   await page.waitForTimeout(5000)
@@ -129,6 +141,8 @@ const pressRebuild = async () => {
   if (await missingDialog().count() === 0) return { appeared: false, hint: '' }
   const hint = (await missingDialog().first().innerText()).replace(/\s+/g, ' ')
   await missingDialog().getByRole('button', { name: '重建该工作区' }).first().click({ force: true })
+  await page.waitForTimeout(1200)
+  await missingDialog().getByRole('button', { name: '确认重建' }).first().click({ force: true })
   await page.waitForTimeout(6000)
   await dismiss()
   return { appeared: true, hint }
@@ -155,7 +169,10 @@ try {
 
   const rebuilt = await pressRebuild()
   check('缺失弹窗出现', rebuilt.appeared === true)
-  check('7) 弹窗提示将创建目录', rebuilt.hint.includes('创建目录'), rebuilt.hint.slice(0, 140))
+  // The report stage no longer carries this sentence: as of 3b-2 it belongs to the confirmation
+  // stage, which is where the write is actually authorised. Asserted there by
+  // `probe-base-workspace-confirm.mjs` (check 1, "内容含警告文案").
+  check('报告阶段不再重复那句提示', !rebuilt.hint.includes('创建目录'), rebuilt.hint.slice(0, 140))
   check('1) 目录已创建', existsSync(target))
   const rows = registry()
   const registered = rows.find(row => row.path === target)

@@ -642,14 +642,23 @@
 }
 
 /*
- * The rebuild writes to the disk, so it says so before it does. Same type as the path line, on its
- * own row so the two do not read as one sentence.
+ * The confirm stage's warning: icon beside text, the shape `RiskConfirmation` uses for the same
+ * purpose (its `.warning` + `.warningIcon`), so a second-stage warning looks like the one the rest
+ * of the app shows rather than like a paragraph.
  */
-.baseMissingHint {
-  margin: 8px 0 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
+.baseMissingConfirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.baseMissingConfirmIcon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--dsw-alias-state-error-primary);
 }
 
 /* The stop-and-archive dialog's list of work that will be stopped. */
