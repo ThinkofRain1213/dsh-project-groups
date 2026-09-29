@@ -350,6 +350,79 @@ try {
   }
 
   console.log('')
+  console.log('=== 10. 「更换…」按钮在选中的卡片上要看得出来（用户报的第二点）===')
+  //
+  // The control first used `--dsw-alias-bg-module-platform`, the very fill the *selected*
+  // card uses, so on the selected card it had no visible edges. Measured: a real border
+  // and a background distinct from the card's own fill.
+  await modeCard('指定工作区').click({ force: true })
+  await page.waitForTimeout(1500)
+  // Close the chooser if it opened (a gone memory opens it), then re-open deliberately.
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(800)
+  const distinguish = await card().locator('[role="button"]').filter({ hasText: '更换' }).first().evaluate((node) => {
+    const button = node
+    const cube = node.closest('button')
+    const buttonStyle = getComputedStyle(button)
+    const cubeStyle = cube === null ? null : getComputedStyle(cube)
+    return {
+      borderWidth: buttonStyle.borderTopWidth,
+      borderColor: buttonStyle.borderTopColor,
+      buttonFill: buttonStyle.backgroundColor,
+      cubeFill: cubeStyle?.backgroundColor ?? null,
+    }
+  })
+  console.log(`  ${JSON.stringify(distinguish)}`)
+  const borderVisible = Number.parseFloat(distinguish.borderWidth) > 0
+    && distinguish.borderColor !== 'rgba(0, 0, 0, 0)'
+  check('10) 「更换…」有可见边框', borderVisible,
+    `border=${distinguish.borderWidth} ${distinguish.borderColor}`)
+  check('10) 「更换…」的底色与卡片底色不同（不再糊在一起）',
+    distinguish.buttonFill !== distinguish.cubeFill,
+    `button=${distinguish.buttonFill} cube=${distinguish.cubeFill}`)
+
+  console.log('')
+  console.log('=== 11. 切回默认再切回指定：记忆保留，不用重选（用户报的第一点）===')
+  //
+  // The Host used to strip `path`/`name` on a `'default'` write, so switching away
+  // discarded the choice and switching back had to ask again — reported as "cannot
+  // persist". The memory must survive.
+  //
+  // Pick a known Workspace first so the assertions have a definite value.
+  await card().locator('[role="button"]').filter({ hasText: '更换' }).first().click({ force: true })
+  await page.waitForTimeout(1200)
+  const picker = page.locator('[role="dialog"], [aria-modal="true"]').filter({ hasText: '选择底层工作区' })
+  await picker.locator('[role="option"]').first().click({ force: true })
+  await picker.getByRole('button', { name: '确认' }).first().click({ force: true })
+  await page.waitForTimeout(1800)
+  const remembered = storedBase()
+  console.log(`  选定的: ${JSON.stringify(remembered)}`)
+  check('11) 先成功存下一个 specified', remembered?.mode === 'specified' && typeof remembered?.path === 'string',
+    JSON.stringify(remembered))
+
+  await modeCard('默认工作区').click({ force: true })
+  await page.waitForTimeout(1800)
+  const afterDefault = storedBase()
+  console.log(`  切到默认后: ${JSON.stringify(afterDefault)}`)
+  check('11) 切到默认后 mode 是 default', afterDefault?.mode === 'default', JSON.stringify(afterDefault))
+  check('11) 但 path/name 作为记忆被保留（不被清空）',
+    afterDefault?.path === remembered?.path && afterDefault?.name === remembered?.name,
+    `期望 path=${String(remembered?.path)} 实际 path=${String(afterDefault?.path)}`)
+
+  await modeCard('指定工作区').click({ force: true })
+  await page.waitForTimeout(1800)
+  const backToSpecified = storedBase()
+  const cardTextBack = (await card().innerText().catch(() => '')).replace(/\s+/g, ' ')
+  console.log(`  切回指定后: ${JSON.stringify(backToSpecified)}`)
+  console.log(`  卡片文字: ${JSON.stringify(cardTextBack.slice(0, 200))}`)
+  check('11) 切回指定恢复了原选择（没有弹窗要求重选）',
+    backToSpecified?.mode === 'specified' && backToSpecified?.path === remembered?.path,
+    JSON.stringify(backToSpecified))
+  check('11) 卡片直接显示那个工作区名（不是「未选择」）',
+    cardTextBack.includes(remembered?.name ?? '@@@') && !cardTextBack.includes('未选择'),
+    cardTextBack.slice(0, 160))
+
+  console.log('')
   console.log(`=== console errors: ${consoleErrors.length === 0 ? '(none)' : String(consoleErrors.length)} ===`)
   for (const error of consoleErrors.slice(0, 6)) console.log(`  ${error.slice(0, 200)}`)
   check('9) 没有嵌套 button 的 React 报错',

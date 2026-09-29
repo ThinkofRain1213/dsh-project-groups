@@ -137,7 +137,13 @@ export type BaseWorkspaceMode = z.infer<typeof baseWorkspaceMode>
  */
 export const baseWorkspaceSetting = z.object({
   mode: baseWorkspaceMode,
-  /** Required when `mode` is `'specified'`; absent for `'default'`. */
+  /**
+   * The remembered Workspace, **retained even in `'default'` mode**.
+   *
+   * A memory rather than a mode field: keeping it is what lets 默认 → 指定 restore the
+   * user's last pick instead of asking again. Every reader gates on `mode`, so a retained
+   * path is never mistaken for an active one.
+   */
   path: z.string().optional(),
   /** Display name captured when the Workspace was picked. */
   name: z.string().optional(),

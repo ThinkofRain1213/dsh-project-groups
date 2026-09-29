@@ -380,18 +380,25 @@ export class ProjectController extends TypertRemoteService {
   /**
    * Choose the Workspace every New Session this plugin opens lands in.
    *
-   * `'default'` **clears** `path` and `name` rather than leaving them stored: the
-   * resolver branches on `mode`, but a leftover path would keep matching a Workspace
-   * that is no longer the setting, and any "is it still there" reading would consult
-   * the wrong one.
+   * ## `path`/`name` are a **memory**, not part of the mode
    *
-   * A `'specified'` write without a path is refused rather than stored: it would be a
-   * setting that can never resolve, which is the very failure this feature reports.
+   * Switching to `'default'` **keeps** the stored `path` and `name`. They record which
+   * Workspace the user last picked, so switching 默认 → 指定 restores that choice instead
+   * of forcing them to pick again. Clearing them — which this did at first — made the
+   * setting look like it could not be remembered at all, which is exactly how it was
+   * reported.
+   *
+   * Every reader gates on `mode`, so a retained path cannot be mistaken for an active
+   * one: the card's "已不存在" note only fires in `'specified'`, and the resolver branches
+   * on `mode` too.
+   *
+   * A `'specified'` write without a path is still refused: it would be a setting that can
+   * never resolve, which is the very failure this feature reports.
    *
    * The write goes through {@link setGlobal}, which spreads the stored singleton —
    * writing it whole would drop `projectIds` and empty the sidebar.
    * @param request - the chosen mode and, for `'specified'`, the Workspace.
-   * @returns the setting as stored.
+   * @returns the setting as stored, including the retained memory for `'default'`.
    */
   @Remote('setBaseWorkspace')
   async setBaseWorkspace(request: ProjectSetBaseWorkspaceRequest): Promise<ProjectBaseWorkspaceValue> {
@@ -399,8 +406,10 @@ export class ProjectController extends TypertRemoteService {
     if (request.mode === 'specified' && (request.path ?? '') === '') {
       throw new Error('a specified base workspace needs a path')
     }
+    const stored = domain.global.get().baseWorkspace
     const next: BaseWorkspaceSetting = request.mode === 'default'
-      ? { mode: 'default' }
+      // Retained, not cleared: see the note above.
+      ? { mode: 'default', path: stored?.path, name: stored?.name }
       : { mode: 'specified', path: request.path, name: request.name ?? '' }
     await this.setGlobal(domain, { baseWorkspace: next })
     return next

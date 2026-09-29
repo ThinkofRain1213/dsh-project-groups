@@ -84,10 +84,12 @@ export function ProjectGroupsCard({
   const chosen = base.path === undefined
     ? null
     : workspaces.find(item => item.path === base.path) ?? null
-  // A `'specified'` setting whose Workspace is not in the registry. Reported, never
-  // auto-cleared: the user may have removed it by mistake and mean to add it back, and
-  // clearing their choice would decide that for them.
-  const gone = base.mode === 'specified' && base.path !== undefined && base.path !== '' && chosen === null
+  // The remembered Workspace is no longer registered. Deliberately **not** gated on
+  // `mode`: the path survives a switch to 默认 (that is what lets switching back restore
+  // the choice), so a stale memory deserves the note whichever mode is showing.
+  // Reported, never auto-cleared: the user may have removed it by mistake and mean to
+  // add it back, and clearing would decide that for them.
+  const gone = base.path !== undefined && base.path !== '' && chosen === null
   const specifiedLabel = base.path === undefined || base.path === ''
     ? t('baseNotChosen')
     : gone
@@ -157,14 +159,20 @@ export function ProjectGroupsCard({
             aria-pressed={base.mode === 'specified'}
             className={base.mode === 'specified' ? `${css.cube} ${css.selected}` : css.cube}
             onClick={() => {
-              // Choosing "specified" **is** choosing a Workspace, so with none stored
-              // yet this opens the chooser rather than writing. A write here would be
-              // refused — the Host rejects a `'specified'` setting without a path,
-              // precisely because it could never resolve.
-              if (base.path === undefined || base.path === '') { setPicking(true); return }
-              // With a path stored, re-selecting the mode keeps it, so toggling back
-              // and forth does not discard the user's choice.
-              setBaseWorkspace({ mode: 'specified', path: base.path, name: base.name })
+              // Choosing "specified" **is** choosing a Workspace, so this opens the
+              // chooser whenever there is no *usable* memory to restore: nothing stored
+              // yet, or stored but no longer registered. Writing a dead path would be
+              // either refused or silently unresolvable.
+              //
+              // The guard is on `chosen` rather than on `gone` so the narrow below is
+              // real: `gone` is a boolean, and TS cannot see that it implies non-null.
+              if (chosen === null) {
+                setPicking(true)
+                return
+              }
+              // A registered memory is restored directly, which is what makes toggling
+              // 默认 ⇄ 指定 stop asking the user to pick again.
+              setBaseWorkspace({ mode: 'specified', path: chosen.path, name: chosen.title })
             }}
           >
             <span className={css.cubeName}>{t('baseModeSpecified')}</span>

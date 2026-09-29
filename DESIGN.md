@@ -2021,6 +2021,93 @@ path，卡片 handler 走"无 path 就开弹窗"分支；有 path 时
 **`pnpm check`**：**329 断言**（325 + 新 Remote 的 4 条），13 suites 全绿。既有的
 `probe-settings-card`（含"项目顺序未被写坏"）**仍全绿**。
 
+##### 第 2 步的两个缺陷修复（2026-09-29，用户实测报回）
+
+**缺陷一：指定工作区"不能持久化"——切回默认为再切回来又要重选**
+
+**根因是我的错误设计**：第 2 步里我让 Host 在 `'default'` 写入时
+**剥掉 `path`/`name`**，理由是"残留路径会让后续判断读错"。
+后果：切回默认就**抹掉了用户的选择记忆**，切回指定没有东西可恢复 ⇒ 必须重选。
+
+**修正**：`path`/`name` 是**记忆**，不是 mode 的附属字段 —— `'default'` 写入
+**保留**它们。
+
+```ts
+const stored = domain.global.get().baseWorkspace
+const next = request.mode === 'default'
+  ? { mode: 'default', path: stored?.path, name: stored?.name }   // 保留记忆
+  : { mode: 'specified', path: request.path, name: request.name ?? '' }
+```
+
+**为什么安全**：所有读者都**先看 `mode`** 再看 `path`。卡片里 `gone`
+原本写成 `mode === 'specified' && …`，现在改成**只看 path 是否存在**：
+记忆过期时，无论当前是哪个 mode 都该给出"已不存在"的提示。
+
+**连带修正**：切到「指定工作区」时，若记忆的工作区**已不存在**，不能直接写入那个
+死路径，而是**打开选择弹窗**。判据改成 `chosen === null`（TypeScript 才能正确收窄）。
+
+**缺陷二：「更换…」按钮和卡片糊在一起（选中卡片上看不出按钮）**
+
+**根因**：`.cubeAction` 的底色用了 `--dsw-alias-bg-module-platform` ——
+**正是选中卡片的填充色**。于是指定卡片被选中时，按钮背景与卡片背景**完全相同**
+（实测两者都是 `rgb(245,246,247)`）。
+
+**修正**：改成**描边型**（透明底 + `--dsw-alias-border-l3` 边框 + `--dsw-radius-sm`），
+与官方 `Button` 的 `outline` variant 一致（官方给设置页链接用的就是这个中性描边）。
+另加 `:focus-visible` 描边，因为它是 `span` 不是原生 button。
+
+实测：`border=1px rgba(0,0,0,0.12)`、`button=rgba(0,0,0,0)` vs `cube=rgb(245,246,247)`。
+
+**反向对照（两处都做，均如期失败）**：
+
+| 还原的缺陷 | 失败的断言 |
+|---|---|
+| host 重新剥离 path | `11) path/name 作为记忆被保留` — 实际 `path=undefined` |
+| | `11) 切回指定恢复了原选择` |
+| | `11) 卡片直接显示那个工作区名` — 显示「未选择」 |
+| 按钮改回 module-platform 填充 | `10) 有可见边框` — `border=0px` |
+| | `10) 底色与卡片底色不同` — `button=rgb(245,246,247) cube=rgb(245,246,247)` |
+
+**5 条断言失败**，且**逐条复现用户描述的原话**（"糊在一起"、"回来又要重新选"）。
+
+**探针**：`probe-base-workspace-card.mjs` 新增第 10、11 节；
+`probe-base-workspace-write-rejected.mjs` 记录"写入被拒时静默回滚"这一独立缺陷
+（见下）。
+
+##### ⚠️ 一个**已确认但未修**的独立缺陷
+
+**写入被拒绝时用户看不到任何解释**——只有 `console.warn`，界面上什么都不显示。
+用户看到的是卡片"自己跳回去了"。
+
+实测（`probe-base-workspace-write-rejected.mjs`，6 条断言全绿）：把
+`setBaseWorkspace` 桩成失败后，50ms 密集采样得到
+
+```
+t=0.00s  默认=false 指定=true   ← 乐观写入先paint（闪）
+t=0.55s  默认=true  指定=false  ← 回滚（跳回）
+```
+
+而页面上 `alert/note` 为空，只有一条 console warn。
+
+**这个缺陷与老 host 无关**，任何写入失败都会这样。**留待用户决定是否修**
+（范围在 ② 之外，不擅自改）。
+
+##### 附：第 2 步首次实测"闪回默认"的真身（非代码缺陷）
+
+用户重启前报告的"选完立刻跳回默认"，根因是**host 进程陈旧**：
+运行中的 host 启动于 **08:08:17**，而步骤①(11:03)、②(11:50) 的 host 代码
+是之后才写入磁盘的。client bundle 每次刷新都从磁盘重读 ⇒ 卡片是新的；
+host bundle 只在进程启动时载入一次 ⇒ 跑的是**没有 `setBaseWorkspace` 的旧 host**。
+于是乐观写入先paint（闪），RPC 失败后回滚（跳回），回滚清掉 path 后
+再点就走"无 path 开弹窗"分支 ⇒ 用户看到的"循环"。
+
+**旁证**：当时用户的 `storages\project_groups.json` 里 `global` 只有
+`projectIds, newSessionTarget`，**从来没有 `baseWorkspace`**。
+重启后该字段出现，写入即成功。
+
+**教训**：`pnpm build` 之后**必须重启 DSH** 才能让 host 侧改动生效；
+此前的验收探针都在**新起的隔离进程**里跑，所以碰不到这个错配。
+
 ##### 第 1 步实现（2026-09-29）
 
 **触发点**：`startSessionInDefaultWorkspace` 原来在 `prepared === undefined` 时

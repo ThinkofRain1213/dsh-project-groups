@@ -153,14 +153,20 @@
 /*
  * The card's own "change" affordance. A `span`, not a `button`, because the card
  * itself is a button and nesting one is invalid — React logs a validateDOMNesting
- * error for it, and the browser probes fail on console errors. It needs its own
- * hover/focus styling and its own Enter/Space handling as a result.
+ * error for it, and the browser probes fail on console errors.
+ *
+ * **Outlined, not filled.** A filled chip must not use the module-platform surface: that
+ * is exactly the selected card's own fill, so on the selected card the control vanished
+ * into its background (reported). A transparent fill plus a visible stroke reads as a
+ * control on either card state, and it is the neutral stroke the official `Button`'s
+ * outline variant uses for settings links.
  */
 .cubeAction {
-  margin-top: 2px;
+  margin-top: 4px;
   padding: 2px 10px;
-  border-radius: var(--dsw-radius-md);
-  background: var(--dsw-alias-bg-module-platform);
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
   color: var(--dsw-alias-label-primary);
   font-size: 12px;
   line-height: 18px;
@@ -169,6 +175,12 @@
 
 .cubeAction:hover {
   background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* Keyboard users must see where they are, since this is a span rather than a button. */
+.cubeAction:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
 }
 
 /*
