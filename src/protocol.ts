@@ -187,3 +187,17 @@ export interface ProjectSetNewSessionTargetRequest {
 export interface ProjectNewSessionTargetValue {
   readonly target: NewSessionTarget
 }
+
+/**
+ * `defaultWorkspacePath` result: where the official default Workspace would live.
+ *
+ * A pure read, asked for by the missing-底层工作区 dialog so it can name the path
+ * that is gone. `path` is `null` when the OS Documents folder could not be read —
+ * the dialog then says the path is unknown rather than showing a wrong one.
+ *
+ * The Client cannot derive this itself: it starts at the OS Documents folder, which
+ * only the Host can query, and the official derivation is not an exported subpath.
+ */
+export interface ProjectDefaultWorkspacePathValue {
+  readonly path: string | null
+}

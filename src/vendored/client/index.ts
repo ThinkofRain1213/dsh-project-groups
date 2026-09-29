@@ -35,7 +35,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 // Type-only: pulls the Session root standard-hook merge.
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import {
-  type ArchiveSessionInjected, type ForkSessionInjected, menuOpenStateFactory, type PinSessionInjected,
+  type ArchiveSessionInjected, type BaseWorkspaceDialogInjected, type BaseWorkspaceMissingRequest,
+  type ForkSessionInjected, menuOpenStateFactory, type PinSessionInjected,
   type SessionArchiveConfirmInjected, type SessionArchiveConfirmRequest,
   type RenameSessionInjected, type RowToast, type RowToastInjected, type RowToastState, type SessionRenameDialogInjected,
   type WorkspaceBrowserInjected, type WorkspacePickerInjected,
@@ -46,6 +47,7 @@ import { createWorkspaceViewStore } from './stores.ts'
 import type { GroupSource } from './tree.ts'
 import { WorkspaceBrowser } from './rows/WorkspaceBrowser.tsx'
 import { ArchiveSessionMenuItem, ArchiveSessionRowButton, SessionArchiveConfirmDialog } from './session-actions/ArchiveSession.tsx'
+import { BaseWorkspaceMissingDialog } from './session-actions/BaseWorkspaceMissing.tsx'
 import { derive } from './session-actions/derived.ts'
 import { ForkSessionMenuItem } from './session-actions/ForkSession.tsx'
 import { PinSessionMenuItem, PinSessionRowButton } from './session-actions/PinSession.tsx'
@@ -134,6 +136,31 @@ export interface ProjectActions {
    * the shipped behaviour.
    */
   placeUnscopedSession?: ((input: UnscopedPlacement) => void) | undefined
+  /**
+   * Derive the official default Workspace's directory, for the missing-基层工作区
+   * dialog's copy.
+   *
+   * The region cannot do this itself: the path begins at the OS Documents folder,
+   * which only the Host can query, so the caller relays it over its own Remote.
+   * Absent, the dialog reports the path as unknown.
+   * @param request - the report waiting on the path.
+   * @returns the path, or null when it cannot be derived.
+   */
+  defaultWorkspacePath?: ((request: BaseWorkspaceMissingRequest) => Promise<string | null>) | undefined
+  /**
+   * Create the missing 底层工作区 again (directory + registration).
+   *
+   * Absent until that capability lands; the dialog then renders the button disabled.
+   * @returns a promise that resolves once the Workspace exists again.
+   */
+  rebuildBaseWorkspace?: (() => Promise<void>) | undefined
+  /**
+   * Open the picker that re-points the 底层工作区 at an existing Workspace.
+   *
+   * Absent until the settings chooser lands; the dialog then renders the button
+   * disabled.
+   */
+  chooseBaseWorkspace?: (() => void) | undefined
 }
 
 /**
@@ -225,6 +252,23 @@ export function apply(
     }
   const uiWorkspace = new UiWorkspaceService(
     ctx, ctx.remote.directoryPicker, workspaces, sessions, viewInstance.actions, notify, placeUnscoped,
+    // The report is raised synchronously by the failing click, so the path — which
+    // needs a Host round trip — is filled in afterwards. The dialog is already open
+    // by then and shows "path unknown" for that one beat, which is better than
+    // delaying the whole dialog behind a process spawn.
+    request => {
+      baseWorkspaceRequest.set(request)
+      if (request.path !== null) return
+      projectActions?.defaultWorkspacePath?.(request).then(path => {
+        // Only annotate the report still on screen: a second click (or a dismissal)
+        // replaces it, and this answer belongs to the first.
+        if (baseWorkspaceRequest.getSnapshot() !== request) return
+        baseWorkspaceRequest.set({ ...request, path })
+      }).catch(() => {
+        // A failed derivation leaves the dialog saying "path unknown", which is
+        // exactly what it already shows.
+      })
+    },
   )
   ctx.slots.provideRoot({ hooks: { workspaces: workspaces.list } })
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-workspace: dictionaries')
@@ -283,6 +327,9 @@ export function apply(
   // its bound hook.
   const renameRequest = derive(shortcutControls.state, state => state.renameTarget)
   const archiveRequest = createSnapshotStore<SessionArchiveConfirmRequest | null>(null)
+  // The missing-基层工作区 report. Its own store rather than a toast: the toast is a
+  // passing notice, while this needs three decisions and must stay until one is made.
+  const baseWorkspaceRequest = createSnapshotStore<BaseWorkspaceMissingRequest | null>(null)
   const requestSessionRename = shortcutControls.rename
   const unarchiveSession = (sessionId: SessionId): void => {
     uiWorkspace.unarchiveSession(sessionId).catch((reason: unknown) => {
@@ -337,6 +384,16 @@ export function apply(
       await uiWorkspace.archiveSession(sessionId, { stopActivity: true })
       notify({ kind: 'stoppedAndArchived', sessionId })
     },
+  })
+  // The two repairs arrive with their own steps: `rebuildBaseWorkspace` once the Host
+  // can create the directory, `chooseBaseWorkspace` once the settings picker exists.
+  // Until then the dialog renders their buttons disabled, which is why the caller
+  // supplies them rather than this region inventing an action.
+  const baseWorkspaceInjected = (): BaseWorkspaceDialogInjected => ({
+    hooks: { baseWorkspaceRequest },
+    settleBaseWorkspaceMissing: () => { baseWorkspaceRequest.set(null) },
+    rebuildBaseWorkspace: projectActions?.rebuildBaseWorkspace,
+    chooseBaseWorkspace: projectActions?.chooseBaseWorkspace,
   })
   const forkInjected = (): ForkSessionInjected => ({
     forkSession: (sessionId) => {
@@ -452,6 +509,12 @@ export function apply(
     yield ctx.slots.register({
       name: 'shell.overlay', id: 'workspace.session-archive', locale: NS, inject: archiveConfirmInjected,
     }, SessionArchiveConfirmDialog)
+    // The missing-base-workspace dialog: a click that could not land must say so, and
+    // offer the two repairs. It stands alone rather than reusing the toast because it
+    // asks a question instead of reporting one.
+    yield ctx.slots.register({
+      name: 'shell.overlay', id: 'workspace.base-missing', locale: NS, inject: baseWorkspaceInjected,
+    }, BaseWorkspaceMissingDialog)
     // The toast shares the browser's viewing store: it reads the archived
     // filter to drop the archived notice's filter action once rows are visible.
     yield ctx.slots.register({

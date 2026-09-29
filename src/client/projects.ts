@@ -65,6 +65,7 @@ export interface ProjectRemote {
   setExpanded(request: { projectId: string; expanded: boolean }): Promise<RemoteOutcome<unknown>>
   setOrders(request: { orders: Readonly<Record<string, readonly string[]>> }): Promise<RemoteOutcome<unknown>>
   setNewSessionTarget(request: { target: NewSessionTarget }): Promise<RemoteOutcome<unknown>>
+  defaultWorkspacePath(): Promise<RemoteOutcome<{ path: string | null }>>
 }
 
 /** Minimal result shape the mounted namespace answers with. */
@@ -484,6 +485,23 @@ export class ProjectModel {
         for (const listener of [...this.listeners]) listener()
       }
       throw error
+    }
+  }
+
+  /**
+   * Ask the Host where the official default Workspace would live.
+   *
+   * A pure read, used only to label the missing-基层工作区 dialog. A failure is not
+   * propagated: the dialog already renders "path unknown", and turning a label into
+   * a thrown error out of a click handler would be worse than the label.
+   * @returns the derived path, or null when the Host cannot produce one.
+   */
+  async defaultWorkspacePath(): Promise<string | null> {
+    try {
+      const value = unwrap(await this.remote.defaultWorkspacePath(), 'derive the default workspace path')
+      return (value as { path: string | null }).path ?? null
+    } catch {
+      return null
     }
   }
 

@@ -46,6 +46,15 @@ export const zh = {
   'delete.project': '删除项目',
   'delete.project.desc': '将删除项目“{name}”。其中的会话不会被删除，会回到“未分组”。',
   'delete.project.pending': '正在删除项目…',
+  // The missing-底层工作区 dialog. Its own keys rather than a rewrite of any shipped
+  // one: the vendored dictionary stays upstream's copy for re-sync, and the additions
+  // live in one contiguous block so a re-sync can re-add them mechanically.
+  'baseMissing.title': '底层工作区缺失',
+  'baseMissing.body': '它是本插件所有会话的落脚点，缺失时无法新建会话。',
+  'baseMissing.path': '当前：{path}',
+  'baseMissing.pathUnknown': '当前：默认工作区（路径未知）',
+  'baseMissing.rebuild': '重建该工作区',
+  'baseMissing.respecify': '重新指定底层工作区',
   'search.sessions.aria': '搜索会话',
   'search.placeholder': '搜索会话名称',
   'search.clear': '清除搜索',
@@ -174,6 +183,12 @@ export const en = {
   'delete.project': 'Delete project',
   'delete.project.desc': 'This deletes the project “{name}”. Its sessions are not deleted; they return to Ungrouped.',
   'delete.project.pending': 'Deleting project…',
+  'baseMissing.title': 'Base workspace missing',
+  'baseMissing.body': 'It is where every session this plugin creates lands; without it, no session can be started.',
+  'baseMissing.path': 'Missing: {path}',
+  'baseMissing.pathUnknown': 'Missing: the default workspace (path unknown)',
+  'baseMissing.rebuild': 'Re-create this workspace',
+  'baseMissing.respecify': 'Choose another base workspace',
   'search.sessions.aria': 'Search sessions',
   'search.placeholder': 'Search session names',
   'search.clear': 'Clear search',

@@ -4,14 +4,12 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
-    "jsx": "react-jsx",
-    "lib": ["ESNext", "DOM", "DOM.Iterable"],
-    "types": [],
+    "lib": ["ESNext"],
+    "types": ["node"],
     "strict": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "noEmit": true
   },
-  "include": ["src"],
-  "exclude": ["src/index.ts", "src/default-workspace.ts"]
+  "include": ["src/index.ts", "src/default-workspace.ts", "src/spec.ts", "src/protocol.ts"]
 }

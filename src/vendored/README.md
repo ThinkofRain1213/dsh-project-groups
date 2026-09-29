@@ -102,6 +102,11 @@ source with a comment naming the seam.
 | `rows/Rows.tsx` | adds `sessionRowKey(id, groupKey)`: a Session row's animation identity carries its owning group (`session:<id>@<groupKey>`) instead of the bare id (**behaviour change**, see below) | re-add the helper and its doc block |
 | `rows/Rows.tsx` | `SessionNodeItem` takes an optional `rowKey`, and its `data-row-key` is `rowKey ?? sessionRowKey(node.id)` | re-add the prop and the fallback |
 | `rows/WorkspaceBrowser.tsx` | the grouped view passes `sessionRowKey(node.id, group.key)` twice — into `rowKeys` and into the row's `rowKey` — in the same order | re-apply both call sites together |
+| `contract/slots.ts` | adds `BaseWorkspaceMissingRequest` / `BaseWorkspaceDialogInjected` / `BaseWorkspaceDialogProps`: the report a New Session raises when its 底层工作区 is gone | re-add the three declarations |
+| `navigation.ts` | the service takes an optional `onBaseWorkspaceMissing` callback, raised where `startSessionInDefaultWorkspace` previously returned silently (**behaviour change**, see below). Omitted, the flow is unchanged | re-add the parameter and the one call |
+| `session-actions/BaseWorkspaceMissing.tsx` | **new file**: the `shell.overlay` dialog that reports that case and offers the two repairs | re-add the file and its `shell.overlay` registration |
+| `locales.ts` | six `baseMissing.*` keys in both dictionaries, kept in one contiguous block rather than editing a shipped key | re-add the block |
+| `rows/WorkspaceBrowser.module.css` | `.baseMissingActions` (the column footer), `.baseMissingBody`, `.baseMissingPath` | re-add the three rules |
 
 Two invariants keep these patches honest:
 
@@ -321,6 +326,35 @@ the row's own `data-row-key` — because the two are paired by position. They ca
 same helper for that reason. `scripts/probe-row-key-motion.mjs` asserts the four
 transitions, and fails two of its cross-project checks against the shipped key.
 
+**7. A New Session with no resolvable Workspace says so.**
+
+Shipped: `startSessionInDefaultWorkspace` returns as soon as the default Workspace
+cannot be resolved, so clicking New Session did **nothing at all** — no Session, no
+notice, no navigation. The failure notice in `RowToast` does not cover this case: it
+belongs to the *throwing* path (`initializeDefaultWorkspace`'s `catch`), while a
+deleted registration makes `initializeDefault` return `undefined` rather than throw.
+The host-lookup test pins that notice, so it stays.
+
+Now the service raises an optional `onBaseWorkspaceMissing` callback at that point,
+and the region answers it with a dialog: the missing path, then the two repairs —
+re-create the Workspace, or choose another one. Step ① of the rollout wires neither
+repair, so the dialog renders both buttons **disabled** and 取消 is the only live
+action. That is deliberate: a button that appears to work and does nothing is the
+very bug this change removes.
+
+The path comes from the Host (`projectGroups/defaultWorkspacePath`), because it starts
+at the OS Documents folder and no browser can read that. It is filled in *after* the
+dialog opens — the report is raised synchronously by the failing click, and a
+`powershell.exe` spawn must not delay the dialog — so the dialog shows "path unknown"
+for one beat when the Host answers. `src/default-workspace.ts` explains why the
+official derivation is reimplemented rather than imported (its subpath is not in the
+package's `exports`).
+
+Layout: the actions are a **column**, not the shared `Modal` footer's right-aligned
+row. Three equal row actions get about 77px each in the default card, which is less
+than 「重新指定底层工作区」 needs; a column gives each the card's full width. The
+official plugin-manager dialog does the same (`.installFooter { flex-direction: column }`).
+
 ## Keeping it in sync
 
 Upstream ships this package at the same version as the whole harness line, so a
@@ -360,6 +394,7 @@ browser probes that drive a live instance. They are run by hand rather than by
 | `scripts/probe-recent-blank.mjs` | rewrites two projects' `createdAt` with the Host stopped, so the one holding a reused blank Session must lose to the newer one | spawns a server, restarts it |
 | `scripts/probe-new-session-motion.mjs` | records the sidebar frame by frame while a project row's ＋ is pressed, on a blank Session that has been collapsed and re-created, so a placement that renders the previous owner for one frame shows up as a glide instead of a fade | spawns a server; the pre-fix bundle must fail its two cross-project checks |
 | `scripts/probe-row-key-motion.mjs` | samples every Session row each animation frame across all four transitions (a project's ＋, the same ＋ again, another project's ＋, a blank becoming real) plus a cross-group drag, so a glide shows as a run of intermediate positions and a fade as `opacity→opacity`; asserts the blank→real case has no animation at all | spawns a server; the shipped `session:<id>` key must fail its four cross-project checks |
+| `scripts/probe-base-workspace-dialog.mjs` | deletes the default Workspace's **registration** (files and Sessions kept, by design) and then clicks New Session: asserts the dialog appears instead of silence, names the Host-derived path, stacks three full-width non-overflowing actions, leaves the two repairs disabled, and that 取消 closes it without writing | spawns a server; the shipped silent `return` must fail its "dialog appears" check |
 
 `probe-plugin-toggle.mjs` owns its lifecycle deliberately: localStorage is scoped
 to an origin, and an origin includes the port, so running the two profiles on

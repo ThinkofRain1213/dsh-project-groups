@@ -1846,25 +1846,479 @@ tree.ts   labelOf(summary) = workspaceBySession.get(id) ?? workspaceLabel(summar
 
 ### 上游版本
 
-**2. DSH 已发布 `0.2.0-rc.1`，本插件尚未同步。**（用户 2026-09-28 告知）
+**2. 已升级到 `0.2.0-rc.1`；插件在该版本下实测正常。**（2026-09-28）
 
-- 当前 vendor 上游：**0.1.7-rc.2**（`src/vendored/README.md` 的 Provenance 表）
-- 本机已安装的 DSH 也仍是 **0.1.7-rc.2**（实测 `app.asar` 内
-  `@deepseek-ai/dsh-desktop` 与 `dsh-desktop-runtime` 都是该版本）⇒
-  **升级动作与插件无关，是用户手动装新版本**
-- 用户决定：**先不升级，保持稳定**。理由是要先测「同步上游」这件事本身
-- 因此 `src/vendored/` 的 22 个源文件与 6 条 patch 现在都停在 0.1.7-rc.2
-- 升级时要走 `src/vendored/README.md` 的 "Keeping it in sync" 流程：
-  fetch 对应 tag → 重拷 `packages/client/ui-workspace/src/client/` → **逐条重打 6 条 patch**
-  → 重跑 `compare-bundle.mjs` 与全部探针
-- **风险点**：本次的 `sessionRowKey`（patch 6）依赖 `AnimatedRows` 的 `previousRow === undefined`
-  判据与 `Rows.tsx` 的 `data-row-key`，升级时若上游改了这两处，需要重新确认那条不变式
+| 项 | 值 |
+|---|---|
+| 本机安装的 DSH | **0.2.0-rc.1**（实测 `app.asar` 内 `dsh-desktop` 与 `dsh-desktop-runtime`） |
+| 本机安装的官方 `ui-workspace` | **0.2.0-rc.1** |
+| 本插件 vendor 自 | **0.1.7-rc.2** ⇒ **尚未同步** |
+| 插件在 0.2.0 下是否可用 | **✅ 挂载正常、pageerror 0、console error 0**（`scripts/probe-upstream-upgrade.mjs`） |
+
+**重要**：所以"已升级 DSH"与"已同步 vendor"是两件事。当前状态是
+**跑在 0.2.0 的壳上、用 0.1.7 的 vendored 源码**，实测可用——
+因为 vendored bundle 只经 shell 的模块表解析同名 externals、按 id 禁用官方行、
+占用同一个 slot，这三条在 0.2.0 都没变。
+
+**待办：完整同步 vendor**（走 `src/vendored/README.md` 的 "Keeping it in sync"）：
+fetch `0.2.0-rc.1` tag → 重拷 `packages/client/ui-workspace/src/client/` →
+**逐条重打 6 条 patch** → 重跑 `compare-bundle.mjs` 与全部探针。
+
+**升级时最易被冲掉的 patch**（按风险排序）：
+1. `sessionRowKey`（patch 6）依赖 `AnimatedRows` 的 `previousRow === undefined` 判据
+   与 `Rows.tsx` 的 `data-row-key`——上游若动这两处，那条不变式要重新确认
+2. `placeUnscoped` / `beforeOpen`（patch 4、5）改的是 `startSession` 的签名与 `navigation.ts`
+3. `contract/slots.ts` 的子槽位声明（`sidebar.session.row.leading` / `.hover`）——
+   0.2.0 的 `ui-schedule` 依赖它们，见下
+
+### 0.2.0 新增：自动化任务（定时任务）— 待适配
+
+0.2.0 引入调度能力，三个包：`dsh-schedule`（host 半）、`dsh-client-ui-schedule`（界面）、
+`dsh-experimental-schedule-bundle`（用 patch 把前两者插进默认 composition）。
+桌面 profile 已启用 `schedule` + `ui-schedule` 两行。
+
+**实测（`scripts/probe-schedule-integration.mjs`，隔离 profile 同时挂本插件 + 调度）**：
+
+```
+插件侧栏已挂载: true      ← 本插件仍是侧栏所有者
+启动级错误    : pageerror 0 / console error 0
+调度 UI 是否在同一侧栏: ✅ 是（"自动化任务" 入口可见）
+```
+
+**已经天然兼容的部分**（无需改码）：
+
+| 接缝 | 实测 |
+|---|---|
+| 调度界面调用 `ctx.uiWorkspace.startSession()` | **`uiWorkspace` 正是本插件提供的服务**（官方行被 disable）⇒ 该调用**已经**走本插件的默认工作区解析与 `placeUnscoped` 落点策略 |
+| 调度声明的子槽位 `sidebar.session.row.leading` / `sidebar.session.row.hover` | **本插件的 vendored entry 已声明这两个 child**（`contract/slots.ts:130,135`）⇒ 行内标记能渲染 |
+| 调度 host 半自己建会话吗 | **不建**。只监听 `session/created` 与 `agent/created`，每次到期**在原会话里追加**（bundle 注释："delivers each due occurrence as a follow-up in its original Session"）⇒ **不产生新会话，不涉及"单一落脚点"** |
+
+**仍需适配的（待办）**：
+
+- [ ] **端到端验证**：真的建一个定时任务并等它触发，确认 (a) 任务行内标记出现在**项目分组**的行上，
+      (b) 触发时是**原会话追加**而非新建，(c) 不破坏行 key 的跨组淡入
+- [ ] **任务面板与项目分组的关系**：调度面板在 `sidebar.panellist`，是独立 tab；需确认
+      "按会话"的任务目录在项目分组下语义正确
+- [ ] **`probe-upstream-upgrade.mjs` / `probe-schedule-integration.mjs` 纳入常规回归**
+- [ ] 若上游把调度改成"新建会话执行任务"，则需接入 `placeUnscoped` 策略（现在不需要）
 
 ### L4 — 默认工作区与新会话
+
 - [x] 默认工作区探测（按 path）—— 已实现（`initializeDefault`，纯读）
-- [ ] 补建（mkdir + `workspace/create`）—— **未实现**，源码里无 `mkdir` / `workspace/create`；
-  默认工作区被删时**没有自愈路径**
+- [ ] **补建（建目录 + 注册工作区）—— 设计已定，见下节**
 - [x] 新会话（带 workspaceId）+ 自动归类 —— 已实现（`navigation.ts` 的 `placeUnscoped`）
+
+#### 底层工作区设计（2026-09-29 定稿，分三步实现）
+
+**术语**（用户指定）：叫「**底层工作区**」，不叫"默认工作区"——
+因为缺失的可能是默认工作区，也可能是用户指定的工作区。
+
+**它是什么**：本插件**所有新会话的落脚点**（§2「单一落脚点」）。
+项目行 ＋ / 未分组 ＋ / 顶栏按钮，最终都落在它里面。
+
+**为什么由插件管**：项目没有目录（项目 ≠ 工作区），所以需要一个真实目录承接会话。
+官方默认工作区就是那个目录；用户也可以指定别的工作区。
+
+##### 三步走
+
+**顺序（2026-09-29 用户确认调整）**：先弹窗骨架 → 再设置卡片 → 最后新建能力。
+理由：弹窗的两个动作分别依赖后两步，先做骨架能把"静默无反应"立刻变成"明确告知"，
+且每步可独立交付、独立验证。
+
+| 步 | 内容 | 状态 |
+|---|---|---|
+| **1** | **弹窗骨架**：缺失才弹；三个按钮 + **取消可用**，另两个 **disabled** | ✅ **已完成（2026-09-29）** |
+| **2** | **设置卡片**：选默认 / 指定工作区（二选一卡片 + 卡片内「更换…」） | 待做 |
+| **3** | **新建能力**：host 建目录 + 注册工作区 | 待做 |
+
+##### 第 1 步实现（2026-09-29）
+
+**触发点**：`startSessionInDefaultWorkspace` 原来在 `prepared === undefined` 时
+**静默 return**——这就是"点 ＋ 没反应"的根因（`initializeDefault` 返回 `undefined`
+而**不抛错**，所以连已有的 `defaultWorkspaceFailed` toast 都不触发）。
+
+**改动 8 个文件**：
+
+| 文件 | 改动 |
+|---|---|
+| `src/default-workspace.ts` | **新增**：host 侧推导默认工作区路径 |
+| `src/protocol.ts` | 新增 `ProjectDefaultWorkspacePathValue` |
+| `src/index.ts` | 新增 `@Remote('defaultWorkspacePath')`（纯读） |
+| `src/client/remote.ts` | 注册该 descriptor |
+| `src/client/projects.ts` | `ProjectRemote` + `ProjectModel.defaultWorkspacePath()` |
+| `src/client/index.ts` | `projectActions.defaultWorkspacePath` 中继 |
+| `contract/slots.ts` | `BaseWorkspaceMissingRequest` / `...DialogInjected` / `...Props` |
+| `navigation.ts` | 可选 `onBaseWorkspaceMissing` 回调（省略即上游行为） |
+| `session-actions/BaseWorkspaceMissing.tsx` | **新增**：弹窗 |
+| `locales.ts` | 6 个 `baseMissing.*` 键（zh + en） |
+| `WorkspaceBrowser.module.css` | `.baseMissingActions` 等 3 条 |
+
+**关键设计**：
+
+1. **不删已有的 `defaultWorkspaceFailed` toast**——它属于**抛错**路径，
+   而 `verify-new-session.mjs:216` 正断言它。新弹窗属于**返回 `undefined`** 路径。
+   两条并存，互不替代。
+2. **路径异步补入**：报告同步发出（点 ＋ 立即响应），路径由 host 往返拿回后
+   **再补写同一份报告**；窗口期显示"路径未知"，好过让 `powershell.exe` 拖住弹窗。
+   补写前校验"屏幕上还是那份报告"（用对象身份比较），避免覆盖第二次点击。
+3. **两个动作可选**（`rebuildBaseWorkspace` / `chooseBaseWorkspace`）⇒ 缺失时按钮
+   **disabled**。这正是"①可独立交付"的落点。
+4. **`@types/node` + 拆分 tsconfig**：host 半首次需要 Node 内置模块
+   （`node:child_process` / `node:path`），但根 `tsconfig.json` 的 `"types": []`
+   是**刻意**的（阻止 Node 全局流入浏览器 bundle）。
+   ⇒ 新增 `tsconfig.host.json`（`types: ["node"]`），根配置 **exclude** 那两个 host 文件，
+   `typecheck` 脚本跑**两个** config。**已验证 client bundle 不含任何 node 内置**。
+5. **host 用官方 `execFile` 而非 `runNativeCommand`**：后者的类型面在
+   `dsh-native-command` 的 `./types` 入口，且它要求 `window` 参数语义；直接照抄官方
+   那三行命令更贴近上游实现（含 `DoNotVerify`，避免查询自身创建目录）。
+
+**验收（14 项断言全绿，`scripts/probe-base-workspace-dialog.mjs`）**：
+
+```
+1) 正常路径下没有弹窗                                     PASS
+2) 注册已删除                                             PASS
+3) 弹窗出现（不再是静默无反应）                            PASS
+3) 弹窗文案含"底层工作区缺失"                              PASS
+3) 弹窗显示了 Host 推导的路径                              PASS
+4) 三个按钮竖排（top 递增 369→413→457）                    PASS
+4) 三个按钮等宽全宽 [332,332,332]                          PASS
+4) 文案全部放得下（84/126/28 vs 可用 304）                 PASS
+5) 「重建该工作区」disabled                                PASS
+5) 「重新指定底层工作区」disabled                          PASS
+5) 「取消」可用                                            PASS
+4) 取消后弹窗关闭                                          PASS
+4) 取消后插件状态未变                                      PASS
+5) 再次点击仍然弹窗                                        PASS
+```
+
+**反向对照**：把 `navigation.ts` 恢复成静默 `return` 后重建，
+**恰好失败"弹窗出现"一条**（`count=0`），其余通过；恢复后源码
+SHA256 逐字节一致（`2F8B3CF0…`）。
+
+**`pnpm check`**：**325 断言**（原 321 + 新 Remote 的 4 条 descriptor 断言），
+13 suites 全绿。
+
+##### 设置页的语义（2026-09-29 定稿）
+
+**位置**：与「新会话落点」**同一张卡片、同一个页面**（插件 → dsh-project-groups → 详情页）。
+现有 `ProjectGroupsCard` 注册在 `plugins.bundle.config`（`src/client/index.ts:163-181`），
+**加一行即可**，不需要新注册。
+
+**形态**：按用户的定稿——**照官方「外观」行的二选一卡片**，卡片内部额外放一个
+"从已有工作区选择"的按钮。
+
+```
+底层工作区
+┌────────────────────────┐  ┌────────────────────────┐
+│        默认工作区        │  │       指定工作区         │
+│  …\Documents\deepseek-  │  │   D:\我的项目            │
+│  harness\default-workspace│  │   [ 更换… ]             │  ← 卡片内部
+└────────────────────────┘  └────────────────────────┘
+```
+
+**「更换…」的行为**（用户定）：点击后**实时读 `workspaces.list` snapshot**，
+列出**真实存在的工作区**供选。
+
+- **可选范围 = 所有工作区，包含默认工作区本身**（用户明确）。
+  这让"指定"成为一种**显式固定**：用户可以把当前那个默认工作区钉住，
+  于是即使日后 registry 的默认变了，插件仍落在它上面。
+- **一个工作区都没有时**：显示「**暂无工作区**」。
+- **只读 snapshot，不逐个 `stat` 目录**：官方注册表就是权威（工作区账 = `sessionIds` 归属）；
+  逐个 stat 会在网络盘/慢盘上卡住 UI。目录被删而注册仍在是另一个问题
+  （那时 `connectWorkspace` 会失败，见下面的弹窗路径）。
+
+**为什么卡片不选 `SegmentedControl`**：官方那个「外观」卡片**不是公共组件**——
+它在 `dsh-client-ui-theme` 里是私有的 `<button>` + CSS Module，而该包**不在本插件
+可导入白名单**（`tsdown.config.ts` 的 `PLATFORM_MODULES` / `INLINE_SAFE` / `TYPE_ONLY`），
+作 value import 会**构建失败**。`ui-primitives` 里的 `SegmentedControl` 是公共组件，
+但它是**标签式**的分段控件，**不是卡片外观**，与用户要的观感不符。
+
+⇒ 照本项目一贯做法：**抄那 6 条 CSS**（共 850 字符，全用主题变量，深浅色自动跟随）。
+实测取自 `dsh-client-ui-theme/lib/client.js`：
+
+```css
+.group  { border-bottom:.5px solid var(--dsw-alias-border-l2); flex-direction:column; gap:8px; padding:16px 0; display:flex }
+.title  { color:var(--dsw-alias-label-primary); font-size:14px; font-weight:400; line-height:22px }
+.row    { flex-wrap:wrap; align-items:stretch; gap:8px; display:flex }
+.cube   { box-sizing:border-box; border:.5px solid var(--dsw-alias-border-l4);
+          border-radius:var(--dsw-radius-xl); font:inherit; color:var(--dsw-alias-label-primary);
+          cursor:pointer; background:0 0; flex-direction:column; flex:180px;
+          justify-content:center; align-items:center; gap:4px; padding:20px 32px;
+          font-size:14px; line-height:22px; display:flex }
+.cube:hover:not(.selected) { background:var(--dsw-alias-interactive-bg-hover) }
+.selected { background:var(--dsw-alias-bg-module-platform); border-color:var(--dsw-static-neutral-bluish-400) }
+```
+
+`flex: 180px` + `flex-wrap: wrap` ⇒ 宽度自适应，两张卡片各占一半。
+
+##### 卡片内的按钮：容器选型（2026-09-29 定稿，实测）
+
+用户问"能不能把按钮放卡片里面，点按钮不透到卡片"。
+**能**——但**卡片本身是 `<button>`**，而 HTML 禁止 button 含交互后代，
+且 **React 会为此告警**。四条路径实测（`scripts/probe-card-nesting-options.mjs`、
+`scripts/probe-react-button-nesting.mjs`）：
+
+| 结构 | `stopPropagation` 后点击 | React 18 开发版告警 | 卡片语义 |
+|---|---|---|---|
+| `button > button` | ✅ 只触发内部 | ❌ **`validateDOMNesting` error** | 原生 |
+| `div[role=radio] > button` | ✅ 只触发内部 | ✅ 无 | 需自实现键盘/aria |
+| `div > (button, button)` 兄弟 | —（不嵌套） | ✅ 无 | 卡片非控件 |
+| **`button > span[role=button][tabindex=0]`** ← **选定** | ✅ 只触发内部 | ✅ **无** | **原生 button** |
+
+**选最后一个**：卡片仍是真正的 `<button>`（与官方 `themeCube` 一致），
+内部"更换…"用 `span[role=button][tabindex=0]`。
+React 的校验**只认标签名、不认 ARIA role**，而 HTML 的"交互内容"是一个固定标签列表
+（不含 `span`）⇒ 两者都满足。
+
+**两条必须遵守的实现约束**：
+
+1. **必须 `stopPropagation`**：实测不加则点击同时触发卡片（`["inner","card"]`），
+   即"点选择顺手切换了模式"。
+2. **`span[role=button]` 要自己处理 Enter / Space**：原生 button 自动支持，
+   span 不会。加上 `tabindex=0` 才可聚焦（实测可聚焦）。
+
+##### 为什么"不自动降级为未指定"（用户纠正）
+
+```
+底层工作区
+  指定工作区   D:\我的项目          ← 保留用户的选择，不自动清空
+                ⚠ 该工作区已不存在   ← 只标注事实，不改状态
+```
+
+理由（用户指出）：用户可能是**误删**了官方的工作区，插件不该替他做决定——
+"如果他不想换呢？"
+
+⇒ 官方的删除**不该单方面改插件的配置**。这正是"官方归官方、我们归我们、
+互不影响"的直接推论。设置页只**呈现两个信号**（我的选择 / 它已失效），
+由用户决定下一步。
+
+**只从已有工作区里选**（用户指定），不调目录选择器——
+既符合"指定 = 从现有的挑一个"，也**顺带绕开了桌面端不能建目录的能力限制**（见下表事实 2）。
+
+**切换卡片立即写盘**（用户同意），与「新会话落点」一致，用乐观写入。
+
+**"选了指定义没选工作区"**（用户同意）：写入模式、路径为空 ⇒ 卡片显示"未选择"，
+点新建会话时**弹窗引导去选**。
+
+##### 弹窗：**竖排三个全宽按钮**（2026-09-29 定稿）
+
+```
+底层工作区缺失
+  当前：D:\我的项目（已不存在）
+  它是本插件所有会话的落脚点，缺失时无法新建会话。
+
+  [        重建该工作区        ]   ← variant="primary"（最主动，最上）
+  [    重新指定底层工作区      ]   ← variant="outline"
+  [            取消           ]   ← variant="ghost"（最弱，最下）
+```
+
+**顺序 = 上→下 由主动到被动**，三个按钮**等宽全宽**。
+
+- **默认工作区**缺失时**用同一个弹窗**（`当前：…\default-workspace（已不存在）`）
+  ⇒ 不需要"两种模式"，一套 UI 覆盖全部
+- 「重建该工作区」→ 按原 path 建目录 + 注册
+- 「重新指定底层工作区」→ 从已有工作区里选（设置页同一套规则）
+
+**为什么竖排**（实测，`scripts/probe-modal-vertical-actions.mjs`）：
+
+| 布局 | 380px 对话框下每按钮宽度 | 用户措辞「重新指定底层工作区」(需 126px) |
+|---|---|---|
+| 横排三等分 | 105px（可用 **77px**） | ❌ **溢出**，须把对话框加宽到 460px |
+| **竖排全宽** | **332px（可用 304px）** | ✅ **绰绰有余** |
+
+竖排实测：三个按钮 `top` 递增 `359 → 403 → 447`（确实竖排）；
+对话框高 `206px → 294px`（撑高 88px，第三行未被裁）；
+`footer` 原为 `display:flex; flex-direction:row; justify-content:flex-end`，
+**换成 column 容器即可**，无需改动 `Modal` 组件。
+
+**这正是官方自己的做法**：`dsh-client-ui-plugin-manager` 的「添加插件」弹窗就是
+
+```css
+.installFooter { flex-direction: column; gap: 20px; display: flex }
+.installDialog { width: min(560px, 100%) }
+```
+
+⇒ 同一个 `Modal` 组件、`footer` 里放一个 column 容器、配全宽 `Button`。
+**观感与官方 100% 一致，且不需要把对话框加宽。**
+
+**按钮视觉权重**：竖排等宽时三者样式若相同则分不清主次，
+故用官方 `Button` 的三种 variant（实测取值 `outline` / `primary` / `ghost`）分层。
+
+##### 实测技术事实（决定实现形态）
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | **注册工作区：客户端就能做** ✅ | `workspaces.create({ path })` 是公开 RPC，插件已接线（`src/client/index.ts:375,406`） |
+| 2 | **建目录：客户端做不了，必须走 host 半** ❌ | 桌面 composition 是 `directory-picker-auto` → 解析为 **`native`**；`createDirectory` 被 `requireCapability("browse", ...)` 门控。**实测**：`directory-picker/unavailable — needs the browse capability; the composed picker serves "native"`。native 的 capability **只有 `pick`** |
+| 3 | **host 半能建目录** ✅ | 插件 host 半是 Node 进程，可直接 `fs.mkdir`；官方生态 **51 个 host 半包**都直接用 `node:fs` |
+| 4 | **路径推导拿不到官方的** ⚠️ | `defaultWorkspaceDirectory` 在 `lib/types/default-directory.js`，但**不在 `exports` 映射里**，且包**不发 `src/`**（实测 0 个文件）⇒ 只能拿到末段常量 `DEFAULT_WORKSPACE_DIRECTORY='default-workspace'`（来自 `./default-workspace`），**Documents 查询必须自己实现**。Windows 需用 `[Environment]::GetFolderPath(MyDocuments)`——**OneDrive 重定向时与 `homedir()\Documents` 不同** |
+| 5 | **`session/create` 接受 `cwd`** | 契约文档写着 "Create or **adopt** a Session on the Host"，`create({ workspaceId?, cwd?, sessionId? })` |
+
+##### 关键陷阱：`initializeDefault` 删注册后**永久失效**
+
+```
+1. 首次解析默认工作区        → ✅ 返回 workspace
+2. workspace/delete 删注册   → ✅ deleted=true（目录保留）
+3. 再调 initializeDefault    → ❌ 返回 null
+4. 用公开 workspace/create 重注册同一 path → ✅ created=true，但【新 id】
+5. 再调 initializeDefault    → ❌ 仍返回 null
+```
+
+原因（代码）：`defaultWorkspaceId` **只在 `createCanonical` 的 `firstUse` 分支写一次**、
+**从不清除**；`initializeDefault` 开头就是
+
+```js
+if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultWorkspaceId)
+```
+
+删注册后该 id 悬空 ⇒ 立即返回 `undefined`，**在资格检查与目录解析之前**。
+新注册拿到**新 id**，`defaultWorkspaceId` 指向旧 id ⇒ **永不匹配**。
+
+⇒ **必须改为"按 path 解析"**（在 `workspaces.list` snapshot 里按 `path` 查），
+这就是 §3.8「查找必须按 path，不能按 title」的加强版。
+
+##### 「重建」的实际效果（实测，**不修复旧会话的归属**）
+
+删注册后用同 path 重注册 ⇒ **新 id、`sessionIds = []`**；重启（重建 cwd 索引）后
+**仍不认领**旧会话。该会话此后渲染在 `未分组` 下。
+
+**但这不影响本插件**：我们的分组**不看工作区账**，只看 `assignments` 表 ⇒
+工作区注册没了，会话的 `cwd` 与项目归属**都没变**，**照常显示在原项目下**。
+"工作区账"只影响 ① 官方侧栏 ② 我们新会话的落脚点。
+
+⇒ **「重建」的收益是"新会话重新有地方落"**，不是"找回旧会话的去向"。
+
+##### 实现分工
+
+| 步骤 | 位置 | 手段 |
+|---|---|---|
+| 检查底层工作区是否存在 | 客户端 | `workspaces.list` snapshot **按 path 查** |
+| 建目录 | **host 半** | `fs.mkdir(path, { recursive: true })` |
+| 注册工作区 | 客户端 | `workspace/create { path }`（`create` 要求目录已存在 ⇒ **顺序不能反**） |
+| 记住用户的选择 | host 半（领域） | `projectGroups` 新增 `global.baseWorkspace: { mode, path?, name? }` |
+| 弹窗 / 设置卡 UI | 客户端 | `Modal` + column footer；卡片抄官方外观 CSS |
+
+**存储只存 `path`，不存 `workspaceId`**：实测重注册会拿**新 id**，存 id 必然过期；
+`path` 稳定（§3.8 同结论）。
+
+**设置卡需要新增的注入**（现有卡片只有 `target` / `setTarget` 两项）：
+
+| 注入项 | 类型 | 用途 |
+|---|---|---|
+| `baseWorkspace` | hook（observable） | 读当前 `{ mode, path, name }` |
+| `setBaseWorkspace` | setter | 切换卡片模式时写入 |
+| `workspaces` | hook（observable） | 读 `workspaces.list` snapshot，供"更换…"列出现有工作区 |
+
+前两项与现有两项同构；`workspaces` 正是 vendored 半已经 `provideRoot` 的那个
+（`src/vendored/client/index.ts:229`），**不新增数据源**。
+
+##### 一处既有探针会受影响（实现时必须处理）
+
+`scripts/probe-settings-card.mjs:103` 用
+
+```js
+const pillar = () => card().locator('button[aria-haspopup="menu"]').first()
+```
+
+抓"卡片里第一个下拉框"。**加上第二行后，`.first()` 可能抓到新元素。**
+
+处置：新的「更换…」按钮**不开 Menu**（它开的是选择列表/弹窗），因此**不加**
+`aria-haspopup="menu"`；同时给探针换成更精确的定位（按所在行的标题找），
+而不是靠"第一个"。
+
+##### 弹窗组件选型（实测）
+
+**排除 `RiskConfirmation`**：它的勾选框**是结构的一部分**，拆不掉——
+
+```ts
+interface RiskConfirmationProps { acknowledgeLabel; acknowledged; onAcknowledgedChange; ... }
+// 主按钮 disabled: disabled || !acknowledged
+```
+
+**采用 `Modal` + 自定义 `footer`**：插件**已经在用**这个写法
+（`WorkspacePicker.tsx:204-219` 的"取消 + 重试"两按钮），
+观感与官方 100% 一致（同一个 `Modal` 组件）。
+
+**按钮三等分的配方**（实测生效）：
+
+```css
+.footerAction { flex: 1 1 0; min-width: 0; }
+```
+
+- `flex-basis: 0` 是必须的：只写 `flex-grow: 1` 时基准是**内容宽度**，仍不等宽
+- `min-width: 0` 让长文案可压缩而不撑破
+- **实测**：380px 对话框三等分 ⇒ 各 105px（含 padding）；两等分 ⇒ 各 163/161px
+
+#### 补建设计（2026-09-28 初版，已被上节取代）
+
+**触发**：用户点"新建会话"（项目行 ＋ / 未分组 ＋ / 顶栏按钮）时**检查一次**。
+缺失才弹窗，**不主动自愈**（避免"启动就悄悄建目录"违背用户意图）。
+
+**弹窗**（用户提出）：
+
+```
+默认工作区缺失
+  它是本插件所有会话的落脚点，缺失时无法新建会话。
+  （当前路径：C:\Users\Think\Documents\deepseek-harness\default-workspace）
+  [ 不，我想自己指定目录 ]  [ 确认，新建默认工作区目录 ]
+```
+
+"自己指定目录" → 复用官方目录选择流（`directoryFlow` 槽位已有）→ 注册为工作区并记为插件底座。
+
+**为什么这不违反"不碰底层"**：建目录 + `workspace/create` **都是官方合规路径**
+（`workspace/create` 本就是官方给的客户端 RPC）。
+插件只是**替用户点了一下**，不改任何会话的 `cwd`、不碰归档集、不移动日志。
+
+**三个已实测的技术事实**（决定实现形态）：
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | **注册工作区：客户端就能做** ✅ | `workspaces.create({ path })` 已是公开 RPC，插件已接线（`src/client/index.ts:375,406`） |
+| 2 | **建目录：客户端做不了，必须走 host 半** ❌ | 桌面 composition 是 `directory-picker-auto` → 解析为 **`native`** 后端；而 `createDirectory` 被 `requireCapability("browse", ...)` 门控。**实测**：`directory-picker/unavailable — needs the browse capability; the composed picker serves "native"`。native 的 capability **只有 `pick`**，没有建目录能力 |
+| 3 | **host 半能建目录** ✅ | 插件 host 半是 Node 进程，可直接 `fs.mkdir`；官方生态 **51 个 host 半包**都直接用 `node:fs`，做法一致 |
+
+**关键陷阱（实测，决定解析策略）**：
+
+`initializeDefault` 一旦注册被删就**永久失效**：
+
+```
+1. 首次解析默认工作区        → ✅ 返回 workpace（path=…\default-workspace）
+2. workspace/delete 删注册   → ✅ deleted=true（目录保留）
+3. 再调 initializeDefault    → ❌ 返回 null（不补建）
+4. 用公开 workspace/create 重新注册同一路径 → ✅ created=true，但【新 id】
+5. 再调 initializeDefault    → ❌ 仍返回 null
+```
+
+原因（代码）：`defaultWorkspaceId` **只在 `createCanonical` 的 `firstUse` 分支写一次**，
+**从不清除**；而 `initializeDefault` 开头就是
+
+```js
+if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultWorkspaceId)
+```
+
+删注册后该 id 悬空 ⇒ 立即返回 `undefined`，**在资格检查与目录解析之前**。
+新注册拿到**新 id**，`defaultWorkspaceId` 指向旧 id ⇒ **永不匹配**。
+
+⇒ **所以补建后不能依赖 `initializeDefault` 找底座，必须改为"按 path 解析"**：
+在 `workspaces.list` 的 snapshot 里按 `path === <底座路径>` 查。
+这也正是 §3.8 早就写下的结论（"查找必须按 path，不能按 title"）的加强版。
+
+**底座路径的来源**：默认取官方推导路径（`defaultWorkspaceDirectory`：
+`<Documents>\deepseek-harness\default-workspace`，§3.8）；用户若"自己指定目录"，
+则该路径存进插件自己的领域（新增 `global.basePath`），此后按它解析。
+
+**实现分工**：
+
+| 步骤 | 位置 | 手段 |
+|---|---|---|
+| 检查底座是否存在 | 客户端 | `workspaces.list` snapshot 按 path 查 |
+| 建目录 | **host 半** | `fs.mkdir(path, { recursive: true })` |
+| 注册工作区 | 客户端或 host | `workspace/create { path }` |
+| 记住用户指定的路径 | host 半（领域） | `projectGroups` 领域新增 `global.basePath` |
+| 弹窗 UI | 客户端 | vendored 目录流 / 新对话框 |
+
+**待确认**：`workspace/create` 客户端 `create({ path })` 要求目录已存在 ⇒
+必须**先** host 建目录、**再** 客户端注册（顺序不能反）。
 
 ### L5 — 工作文档
 - [ ] `docPath` 编辑 UI
@@ -1876,6 +2330,11 @@ tree.ts   labelOf(summary) = workspaceBySession.get(id) ?? workspaceLabel(summar
 - [ ] 单元测试（domain / RPC / 注入 / 补建逻辑）
 - [ ] 每层的"停用插件后回到原版 DSH"回归测试
 - [ ] vendor 重新同步流程演练（升到下一个 DSH 版本时）
+- [ ] **光标样式（`cursor: pointer`）统一检查**——用户 2026-09-29 提出。
+      现有插件 CSS 已有 10 处 `cursor: pointer`（`Rows.module.css:9,34,404`、
+      `WorkspaceBrowser.module.css:28,190,243,523,565`、`settings-card.module.css:58`），
+      但新做的**弹窗 / 设置页**要确认每个可点元素都有指针光标。
+      **等这个页面（底层工作区）做完后看实际效果再统一处理**，不现在改。
 
 ---
 

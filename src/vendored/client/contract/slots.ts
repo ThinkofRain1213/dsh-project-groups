@@ -523,6 +523,63 @@ export interface RowToastInjected {
   showArchived: () => void
 }
 
+/**
+ * One New Session that could not land because its 底层工作区 is gone.
+ *
+ * The region raises this instead of doing nothing, which is what the shipped flow
+ * does: `startSessionInDefaultWorkspace` returns silently when the default Workspace
+ * cannot be resolved, so the click had no visible effect at all.
+ */
+export interface BaseWorkspaceMissingRequest {
+  /**
+   * Which choice is missing.
+   *
+   * `'default'` is the official default Workspace, which the region resolves from
+   * the registry. `'specified'` is a Workspace the user pinned in the plugin's
+   * settings. The two differ in what the dialog may offer, not in how it looks.
+   */
+  readonly mode: 'default' | 'specified'
+  /**
+   * The path that is gone, when known.
+   *
+   * Always known for `'specified'` (the plugin stored it). For `'default'` it is
+   * the Host's derivation, which is `null` when the OS Documents folder could not
+   * be read — hence optional rather than assumed.
+   */
+  readonly path: string | null
+  /** The stored display name of a `'specified'` Workspace, for the dialog's copy. */
+  readonly name: string | null
+}
+
+/**
+ * Missing-基层工作区 dialog share: the pending report, its dismissal, and the two
+ * repairs.
+ *
+ * Both repairs are **optional**, and that is what lets the dialog ship before the
+ * features behind them: with a callback absent, its button renders disabled rather
+ * than pretending to act. `rebuildBaseWorkspace` arrives with the Host-side directory
+ * creation; `chooseBaseWorkspace` with the settings picker.
+ */
+export interface BaseWorkspaceDialogInjected {
+  hooks: {
+    /** The report asked for, until the dialog consumes or cancels it. */
+    baseWorkspaceRequest: HostObservable<BaseWorkspaceMissingRequest | null>
+  }
+  /** Consume or cancel the pending report. */
+  settleBaseWorkspaceMissing: () => void
+  /** Create the missing Workspace again; absent until the rebuild lands. */
+  rebuildBaseWorkspace: (() => Promise<void>) | undefined
+  /** Open the Workspace picker; absent until the settings chooser lands. */
+  chooseBaseWorkspace: (() => void) | undefined
+}
+
+/** Props of the missing-基层工作区 dialog entry in `shell.overlay`. */
+export type BaseWorkspaceDialogProps =
+  PropsRuntime<'shell.overlay'>
+  & PropsLocale<'workspace'>
+  & Omit<BaseWorkspaceDialogInjected, 'hooks'>
+  & PropsHooks<BaseWorkspaceDialogInjected['hooks']>
+
 /** Props of the rename dialog entry in `shell.overlay`. */
 export type SessionRenameDialogProps =
   PropsRuntime<'shell.overlay'>

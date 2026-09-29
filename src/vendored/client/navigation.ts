@@ -16,7 +16,7 @@ import type {
 } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
-import type { RowToast } from './contract/slots.ts'
+import type { RowToast, BaseWorkspaceMissingRequest } from './contract/slots.ts'
 import { pinOrderAccounts, pinOrderSource } from './pin-order.ts'
 import type { WorkspaceViewStoreActions } from './stores.ts'
 
@@ -148,6 +148,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
    * caller decides where it goes; this service only supplies the Session that
    * landed and the one the user was looking at. Absent, the Session is left where
    * the default Workspace resolution put it, which is the shipped behaviour.
+   * @param onBaseWorkspaceMissing - optional report for a New Session that could not
+   * land because its 底层工作区 is gone. Absent, the flow is exactly the shipped one:
+   * the click does nothing. The caller supplies the path, since deriving it needs a
+   * Host query this service does not hold.
    */
   constructor(
     ctx: Context,
@@ -157,6 +161,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     private readonly view: Pick<WorkspaceViewStoreActions, 'pinSessionOrder'>,
     private readonly notify: (toast: RowToast) => void,
     private readonly placeUnscoped?: (sessionId: SessionId, currentSessionId: SessionId | undefined) => void,
+    private readonly onBaseWorkspaceMissing?: (request: BaseWorkspaceMissingRequest) => void,
   ) {
     super(ctx, 'uiWorkspace')
     ctx.effect(() => {
@@ -285,7 +290,18 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     beforeOpen?: (sessionId: SessionId) => void,
   ): Promise<void> {
     const prepared = await this.initializeDefaultWorkspace(this.lifetime.signal)
-    if (prepared === undefined) return
+    if (prepared === undefined) {
+      // The shipped flow stops here, and a click therefore had no visible effect at
+      // all: an unresolvable default does not throw, so not even the failure notice
+      // fires (that notice belongs to the *throwing* path, which the host-lookup
+      // test pins). Reporting it is what turns a dead click into a decision.
+      //
+      // `path` is left to the caller: only the Host can derive the default
+      // Workspace's directory, and `UiWorkspaceService` deliberately has no Remote
+      // of its own beyond the directory picker.
+      this.onBaseWorkspaceMissing?.({ mode: 'default', path: null, name: null })
+      return
+    }
     this.openNewSessionIn(prepared.workspaceId, beforeOpen)
   }
 

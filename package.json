@@ -58,7 +58,7 @@
   "scripts": {
     "build": "tsdown",
     "watch": "tsdown --watch",
-    "typecheck": "tsc -p tsconfig.json --pretty false",
+    "typecheck": "tsc -p tsconfig.json --pretty false && tsc -p tsconfig.host.json --pretty false",
     "probe": "node scripts/probe-approach-b.mjs && node scripts/probe-slots.mjs && node scripts/probe-service.mjs && node scripts/probe-grouping-seam.mjs && node scripts/probe-inject-wait.mjs && node scripts/probe-contribution.mjs && node scripts/probe-retention.mjs",
     "verify:bundle": "node scripts/compare-bundle.mjs",
     "verify:patch": "node scripts/verify-patch.mjs",
@@ -78,6 +78,7 @@
     "probe:recent-blank": "node scripts/probe-recent-blank.mjs",
     "probe:new-session-motion": "node scripts/probe-new-session-motion.mjs",
     "probe:row-key-motion": "node scripts/probe-row-key-motion.mjs",
+    "probe:base-workspace-dialog": "node scripts/probe-base-workspace-dialog.mjs",
     "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {
@@ -111,6 +112,7 @@
     "@deepseek-ai/dsh-typert-protocol": "0.1.7-rc.2",
     "@deepseek-ai/dsh-util-values": "0.1.7-rc.2",
     "@deepseek-ai/dsh-util-workspace-path": "0.1.7-rc.2",
+    "@types/node": "^26.6.3",
     "@types/react": "~18.3.1",
     "clsx": "^2.1.1",
     "js-yaml": "^4.3.2",

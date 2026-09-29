@@ -28,6 +28,7 @@ import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { Domain, DomainChanged } from '@deepseek-ai/dsh-storage-domain'
 import type {} from '@deepseek-ai/dsh-storage-domain'
 import { PROJECT_DOMAIN_NAME, projectDomainSpec, type GlobalRecord, type ProjectRecord } from './spec.ts'
+import { defaultWorkspacePath as deriveDefaultWorkspacePath } from './default-workspace.ts'
 import {
   PROJECT_NAMESPACE, PROJECT_SERVICE_KEY,
   type ProjectAssignRequest, type ProjectAssignmentValue, type ProjectBaseline,
@@ -38,6 +39,7 @@ import {
   type ProjectSetExpandedRequest, type ProjectSetNewSessionTargetRequest, type ProjectSetOrdersRequest,
   type ProjectUnassignRequest, type ProjectUnassignValue,
   type ProjectValue, type ProjectValueResult,
+  type ProjectDefaultWorkspacePathValue,
 } from './protocol.ts'
 
 /**
@@ -370,6 +372,24 @@ export class ProjectController extends TypertRemoteService {
     const domain = await this.ready()
     await this.setGlobal(domain, { newSessionTarget: request.target })
     return { target: request.target }
+  }
+
+  /**
+   * Report where the official default Workspace would live.
+   *
+   * The missing-底层工作区 dialog names the path that is gone, and no Client-side
+   * caller can produce it: the derivation starts at the OS Documents folder, which
+   * only this half can query (`src/default-workspace.ts` explains why the official
+   * helper is reimplemented rather than imported).
+   *
+   * A pure read — nothing is created or registered — and `path: null` when the
+   * Documents folder is unreadable, so the dialog can say "unknown" instead of
+   * showing a path it did not verify.
+   * @returns the derived path, or `null`.
+   */
+  @Remote('defaultWorkspacePath')
+  async defaultWorkspacePath(): Promise<ProjectDefaultWorkspacePathValue> {
+    return { path: await deriveDefaultWorkspacePath() }
   }
 
   /**

@@ -121,6 +121,17 @@ const projectActions: ProjectActions = {
       console.warn('place new session rejected:', reason)
     })
   },
+  defaultWorkspacePath: async () => {
+    // `projectModel`, not `requireModel`: this labels a dialog, and a model that has
+    // not started yet must leave the label reading "unknown" rather than throw out
+    // of the relay. Null is that same outcome.
+    const model = projectModel()
+    if (model === undefined) return null
+    return await model.defaultWorkspacePath()
+  },
+  // The two repairs are deliberately absent in this step: `rebuildBaseWorkspace`
+  // needs the Host-side directory creation and `chooseBaseWorkspace` the settings
+  // picker. The dialog renders both buttons disabled until they exist.
 }
 
 /** @returns the started model, or throws when the Remote namespace is absent. */

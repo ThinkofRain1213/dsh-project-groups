@@ -605,6 +605,42 @@
   color: var(--dsw-alias-label-secondary);
 }
 
+/*
+ * The missing-基层工作区 dialog's action stack.
+ *
+ * The shared Modal footer is a right-aligned flex row, which leaves three equal
+ * actions about 77px each in the default card — too little for these labels. A column
+ * gives each action the card's full width, and it is the same shape the official
+ * plugin-manager dialog uses for its own footer.
+ */
+.baseMissingActions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+/* Full-width actions: the point of the stack is that label length stops mattering. */
+.baseMissingActions > button {
+  width: 100%;
+}
+
+.baseMissingBody {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.baseMissingPath {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  /* A long path must wrap rather than widen the card. */
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-tertiary);
+}
+
 /* The stop-and-archive dialog's list of work that will be stopped. */
 .archiveActivity {
   margin: 0 0 8px;
