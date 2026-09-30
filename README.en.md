@@ -59,8 +59,8 @@ See [`DESIGN.md` §24](DESIGN.md) (Chinese).
 
 ## Install
 
-Requires DSH **0.2.0-rc.2**. The plugin currently runs on the 0.2.0 shell with vendored source from
-`0.1.7-rc.2` (the upstream sync process is L4.5 in [`DESIGN.md` §5](DESIGN.md), Chinese).
+Requires DSH **0.2.0-rc.2**. The plugin runs on the 0.2.0 shell with vendored source taken from
+**0.2.0-rc.2** (the upstream sync process is L4.5 in [`DESIGN.md` §5](DESIGN.md), Chinese).
 
 ```bash
 dsh plugin add dsh-project-groups
@@ -128,7 +128,7 @@ Source layout:
 |---|---|
 | `src/index.ts` | Host half: the project domain, the Remotes, base-Workspace rebuild |
 | `src/client/index.ts` | Browser entry: the grouping injection, the settings card, the chooser |
-| `src/vendored/` | Copy of the official client source + **13 registered patches** (see its [README](src/vendored/README.md)) |
+| `src/vendored/` | Copy of the official client source + **41 registered patches** (see its [README](src/vendored/README.md)) |
 | `scripts/` | Probes and verification; `DESIGN.md` explains what each proves |
 | `DESIGN.md` | Architecture, verified harness facts, the layer plan and the extra-feature list (Chinese) |
 
@@ -136,7 +136,8 @@ Source layout:
 
 `src/vendored/` **started** as a byte-identical copy of upstream
 `packages/client/ui-workspace/src/` at `dsh-v0.1.7-rc.2`, but is **no longer byte-identical**:
-project grouping needed a grouping seam, and there are now **13 structural patches across 10 files**.
+project grouping needed a grouping seam, and there are now **41 structural patches across 10 files**.
+The current source version is **0.2.0-rc.2**.
 
 Every one satisfies the same invariant — **omitted means upstream behaviour** — and all are listed
 in the patch table in [`src/vendored/README.md`](src/vendored/README.md). **That table is the only

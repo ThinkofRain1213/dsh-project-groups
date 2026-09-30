@@ -142,6 +142,13 @@ const client = {
     name: 'dsh-client-bundle-purity',
     resolveId(source, importer) {
       if (importer === undefined) return null // entry: always internal
+      // The shell module table is answered whatever the scope. React is the case
+      // that matters: it is a devDependency here (the shell supplies 18.3.1) and
+      // NOT a peer, so without this branch rolldown would inline a second React
+      // into the bundle — the duplicate-instance failure the gate exists to catch.
+      // `compare-bundle.mjs` asserts our externals still equal the official
+      // bundle's, which keeps this branch honest.
+      if (PLATFORM_MODULES.includes(source)) return { id: source, external: true }
       if (!source.startsWith('@deepseek-ai/')) return null
       switch (classifySpecifier(source)) {
         case 'external':

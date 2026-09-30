@@ -60,6 +60,7 @@
   "scripts": {
     "build": "tsdown",
     "watch": "tsdown --watch",
+    "prepublishOnly": "pnpm check",
     "typecheck": "tsc -p tsconfig.json --pretty false && tsc -p tsconfig.host.json --pretty false",
     "probe": "node scripts/probe-approach-b.mjs && node scripts/probe-slots.mjs && node scripts/probe-service.mjs && node scripts/probe-grouping-seam.mjs && node scripts/probe-inject-wait.mjs && node scripts/probe-contribution.mjs && node scripts/probe-retention.mjs",
     "verify:bundle": "node scripts/compare-bundle.mjs",
@@ -96,8 +97,7 @@
     "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "react": "^18.2.0"
+    "@deepseek-ai/cordis": "^4.0.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
