@@ -3014,11 +3014,6 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
 - [ ] 单元测试（domain / RPC / 注入 / 重建逻辑）
 - [ ] 每层的"停用插件后回到原版 DSH"回归测试
 - [ ] vendor 重新同步流程演练（并入 L4.5）
-- [ ] **光标样式（`cursor: pointer`）统一检查**——用户 2026-09-29 提出。
-      现有插件 CSS 已有 10 处 `cursor: pointer`（`Rows.module.css:9,34,404`、
-      `WorkspaceBrowser.module.css:28,190,243,523,565`、`settings-card.module.css:58`），
-      但新做的**弹窗 / 设置页**要确认每个可点元素都有指针光标。
-      **约定"等底层工作区做完后"再处理** ⇒ **底层工作区已完成，可以做了。**
 
 ---
 
