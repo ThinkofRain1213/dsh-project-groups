@@ -82,6 +82,7 @@ source with a comment naming the seam.
 | File | Patch | Re-sync action |
 |---|---|---|
 | `tree.ts` | adds `GroupSource`, `owningSourceKey`, and `groupBySource` (a line-for-line twin of `groupByWorkspace`); `deriveGroups` takes an optional 6th `sources` parameter | re-apply on top of the new `groupByWorkspace` |
+| `tree.ts` | `deriveSearchResults` takes an optional 9th `sources` parameter and labels a result row from it, so a search result names its project the way the tree does; the `sources === undefined` branch is upstream's, unchanged (see below) | add the parameter, the `groupBySession` map, and the branch in `labelOf` |
 | `contract/slots.ts` | adds a mandatory `grouping` hook to `WorkspaceBrowserInjected.hooks`, plus the `GroupSource` type import | re-add the one field + import |
 | `rows/WorkspaceBrowser.tsx` | consumes `useGrouping`, threads `groupingOverride` into `SessionTree`, uses it for `ungroupedMemberIds` / `expandedGroups` / the two `owningGroupKey` call sites | re-apply the same six edits |
 | `rows/WorkspaceBrowser.tsx` | `onCreate` drops its `if (group.workspaceId !== undefined)` guard and always expands (**behaviour change**, see below) | remove the guard again |
@@ -496,6 +497,26 @@ name the dialog had already accepted.
 
 The alert names the row kind: the shipped `conflict.named` says 工作区, which is right for a
 Workspace and wrong for a project, and one dialog serves both.
+
+**13. A search result names its project, like the tree does.**
+
+Search was grouped the same way the sidebar is, but its rows were not labeled that way. The result
+row's context line came from `deriveSearchResults`, which reads only the Workspace registry —
+`workspaceBySession.get(id) ?? workspaceLabel(summary.cwd)` — so with projects active every result
+was captioned with a Workspace the sidebar never shows (`默认工作区`, and a real one named `重要`).
+The same `labelOf` also feeds the match test, so a project's Sessions could not be found by the
+name the user had given them.
+
+The fix is the same seam the grouping already uses: an optional 9th `sources` parameter, and a
+`labelOf` that picks a model rather than merging them. The two branches are exclusive on purpose —
+with sources supplied the Workspace registry is **not** consulted, because this plugin replaces the
+Workspace model rather than layering on it, and an unfiled Session is labeled empty so the renderer
+localizes it exactly as the tree's Ungrouped bucket does. Falling back to a Workspace title would
+reintroduce the mismatch this patch removes, and `scripts/verify-grouping.mjs` asserts that no row
+carries a Workspace title or a cwd basename while groups are supplied.
+
+Omitted, the parameter takes upstream's exact path, so the invariant above still holds: an inactive
+override behaves byte-for-byte like the shipped browser.
 
 ## Keeping it in sync
 

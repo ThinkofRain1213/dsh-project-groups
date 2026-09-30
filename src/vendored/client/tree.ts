@@ -140,6 +140,13 @@ export interface GroupNode {
 export interface SearchResultNode {
   id: SessionId
   title: string
+  /**
+   * Owning group label: the project when the caller supplies groups, otherwise the Workspace title
+   * or the cwd basename. Named `workspace` because that is what upstream calls it — it is the row's
+   * context line, whichever model produced the grouping. Empty means the caller's ungrouped bucket,
+   * which the renderer localizes (`result.workspace || t('group.ungrouped')`, upstream's own
+   * fallback).
+   */
   workspace: string
   /** A Session-scoped UI consumer is awaiting this user. */
   pendingInteraction?: SessionPendingInteractionStatus
@@ -673,6 +680,9 @@ export function deriveFlat(
  * @param statuses - unified UI status by Session.
  * @param content - ranked Host content-search page.
  * @param limit - protocol-owned maximum merged row count.
+ * @param sources - caller-supplied groups: when given, a row is labeled by the group its Session is
+ * filed under, the same model {@link deriveGroups} groups by. Omitted means the Workspace registry,
+ * which is upstream's behaviour unchanged.
  * @returns bounded deduplicated flat rows and a refine-query hint bit.
  */
 export function deriveSearchResults(
@@ -684,6 +694,7 @@ export function deriveSearchResults(
   statuses: SessionStatuses,
   content: { items: readonly SessionSearchResultItem[]; hasMore: boolean },
   limit: number,
+  sources?: readonly GroupSource[],
 ): SearchResultSet {
   const q = query.trim().toLowerCase()
   if (q === '') return { items: [], hasMore: false }
@@ -696,8 +707,27 @@ export function deriveSearchResults(
       if (!workspaceBySession.has(sessionId)) workspaceBySession.set(sessionId, workspace.title)
     }
   }
-  const labelOf = (summary: SessionSummary): string =>
-    workspaceBySession.get(summary.id) ?? workspaceLabel(summary.cwd)
+  // The label follows whichever model produced the grouping, and the two are never mixed: with
+  // sources a row names the project the user filed the Session under, and a Session that none of
+  // them claims stays empty — which is what the tree shows for its Ungrouped bucket, and which the
+  // renderer already turns into the localized name. The Workspace registry is **not** consulted in
+  // that branch: this plugin replaces the Workspace model rather than layering on it, so a Workspace
+  // title would label a row with a concept the sidebar no longer displays anywhere. It also feeds
+  // the match test below, so a project name becomes searchable — the same `labelOf`, deliberately,
+  // because a row the user cannot find by the name they gave it is the bug this fixes.
+  const groupBySession = new Map<SessionId, string>()
+  if (sources !== undefined) {
+    for (const source of sources) {
+      for (const id of source.sessionIds) {
+        // First declaration wins, the rule the Workspace map above uses, so a Session claimed by
+        // two sources still labels deterministically.
+        if (!groupBySession.has(id)) groupBySession.set(id, source.label)
+      }
+    }
+  }
+  const labelOf = (summary: SessionSummary): string => sources === undefined
+    ? workspaceBySession.get(summary.id) ?? workspaceLabel(summary.cwd)
+    : groupBySession.get(summary.id) ?? ''
   const contentBySession = new Map<SessionId, SessionSearchResultItem>()
   for (const item of content.items) {
     if (!contentBySession.has(item.sessionId)) contentBySession.set(item.sessionId, item)

@@ -1153,6 +1153,7 @@ function SearchResults({
   open,
   onUnarchive,
   workspaces,
+  groupingOverride,
   archivedSessionIds,
   archivedFilter,
   query,
@@ -1162,6 +1163,8 @@ function SearchResults({
   t,
 }: Pick<WorkspaceBrowserProps, 'useSessions' | 'useSessionStatus' | 'open' | 't' | 'usePanelInfo'> & {
   workspaces: readonly WorkspaceView[]
+  /** Caller-supplied groups, so a result row names the project its Session is filed under. */
+  groupingOverride: readonly GroupSource[] | undefined
   archivedSessionIds: readonly SessionNode['id'][]
   /** Search matches follow the archived filter selected for the list. */
   archivedFilter: ArchivedFilter
@@ -1187,8 +1190,10 @@ function SearchResults({
       statuses,
       currentRemote,
       resultLimit,
+      groupingOverride,
     ),
-    [list, workspaces, query, archivedSessionIds, archivedFilter, statuses, currentRemote, resultLimit],
+    [list, workspaces, query, archivedSessionIds, archivedFilter, statuses, currentRemote, resultLimit,
+      groupingOverride],
   )
   const pending = currentRemote.status === 'loading'
   const currentId = panelActive
@@ -1964,6 +1969,7 @@ export function WorkspaceBrowser({
               open={openSearchResult}
               onUnarchive={onSessionUnarchive}
               workspaces={workspaces}
+              groupingOverride={groupingOverride}
               archivedSessionIds={archivedSessionIds}
               archivedFilter={archivedFilter}
               query={normalizedQuery}

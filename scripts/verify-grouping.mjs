@@ -28,7 +28,7 @@ globalThis.window = {
   },
 }
 
-const { deriveGroups, UNGROUPED_KEY, owningSourceKey } = await import('../src/vendored/client/tree.ts')
+const { deriveGroups, deriveSearchResults, UNGROUPED_KEY, owningSourceKey } = await import('../src/vendored/client/tree.ts')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -153,6 +153,77 @@ check('the archived-only view hides the empty Ungrouped bucket',
   onlyView.every(g => g.key !== UNGROUPED_KEY),
   onlyView.map(g => `${g.key}:${g.sessionCount}`).join(' '))
 check('owningSourceKey on an empty source is Ungrouped', owningSourceKey([], 's1') === UNGROUPED_KEY)
+
+// 7. Search result labels follow the same model the grouping does, and never mix the two.
+//
+//    Before this seam existed, a result row was labeled from the Workspace registry regardless of
+//    how the sidebar was grouped, so with projects active every result was captioned with a
+//    Workspace the user never sees anywhere else (`默认工作区`, and a real `重要`) — and because the
+//    same `labelOf` feeds the match test, searching for a project's name could not find its
+//    Sessions at all.
+const search = (sources_) => deriveSearchResults(
+  list, workspaces, '', [], 'default', statuses, { items: [], hasMore: false }, 20, sources_,
+)
+const searchFor = (query, sources_) => deriveSearchResults(
+  list, workspaces, query, [], 'default', statuses, { items: [], hasMore: false }, 20, sources_,
+)
+const labelOfId = (set, id) => set.items.find(item => item.id === id)?.workspace
+
+// A query that matches nothing still returns rows only when the query hits; use a query that every
+// title contains so the set is stable, then read the labels.
+const allRows = searchFor('s', sources)
+check('grouped search returns the claimed rows', allRows.items.length >= 2, `rows=${allRows.items.length}`)
+check('a filed Session is labeled with its project',
+  labelOfId(allRows, 's1') === '项目一', String(labelOfId(allRows, 's1')))
+check('a second project labels its own Session',
+  labelOfId(allRows, 's2') === '项目二', String(labelOfId(allRows, 's2')))
+check('an unfiled Session is labeled empty, not with a Workspace',
+  labelOfId(allRows, 's4') === '', JSON.stringify(labelOfId(allRows, 's4')))
+
+// The load-bearing one: with groups supplied, no Workspace title may appear on any row. That is the
+// "no mixing" invariant — the sidebar shows projects, so a result row must not name anything else.
+const workspaceTitles = new Set(workspaces.map(w => w.title))
+check('no row is labeled with a Workspace title while grouped',
+  allRows.items.every(item => !workspaceTitles.has(item.workspace)),
+  allRows.items.map(i => `${i.id}:${JSON.stringify(i.workspace)}`).join(' '))
+check('no row falls back to the cwd basename either',
+  allRows.items.every(item => item.workspace !== 'w1' && item.workspace !== 'w2'),
+  allRows.items.map(i => `${i.id}:${JSON.stringify(i.workspace)}`).join(' '))
+
+// Searching by project name. `labelOf` feeds the match test as well as the label, so this is what
+// makes a project's Sessions findable by the name the user gave it.
+const byProjectName = searchFor('项目二', sources)
+check('a project name finds its Sessions',
+  byProjectName.items.some(item => item.id === 's2'),
+  byProjectName.items.map(i => i.id).join(','))
+check('and the Workspace name no longer does',
+  !searchFor('w1', sources).items.some(item => item.id === 's1'),
+  searchFor('w1', sources).items.map(i => i.id).join(','))
+
+// An empty override still takes the grouped branch: every label is empty, none falls back.
+const emptyOverride = searchFor('s', [])
+check('an empty override labels every row empty',
+  emptyOverride.items.every(item => item.workspace === ''),
+  emptyOverride.items.map(i => `${i.id}:${JSON.stringify(i.workspace)}`).join(' '))
+
+// Omitted, the path is upstream's, unchanged — the invariant the README states.
+const upstreamSearch = searchFor('s', undefined)
+check('omitting sources keeps the Workspace label',
+  labelOfId(upstreamSearch, 's1') === 'w1' && labelOfId(upstreamSearch, 's2') === 'w2',
+  upstreamSearch.items.map(i => `${i.id}:${JSON.stringify(i.workspace)}`).join(' '))
+check('omitting sources still finds a Session by Workspace name',
+  searchFor('w1', undefined).items.some(item => item.id === 's1'))
+check('no query returns an empty set with either model',
+  search(undefined).items.length === 0 && search(sources).items.length === 0)
+
+// First declaration wins when two sources claim one Session, matching the Workspace map's rule.
+const overlapping = [
+  { key: 'a', label: '先', sessionIds: ['s1'] },
+  { key: 'b', label: '后', sessionIds: ['s1'] },
+]
+check('two sources claiming one Session label deterministically',
+  labelOfId(searchFor('s', overlapping), 's1') === '先',
+  String(labelOfId(searchFor('s', overlapping), 's1')))
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)
 process.exit(failures.length === 0 ? 0 : 1)
