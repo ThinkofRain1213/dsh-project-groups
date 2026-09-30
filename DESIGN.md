@@ -29,7 +29,7 @@
 - 维护方式：DSH 升级时重新复制，见 `src/vendored/README.md`
 
 > **⚠️ 现状修正（2026-09-30）**：上面第 2、3 条描述的是 **L0 交付时**的状态，**已不再成立**。
-> 项目分组需要分组缝，因此 `src/vendored/` 现有 **13 处 patch，涉及 10 个文件**，
+> 项目分组需要分组缝，因此 `src/vendored/` 现有 **41 条登记 patch，涉及 10 个文件**，
 > **不再逐字节一致**。实际标准见 §2 第 7 条：**允许结构性、可选的改动，且每一处都必须
 > 登记进 `src/vendored/README.md` 的 patch 表**（那是重同步时的唯一清单）。
 > 这份 README 同时记录了"哪些偏离是有意的行为改变"，与结构性缝分开列。
@@ -300,7 +300,7 @@ L4  底层工作区与新会话     新会话要有地方可落
                 │
 L4.5 上游同步流程         让 vendor 能跟着 DSH 升级走
      ├─ 同步要做什么、按什么顺序做
-     ├─ 13 处 patch 的逐条重打清单
+     ├─ 41 条登记 patch 的逐条重打清单
      └─ 差距量化与验证手段
 ```
 
@@ -2989,11 +2989,11 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
 ### L4.5 — 上游同步流程  ✅ 已完成（2026-09-30）
 - [x] 同步步骤与顺序 —— 写进 `src/vendored/README.md` 的 "Keeping it in sync"（5 步，
       含"三方版本要取哪个 tag"、逐文件 `git merge-file`、双向验证、重装 node_modules 的告警）
-- [x] 0.1.7-rc.2 → 0.2.0-rc.2 差距量化 —— **上游只改 145 行 / 19 文件**，其中 **6 个是我们 patch 过的**
-- [x] 验证手段 —— **9 个 patch 文件全部零冲突三方合并**；双向 grep（上游 8 项改动 + 我们 17 处缝）；
+- [x] 0.1.7-rc.2 → 0.2.0-rc.2 差距量化 —— **上游只改 145 行 / 19 文件**，其中 **7 个是我们 patch 过的**
+- [x] 验证手段 —— **10 个 patch 文件全部零冲突三方合并**；双向 grep（上游 8 项改动 + 我们 17 处缝）；
       `pnpm check` 354 条；9 个浏览器探针各自独立 HOME
 - [x] 回滚路径 —— `.agent\backups\...-pre-upstream-sync\vendored`（整棵树的快照）
-- [x] **真的同步了一遍**：`src/vendored/` 现为 **0.2.0-rc.2 + 13 处 patch**，
+- [x] **真的同步了一遍**：`src/vendored/` 现为 **0.2.0-rc.2 + 41 条登记 patch**，
       `devDependencies` 同步升级并新增 `product-analytics`（照官方：`ctx.get` + `import type {}`）
 
 **同步中暴露的两件事**（已记入 `src/vendored/README.md`）：

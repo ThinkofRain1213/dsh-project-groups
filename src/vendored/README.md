@@ -17,8 +17,8 @@ official UI 1:1.
 ### How the 0.1.7 → 0.2.0 re-sync was done
 
 Upstream changed only **145 lines** in this package (`19 files changed, 145 insertions(+),
-46 deletions(-)`), of which 6 were files carrying a patch here. Rather than re-applying 13 patches by
-hand, each file was three-way merged with `git merge-file`:
+46 deletions(-)`), of which **7** are files this tree patches (`client/shortcuts.ts` among them).
+Rather than re-applying the patch table by hand, each file was three-way merged with `git merge-file`:
 
 ```
 base   = upstream 0.1.7-rc.2   (git archive of the tag we vendored)
@@ -26,7 +26,7 @@ ours   = this tree             (0.1.7 + our patches)
 theirs = upstream 0.2.0-rc.2   (git archive of the target tag)
 ```
 
-**All 9 patched files merged with zero conflicts**, and the result was verified in both directions:
+**All 10 patched files merged with zero conflicts**, and the result was verified in both directions:
 upstream's 8 changes present, our 17 patch anchors intact. Two files needed attention beyond the
 merge — `index.ts` (`forkSession` gained an `onCreated` observer and a `productAnalytics` call) and
 `navigation.ts` (the same signature change) — and all three test fixtures gained a `title` field,
@@ -113,6 +113,7 @@ source with a comment naming the seam.
 | `tree.ts` | adds `GroupSource`, `owningSourceKey`, and `groupBySource` (a line-for-line twin of `groupByWorkspace`); `deriveGroups` takes an optional 6th `sources` parameter | re-apply on top of the new `groupByWorkspace` |
 | `tree.ts` | `deriveSearchResults` takes an optional 9th `sources` parameter and labels a result row from it, so a search result names its project the way the tree does; the `sources === undefined` branch is upstream's, unchanged (see below) | add the parameter, the `groupBySession` map, and the branch in `labelOf` |
 | `contract/slots.ts` | adds a mandatory `grouping` hook to `WorkspaceBrowserInjected.hooks`, plus the `GroupSource` type import | re-add the one field + import |
+| `shortcuts.ts` | `installWorkspaceShortcuts` takes a fifth argument, `projectModel: boolean`; with it the `workspace.add` command is relabelled and re-aliased to the project dialog (`project.add` / `new project`) and its directory-flow availability check is skipped (**behaviour change**, see below). Called with `false`, every branch is upstream's | re-add the parameter and the three `projectModel` branches; the call site is `client/index.ts` (`projectActions !== undefined`) |
 | `rows/WorkspaceBrowser.tsx` | consumes `useGrouping`, threads `groupingOverride` into `SessionTree`, uses it for `ungroupedMemberIds` / `expandedGroups` / the two `owningGroupKey` call sites | re-apply the same six edits |
 | `rows/WorkspaceBrowser.tsx` | `onCreate` drops its `if (group.workspaceId !== undefined)` guard and always expands (**behaviour change**, see below) | remove the guard again |
 | `rows/WorkspaceBrowser.tsx` | `onCreate` files what a row creates: a project row under itself through `assignSession`, the Ungrouped bucket under **nothing** through `unassignSession` (see below) | re-apply the three-way `file` dispatch |
@@ -139,6 +140,7 @@ source with a comment naming the seam.
 | `navigation.ts` | the service takes an optional `onBaseWorkspaceMissing` callback, raised where `startSessionInDefaultWorkspace` previously returned silently (**behaviour change**, see below). Omitted, the flow is unchanged | re-add the parameter and the one call |
 | `session-actions/BaseWorkspaceMissing.tsx` | **new file**: the `shell.overlay` dialog that reports that case and offers the two repairs | re-add the file and its `shell.overlay` registration |
 | `locales.ts` | six `baseMissing.*` keys in both dictionaries, kept in one contiguous block rather than editing a shipped key | re-add the block |
+| `rows/WorkspaceBrowser.module.css` | `.groupDropTarget`: the cross-group highlight painted on the group **section** while the pointer is on the header row (hit testing and highlight answer different questions; the section is the highlight's, the row is the target's) | re-add the one rule |
 | `rows/WorkspaceBrowser.module.css` | `.baseMissingActions` (the column footer), `.baseMissingBody`, `.baseMissingPath` | re-add the three rules |
 | `contract/slots.ts` | adds `BaseWorkspaceRoute`: which of three outcomes the caller's 底层工作区 setting resolved to | re-add the union |
 | `navigation.ts` | the service takes an optional `resolveBaseWorkspace` callback, consulted by an unscoped `startSession` **before** the official default (**behaviour change**, see below). Omitted, the flow is unchanged | re-add the parameter and the two branches |
@@ -547,6 +549,27 @@ carries a Workspace title or a cwd basename while groups are supplied.
 Omitted, the parameter takes upstream's exact path, so the invariant above still holds: an inactive
 override behaves byte-for-byte like the shipped browser.
 
+**14. The add-workspace shortcut becomes the add-project shortcut.**
+
+Shipped: `installWorkspaceShortcuts` registers `workspace.add` labelled 添加工作区 with the aliases
+`add workspace` / `open folder`, and resolves it by checking the
+`sidebar.workspaces.directoryFlow` picker slot — the command is *blocked*, with a reason, when no
+picker is mounted.
+
+Under a project model that check is meaningless: there is no directory to pick, because a project has
+no directory, so the slot's presence says nothing about whether the command can run. The command is
+therefore relabelled (`project.add`, aliases `new project`) and routed straight to the create-project
+dialog, skipping the availability check entirely. Called with `false`, all three branches fall back to
+the shipped ones — the parameter is the seam, and the check is only bypassed where the model exists.
+
+The flag is passed as `projectActions !== undefined` at the single call site
+(`client/index.ts`), so the composition decides by supplying the verbs rather than by a second
+switch that could disagree with them.
+
+Which key is bound is **not** part of this patch: upstream moved `session.rename` from `primary+alt+R`
+to `primary+alt+G` in 0.2.0 and this copy followed, so a re-sync should take upstream's keymap as
+given and re-apply only the label, aliases and the bypassed check.
+
 ## Keeping it in sync
 
 Upstream ships this package at the same version as the whole harness line, so a DSH upgrade is the
@@ -577,9 +600,9 @@ git -C "$H" diff --stat dsh-v0.1.7-rc.2 dsh-vX.Y.Z-rc.N -- packages/client/ui-wo
 git -C "$H" diff -U0   dsh-v0.1.7-rc.2 dsh-vX.Y.Z-rc.N -- packages/client/ui-workspace/src
 ```
 
-For 0.2.0 this was 145 lines across 6 of our patched files. Cross-check the `@@` hunks against the
-line numbers in the patch table below: a hunk landing on a patch is the one that needs a decision,
-and everything else is mechanical.
+For 0.2.0 this was 145 lines across 7 of our patched files. Cross-check each `@@` hunk against the
+patch table below: a hunk landing in a file the table names is the one that needs a decision, and
+everything else is mechanical.
 
 ### 3. Three-way merge every patched file
 
@@ -610,7 +633,7 @@ The merge is only trustworthy once both halves are shown to have survived:
 
 ### 5. Update this file
 
-Provenance table, the patch table's line numbers, and `devDependencies`. A patch that moved but was
+Provenance table, the patch table, and `devDependencies`. A patch that moved but was
 not recorded here is one the next re-sync will silently drop — which is the whole reason the table
 exists.
 

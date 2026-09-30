@@ -142,6 +142,14 @@ export type ProjectRenameValue = ProjectValueResult
 export interface ProjectDeleteRequest {
   readonly projectId: string
 }
+/**
+ * `delete` result: nothing.
+ *
+ * Declared so the Client's descriptor names a protocol export like every other
+ * result does, and so the diagnostic is truthful — `remove` returns `void`, and
+ * the removal is observed through the next `baseline` frame rather than an answer.
+ */
+export type ProjectDeleteValue = void
 
 /** `reorder` request; an absent anchor appends to the end. */
 export interface ProjectReorderRequest {
