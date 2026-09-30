@@ -1,5 +1,6 @@
 {
   "meta": {
+    "title": "Project Groups",
     "description": "Group your sidebar sessions by project — a project is a label, not a directory. Disable the plugin and the official sidebar returns unchanged."
   }
 }
