@@ -23,6 +23,7 @@
       "default": "./lib/client.js"
     },
     "./src/*": "./src/*",
+    "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "dsh": {
@@ -50,6 +51,7 @@
   "files": [
     "lib",
     "src",
+    "locale/*.json",
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
