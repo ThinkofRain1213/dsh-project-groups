@@ -47,7 +47,9 @@ const workspace = (workspaceId, sessionIds = []) => ({
 })
 
 const session = (id, extra = {}) => ({
-  id, displayTitle: id, blank: false, origin: 'user', updatedAt: 1000, retainedBy: {}, ...extra,
+  // `title` is the durable title `sessionTitle` reads since 0.2.0; `displayTitle` is its
+  // human-facing fallback. Upstream set both in its own specs when it added the field.
+  id, title: id, displayTitle: id, blank: false, origin: 'user', updatedAt: 1000, retainedBy: {}, ...extra,
 })
 
 const snapshot = (items, extra = {}) => ({

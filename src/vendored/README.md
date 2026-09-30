@@ -10,9 +10,38 @@ official UI 1:1.
 |---|---|
 | Upstream | `deepseek-ai/deepseek-harness` |
 | Path | `packages/client/ui-workspace/src/` |
-| Version | **0.1.7-rc.2** |
-| Commit | `477b4f420` (`dsh-v0.1.7-rc.2`) |
-| Copied | 2026-09-26 |
+| Version | **0.2.0-rc.2** |
+| Commit | `639ed01539` (`dsh-v0.2.0-rc.2`) |
+| Re-synced | 2026-09-30 (from `477b4f420` / `dsh-v0.1.7-rc.2`, copied 2026-09-26) |
+
+### How the 0.1.7 → 0.2.0 re-sync was done
+
+Upstream changed only **145 lines** in this package (`19 files changed, 145 insertions(+),
+46 deletions(-)`), of which 6 were files carrying a patch here. Rather than re-applying 13 patches by
+hand, each file was three-way merged with `git merge-file`:
+
+```
+base   = upstream 0.1.7-rc.2   (git archive of the tag we vendored)
+ours   = this tree             (0.1.7 + our patches)
+theirs = upstream 0.2.0-rc.2   (git archive of the target tag)
+```
+
+**All 9 patched files merged with zero conflicts**, and the result was verified in both directions:
+upstream's 8 changes present, our 17 patch anchors intact. Two files needed attention beyond the
+merge — `index.ts` (`forkSession` gained an `onCreated` observer and a `productAnalytics` call) and
+`navigation.ts` (the same signature change) — and all three test fixtures gained a `title` field,
+because `sessionTitle` reads the durable title rather than `displayTitle` as of 0.2.0. Upstream made
+the same fixture change in its own `tree.client.spec.ts`, which is what confirmed the fix.
+
+`devDependencies` moved to `0.2.0-rc.2` together with a new
+`@deepseek-ai/dsh-client-product-analytics`. It is read with the ungated `ctx.get('productAnalytics')`
+and imported as `import type {}`, exactly as upstream does, so it adds no bundled edge — `verify:bundle`
+confirms the produced externals still match the installed official bundle name for name.
+
+> **Reinstalling matters.** `pnpm install` over an existing `node_modules` left the 0.1.7 packages in
+> `.pnpm`, so two copies of `dsh-typert-protocol` resolved and `tsc` failed with a `RemoteFailure`
+> mismatch on two `DirectoryBrowseError` lines — code that is upstream's verbatim. Deleting
+> `node_modules` and reinstalling resolved it; the lockfile itself was already clean.
 
 Copied files (23):
 
@@ -520,21 +549,70 @@ override behaves byte-for-byte like the shipped browser.
 
 ## Keeping it in sync
 
-Upstream ships this package at the same version as the whole harness line, so a
-DSH upgrade is the signal to re-copy. The plugin's `devDependencies` pin the
-version the copy came from.
+Upstream ships this package at the same version as the whole harness line, so a DSH upgrade is the
+signal to re-sync. The plugin's `devDependencies` pin the version the copy came from, and the
+provenance table above records it.
 
-Re-sync procedure:
+This is the procedure the 0.1.7 → 0.2.0 re-sync actually used. The tree is **no longer
+byte-identical** (see the patch table), so a re-sync is a merge, not a copy.
 
-1. fetch the matching tag in the harness checkout and check it out;
-2. re-copy `packages/client/ui-workspace/src/client/` and `src/css-modules.d.ts`
-   over `src/vendored/`;
-3. update the provenance table above;
-4. `pnpm check` — `scripts/compare-bundle.mjs` fails loudly if the vendored tree
-   no longer resolves the same externals as the installed official bundle.
+### 1. Stage the three versions
 
-Because the tree is unedited, a failed re-sync surfaces as a build or
-verification error rather than as a silent behavioural drift.
+Both tags must be available; the checkout's working tree is not what gets read.
+
+```bash
+H="path/to/deepseek-harness"          # the upstream git checkout
+git -C "$H" fetch origin tag dsh-vX.Y.Z-rc.N --no-tags
+git -C "$H" archive dsh-v0.1.7-rc.2 packages/client/ui-workspace | tar -x -C /tmp/base
+git -C "$H" archive dsh-vX.Y.Z-rc.N packages/client/ui-workspace | tar -x -C /tmp/theirs
+```
+
+`/tmp/base` is the tag recorded in the provenance table — **not** the previous target. Getting this
+wrong turns every one of our patches into a conflict.
+
+### 2. Read what upstream changed before merging anything
+
+```bash
+git -C "$H" diff --stat dsh-v0.1.7-rc.2 dsh-vX.Y.Z-rc.N -- packages/client/ui-workspace
+git -C "$H" diff -U0   dsh-v0.1.7-rc.2 dsh-vX.Y.Z-rc.N -- packages/client/ui-workspace/src
+```
+
+For 0.2.0 this was 145 lines across 6 of our patched files. Cross-check the `@@` hunks against the
+line numbers in the patch table below: a hunk landing on a patch is the one that needs a decision,
+and everything else is mechanical.
+
+### 3. Three-way merge every patched file
+
+Do **not** `git merge` — this repo and upstream share no history. Merge per file instead:
+
+```bash
+for f in <the patch table's files>; do
+  cp "$OURS/$f" "$OUT/$f"
+  git merge-file -p "$OUT/$f" "/tmp/base/$f" "/tmp/theirs/$f" > "$OUT/$f"
+done
+```
+
+`git merge-file` exits non-zero with markers left in the file when hunks collide. In 0.2.0 all nine
+merged cleanly; the two that needed hand work were signature changes
+(`forkSession(sessionId, onCreated?)`) that the merge could not resolve on its own because both sides
+had rewritten the same lines.
+
+### 4. Verify both directions, then the whole suite
+
+The merge is only trustworthy once both halves are shown to have survived:
+
+- **upstream's changes landed** — grep the target's distinctive identifiers;
+- **our patches survived** — grep this table's seams;
+- `pnpm install` (see the reinstall warning above), `pnpm typecheck`, `pnpm build`;
+- `pnpm check` — 354 assertions, of which `compare-bundle.mjs` fails loudly if the produced
+  externals no longer match the installed official bundle;
+- the browser probes in the section below, each on its own `DSH_HOME`.
+
+### 5. Update this file
+
+Provenance table, the patch table's line numbers, and `devDependencies`. A patch that moved but was
+not recorded here is one the next re-sync will silently drop — which is the whole reason the table
+exists.
 
 ## Verifying the deviations
 

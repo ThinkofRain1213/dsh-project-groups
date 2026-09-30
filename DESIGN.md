@@ -2986,11 +2986,24 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
 **待确认**：`workspace/create` 客户端 `create({ path })` 要求目录已存在 ⇒
 必须**先** host 建目录、**再** 客户端注册（顺序不能反）。
 
-### L4.5 — 上游同步流程  📋 未开始
-- [ ] 同步步骤与顺序（重打 13 处 patch 的清单）
-- [ ] 0.1.7-rc.2 → 0.2.0-rc.2 的差距量化（哪些文件变了、哪些 patch 失效）
-- [ ] 验证手段（`compare-bundle.mjs` 只验 external，验不到行为漂移）
-- [ ] 回滚路径
+### L4.5 — 上游同步流程  ✅ 已完成（2026-09-30）
+- [x] 同步步骤与顺序 —— 写进 `src/vendored/README.md` 的 "Keeping it in sync"（5 步，
+      含"三方版本要取哪个 tag"、逐文件 `git merge-file`、双向验证、重装 node_modules 的告警）
+- [x] 0.1.7-rc.2 → 0.2.0-rc.2 差距量化 —— **上游只改 145 行 / 19 文件**，其中 **6 个是我们 patch 过的**
+- [x] 验证手段 —— **9 个 patch 文件全部零冲突三方合并**；双向 grep（上游 8 项改动 + 我们 17 处缝）；
+      `pnpm check` 354 条；9 个浏览器探针各自独立 HOME
+- [x] 回滚路径 —— `.agent\backups\...-pre-upstream-sync\vendored`（整棵树的快照）
+- [x] **真的同步了一遍**：`src/vendored/` 现为 **0.2.0-rc.2 + 13 处 patch**，
+      `devDependencies` 同步升级并新增 `product-analytics`（照官方：`ctx.get` + `import type {}`）
+
+**同步中暴露的两件事**（已记入 `src/vendored/README.md`）：
+
+1. **依赖残留**：`pnpm install` 覆盖旧 `node_modules` 会留下 0.1.7 的包 ⇒ `.pnpm` 里
+   出现两份 `dsh-typert-protocol` ⇒ `tsc` 在**上游原文**上报 `RemoteFailure` 不匹配。
+   **必须删掉 `node_modules` 重装**（lockfile 本身是干净的）。
+2. **测试夹具过时**：0.2.0 的 `sessionTitle` 改读新字段 `title`（不再是 `displayTitle`）⇒
+   3 个 verify 脚本的夹具要补 `title`。**上游自己也做了同样的夹具修改**（`tree.client.spec.ts`），
+   这正是确认修法正确的依据。
 
 ### 额外功能  ⏸ 默认不做（见 §24）
 - [ ] **X-1** 会话 hover 卡显示所属项目

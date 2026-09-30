@@ -36,9 +36,16 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-/** One session summary with the fields the derivation reads. */
+/**
+ * One session summary with the fields the derivation reads.
+ *
+ * `title` is the durable log-backed title and `displayTitle` its human-facing fallback; since
+ * 0.2.0 `sessionTitle` reads the former, so both are set here — the same fixture change upstream
+ * made in its own `tree.client.spec.ts` when it introduced the field. Without it every search
+ * assertion sees an empty title and fails, which is what happened on the re-sync.
+ */
 const session = (id, extra = {}) => ({
-  id, displayTitle: id, blank: false, origin: 'user', updatedAt: 1000, retainedBy: {}, ...extra,
+  id, title: id, displayTitle: id, blank: false, origin: 'user', updatedAt: 1000, retainedBy: {}, ...extra,
 })
 
 const list = {
