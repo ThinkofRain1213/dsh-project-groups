@@ -477,6 +477,11 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
 }
 
 // 11. Every call is a distinct project, keyed by a generated id rather than title.
+//
+// The mock remote is deliberately more permissive than the Host here: the Host now refuses a title
+// another project holds, so two same-titled rows cannot exist in a real registry. What this pins is
+// the reason that check is safe to enforce at all — identity is the generated id, never the title,
+// so refusing a duplicate name cannot alias two rows onto one another.
 {
   const { model, stop } = await started()
   await model.create('same')
@@ -484,8 +489,8 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   await model.create('same')
   await model.start()
   const ids = model.list().map(p => p.projectId)
-  check('same-titled projects get distinct ids', ids[0] !== ids[1], ids.join(','))
-  check('both render as separate rows', groupsOf(model).length === 3, `groups=${groupsOf(model).length - 1}`)
+  check('project identity is the id, not the title', ids[0] !== ids[1], ids.join(','))
+  check('the mock keeps both rows distinct', groupsOf(model).length === 3, `groups=${groupsOf(model).length - 1}`)
   stop()
 }
 

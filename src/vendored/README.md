@@ -94,6 +94,8 @@ source with a comment naming the seam.
 | `navigation.ts` | `startSession` takes an optional `beforeOpen` callback and threads it into `openWorkspace`, so a caller can act on the Session that lands (a project row files it). Omitted, the flow is unchanged | re-add the parameter and the pass-through |
 | `rows/WorkspaceBrowser.tsx` | rename/delete dialogs and the group drag take a `kind`-tagged row (`RowRequest`), so a caller-supplied project row drives the same affordances as a Workspace row; the header's add control runs `createProject` when the composition supplies one, and the dialog titles/labels switch on that kind | re-apply the dispatch, the two dialog blocks, and the drag wiring |
 | `rows/WorkspaceBrowser.tsx` | a **project** drop resolves its anchor against `groupingOverride`'s order and honours the side the marker showed, so the landed position equals the line the user saw (see below) | re-apply the `projectIds` lookup, the `half` from `activeDrag.over`, and the next-sibling anchor |
+| `rows/WorkspaceBrowser.tsx` | a **project title is unique**: the create dialog blocks a name another project holds, the rename dialog does too, and the rename alert names the row kind it is warning about (see below) | re-apply `createDuplicate`, the `kind === 'project'` arm of `renameDuplicate`, and the `conflict.projectNamed` dispatch |
+| `locales.ts` | `conflict.projectNamed` in both dictionaries | add the key |
 | `rows/Rows.tsx` | labels the Ungrouped bucket by **empty label** rather than missing `workspaceId` | one-line change; a caller-supplied group has no Workspace id but does have a label |
 | `rows/Rows.tsx` | the row menu's delete label and the menu's aria-label follow `group.kind` | small change; a project's delete removes a record, not a registry entry |
 | `locales.ts` | project copy (`project.add`, `project.create.*`, `rename.project.title`, `delete.project*`, `field.projectName`, `create`, `actions.project.aria`) in both dictionaries | add the keys |
@@ -470,6 +472,30 @@ paths are untouched.
 A probe drives both scenarios against the running app and asserts the landed order, not just the
 marker; each reverse control fails exactly its own two checks, landing on `B,C,A,D` and `B,C,D,A`
 respectively — the two wrong positions the report describes.
+
+**12. A project title is unique, like a Workspace title.**
+
+Upstream enforces uniqueness twice, and only one of the two transfers to projects:
+
+- the registry indexes Workspaces by **canonical path**, so choosing an existing directory reuses
+  that row instead of registering a second one. A project has no directory — "a project is a
+  Workspace without one" — so there is nothing to collide on and this rule does not apply;
+- the rename dialog refuses a title another row holds (`workspaces.some(w => w.workspaceId !==
+  renameTarget.workspaceId && w.title === renameTrimmed)`). This one applies directly, and both the
+  create and rename dialogs were missing it, which is how two projects titled `abc` came to exist
+  and be indistinguishable in the tree and in search.
+
+The client check is a convenience, not the guarantee: the Remote is reachable without the dialog, so
+the Host refuses a duplicate title as well. That is also why the dialog's exclusion of *itself* is by
+id (`source.key !== renameTarget.id`) rather than by title — the same identity exclusion upstream
+performs, so a project can keep the name it already has instead of being locked out of it.
+
+The rule is exact and case-sensitive, matching upstream's `===`, and applied after trimming because
+the trimmed title is what gets stored. Being stricter in the Host than in the dialog would refuse a
+name the dialog had already accepted.
+
+The alert names the row kind: the shipped `conflict.named` says 工作区, which is right for a
+Workspace and wrong for a project, and one dialog serves both.
 
 ## Keeping it in sync
 

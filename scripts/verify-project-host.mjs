@@ -176,6 +176,64 @@ function bench() {
   check('rename refuses an unknown project', message.includes('unknown project'), message)
 }
 
+// 4b. Titles are unique — the rule `dsh-client-ui-workspace` applies to a Workspace rename
+//     (`workspaces.some(w => w.workspaceId !== renameTarget.workspaceId && w.title ===
+//     renameTrimmed)`), enforced here too because the Remote is reachable without its dialog.
+{
+  const { controller } = bench()
+  const { project: first } = await controller.create({ title: 'shared' })
+
+  let message = ''
+  try {
+    await controller.create({ title: 'shared' })
+    message = '(no throw)'
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error)
+  }
+  check('create refuses a duplicate title', message.includes('already exists'), message)
+  check('the refused create stored nothing',
+    (await controller.baseline()).projects.length === 1,
+    String((await controller.baseline()).projects.length))
+
+  const { project: other } = await controller.create({ title: 'other' })
+  message = ''
+  try {
+    await controller.rename({ projectId: other.projectId, title: 'shared' })
+    message = '(no throw)'
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error)
+  }
+  check('rename refuses a title another project holds', message.includes('already exists'), message)
+  check('the refused rename kept the old title',
+    (await controller.baseline()).projects.find(p => p.projectId === other.projectId).title === 'other')
+
+  // Self-exclusion. Renaming a project to the name it already has must not count as a conflict —
+  // it is a no-op the dialog disables on its own, and matching on the title rather than the id
+  // would refuse it and leave the row unable to keep its own name.
+  const kept = await controller.rename({ projectId: first.projectId, title: 'shared' })
+  check('rename to its own current title is allowed', kept.project.title === 'shared')
+
+  // Whitespace is trimmed before storage, so these two are the same name.
+  message = ''
+  try {
+    await controller.create({ title: '  shared  ' })
+    message = '(no throw)'
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error)
+  }
+  check('a padded duplicate is still a duplicate', message.includes('already exists'), message)
+
+  // Case-sensitive, exactly like the dialog's `===`: being stricter here would refuse a name its
+  // own UI accepted.
+  const cased = await controller.create({ title: 'SHARED' })
+  check('a differently cased title is free', cased.project.title === 'SHARED')
+
+  // Deleting releases the name.
+  await controller.remove({ projectId: first.projectId })
+  const reused = await controller.create({ title: 'shared' })
+  check('a deleted title becomes available again', reused.project.title === 'shared')
+}
+
 // 5. Assign replaces, so a Session can never belong to two projects.
 {
   const { controller } = bench()

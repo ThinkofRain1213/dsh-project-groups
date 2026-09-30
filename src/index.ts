@@ -119,6 +119,36 @@ export class ProjectController extends TypertRemoteService {
   }
 
   /**
+   * Reject a title another project already uses.
+   *
+   * Titles are unique, the way Workspace titles are: `dsh-client-ui-workspace` blocks a rename
+   * whose trimmed title another row holds (`workspaces.some(w => w.workspaceId !==
+   * renameTarget.workspaceId && w.title === renameTrimmed)`). That check only guards its own
+   * dialog, so the rule is enforced here as well — the Remote is a public entry point, and a
+   * caller that skips the dialog would otherwise be able to create two indistinguishable rows.
+   *
+   * Compared after trimming, because the trimmed title is what gets stored: `'a '` and `'a'` are
+   * the same name. Otherwise exact and case-sensitive, mirroring the dialog's `===`; being
+   * stricter here would refuse a name that dialog accepted.
+   * @param domain - the open domain.
+   * @param title - the trimmed candidate title.
+   * @param exceptId - project allowed to keep this title (itself, on a rename).
+   */
+  private assertTitleFree(
+    domain: Domain<typeof projectDomainSpec>,
+    title: string,
+    exceptId?: string,
+  ): void {
+    // Scanned over the table rather than `order()`: the order is the display list, and a project
+    // missing from it must still reserve its name.
+    for (const [id, record] of domain.table('projects').entries()) {
+      if (id !== exceptId && record.title === title) {
+        throw new Error(`a project named "${title}" already exists`)
+      }
+    }
+  }
+
+  /**
    * Write the global singleton, changing only the fields given.
    *
    * `Domain.global.set` replaces the whole value rather than merging into it, so
@@ -201,6 +231,7 @@ export class ProjectController extends TypertRemoteService {
     const title = request.title.trim()
     if (title === '') throw new Error('a project title is required')
     const domain = await this.ready()
+    this.assertTitleFree(domain, title)
     const projectId = newProjectId()
     const now = new Date().toISOString()
     const record: ProjectRecord = { title, docPath: '', createdAt: now, updatedAt: now }
@@ -221,6 +252,9 @@ export class ProjectController extends TypertRemoteService {
     const domain = await this.ready()
     const record = domain.table('projects').get(request.projectId)
     if (record === undefined) throw new Error(`unknown project: ${request.projectId}`)
+    // Excluded by id, not title: renaming a project to the name it already holds is a no-op that
+    // the dialog disables on its own, and matching on the title would refuse it as a conflict.
+    this.assertTitleFree(domain, title, request.projectId)
     const next: ProjectRecord = { ...record, title, updatedAt: new Date().toISOString() }
     await domain.table('projects').put(request.projectId, next)
     return { project: this.projectValue(request.projectId, next) }

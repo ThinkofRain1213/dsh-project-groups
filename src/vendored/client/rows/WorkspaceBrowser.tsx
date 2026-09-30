@@ -1651,11 +1651,19 @@ export function WorkspaceBrowser({
   const renameTrimmed = renameDraft.trim()
   // Self is excluded by identity, not by title: the draft is seeded with the
   // localized label, which for an automatically titled Workspace equals its
-  // own displayed title without being a conflict with itself. A project has no
-  // such automatic title, and its conflicts are the model's business, so the
-  // duplicate scan stays on the Workspace registry.
-  const renameDuplicate = renameTarget?.kind === 'workspace' && renameTrimmed !== ''
-    && workspaces.some(w => w.workspaceId !== renameTarget.id && w.title === renameTrimmed)
+  // own displayed title without being a conflict with itself. A project holds the
+  // same rule — originally it did not, and neither did the Host, so two projects
+  // could share a name and be indistinguishable in the tree and in search.
+  const renameDuplicate = renameTrimmed !== '' && (
+    renameTarget?.kind === 'workspace'
+      ? workspaces.some(w => w.workspaceId !== renameTarget.id && w.title === renameTrimmed)
+      : renameTarget?.kind === 'project'
+        // A project's `key` **is** its project id, so this is the same identity
+        // exclusion the Workspace arm performs.
+        ? (groupingOverride?.some(source =>
+          source.key !== renameTarget.id && source.label === renameTrimmed) ?? false)
+        : false
+  )
   const renameBlocked = renaming || renameTrimmed === ''
     || renameTarget === null || renameTrimmed === renameTarget.storedTitle || renameDuplicate
   const closeRename = () => {
@@ -1696,7 +1704,12 @@ export function WorkspaceBrowser({
   const [createBusy, setCreateBusy] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const createTrimmed = createDraft.trim()
-  const createBlocked = createBusy || createTrimmed === ''
+  // A title another project already holds is not available — the same rule the rename dialog
+  // applies below, and the same one the Host enforces. This only spares the user a round trip that
+  // is certain to fail; the Host is the authority, because the dialog is not the only entry point.
+  const createDuplicate = createTrimmed !== ''
+    && (groupingOverride?.some(source => source.label === createTrimmed) ?? false)
+  const createBlocked = createBusy || createTrimmed === '' || createDuplicate
   const openCreate = () => {
     setCreateDraft('')
     setCreateError(null)
@@ -2060,7 +2073,13 @@ export function WorkspaceBrowser({
           }}
         />
         {renameDuplicate && (
-          <div className={css.renameError} role="alert">{t('conflict.named', { name: renameTrimmed })}</div>
+          <div className={css.renameError} role="alert">
+            {/* The shipped key says 工作区, which is right for one row kind and wrong for the
+              * other: this dialog serves both, so the message names whichever the user is
+              * actually editing. */}
+            {t(renameTarget?.kind === 'project' ? 'conflict.projectNamed' : 'conflict.named',
+              { name: renameTrimmed })}
+          </div>
         )}
         {renameError !== null && <div className={css.renameError} role="alert">{renameError}</div>}
       </Modal>
@@ -2118,6 +2137,11 @@ export function WorkspaceBrowser({
             onChange={(e) => { setCreateDraft(e.target.value) }}
             onKeyDown={(e) => { if (e.key === 'Enter') confirmCreate() }}
           />
+          {createDuplicate && (
+            <div className={css.renameError} role="alert">
+              {t('conflict.projectNamed', { name: createTrimmed })}
+            </div>
+          )}
           {createError !== null && <div className={css.renameError} role="alert">{createError}</div>}
         </Modal>
       )}

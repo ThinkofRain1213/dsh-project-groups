@@ -46,6 +46,10 @@ export const zh = {
   'delete.project': '删除项目',
   'delete.project.desc': '将删除项目“{name}”。其中的会话不会被删除，会回到“未分组”。',
   'delete.project.pending': '正在删除项目…',
+  // A title another project already holds. Its own key rather than the shipped
+  // `conflict.named`, whose wording says 工作区: to the user a project and a Workspace are
+  // different things, so the message names the one they were actually editing.
+  'conflict.projectNamed': '已存在名为“{name}”的项目。',
   // The missing-底层工作区 dialog. Its own keys rather than a rewrite of any shipped
   // one: the vendored dictionary stays upstream's copy for re-sync, and the additions
   // live in one contiguous block so a re-sync can re-add them mechanically.
@@ -190,6 +194,7 @@ export const en = {
   'delete.project': 'Delete project',
   'delete.project.desc': 'This deletes the project “{name}”. Its sessions are not deleted; they return to Ungrouped.',
   'delete.project.pending': 'Deleting project…',
+  'conflict.projectNamed': 'A project named “{name}” already exists.',
   'baseMissing.title': 'Base workspace missing',
   'baseMissing.body': 'It is where every session this plugin creates lands; without it, no session can be started.',
   'baseMissing.path': 'Missing: {path}',
