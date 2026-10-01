@@ -73,6 +73,16 @@ export class ProjectController extends TypertRemoteService {
   private opening: Promise<void> | undefined
   /** Listener for `domain/changed`, held so the close path can drop it. */
   private detach: (() => void) | undefined
+  /**
+   * Tail of the compound-mutation chain.
+   *
+   * The domain serializes each individual write, but a create or a delete is
+   * three to five writes plus a marker, and a second caller interleaving between
+   * them would observe a half-applied mutation — or, worse, overwrite the marker
+   * that makes recovery possible. Mirrors the official registry's
+   * `operationTail` (`workspace/src/index.ts`).
+   */
+  private operationTail: Promise<void> = Promise.resolve()
 
   /**
    * @param ctx - Host context carrying the storage-domain facility.
@@ -93,6 +103,10 @@ export class ProjectController extends TypertRemoteService {
   private async ready(): Promise<Domain<typeof projectDomainSpec>> {
     this.opening ??= (async () => {
       this.domain = await this.ctx.storageDomain.open(projectDomainSpec)
+      // A marker left by a crash is cleared before any reader can observe the
+      // half-applied state, and before a later mutation could overwrite the only
+      // durable record of what still needs repairing.
+      await this.recoverPendingMutation(this.domain)
       this.detach = this.ctx.on('domain/changed', (change) => {
         if (change.domain !== PROJECT_DOMAIN_NAME) return
         for (const wake of [...this.followers]) wake()
@@ -119,6 +133,61 @@ export class ProjectController extends TypertRemoteService {
   }
 
   /**
+   * Finish whatever a previous process left in flight.
+   *
+   * A marker names one compound mutation that did not complete. Its id is absent
+   * from `projectIds` whichever direction it was going (see `pendingMutation` in
+   * `spec.ts`), so the leftover is always the record set, and removing every
+   * trace of that project is the whole repair. Nothing can reference it: an
+   * assignment is only written after `assign` has seen the record exist.
+   *
+   * The sweep is wider than the official registry's single-record delete because
+   * a delete here touches four tables, so an interruption can strand an
+   * assignment, an expansion or an order alongside the record. Deleting a set
+   * that is partly absent is a no-op per missing key, so this is idempotent —
+   * which matters, because it also runs before the next mutation and again on
+   * every start.
+   * @param domain - the open domain.
+   */
+  private async recoverPendingMutation(domain: Domain<typeof projectDomainSpec>): Promise<void> {
+    const pending = domain.global.get().pendingMutation
+    if (pending === undefined) return
+    const { projectId } = pending
+    for (const [sessionId, record] of [...domain.table('assignments').entries()]) {
+      if (record.projectId === projectId) await domain.table('assignments').delete(sessionId)
+    }
+    await domain.table('projects').delete(projectId)
+    await domain.table('expansions').delete(projectId)
+    await domain.table('orders').delete(projectId)
+    await this.setGlobal(domain, { pendingMutation: undefined })
+  }
+
+  /**
+   * Run one compound mutation on the shared tail, finishing any interrupted
+   * predecessor first.
+   *
+   * Recovery runs inside the slot rather than only at startup because a marker
+   * left behind must be cleared before this operation writes its own — otherwise
+   * this one would overwrite the record of what still needs repairing.
+   * @param domain - the open domain.
+   * @param operation - the mutation to run.
+   * @returns the operation's result.
+   */
+  private operate<T>(
+    domain: Domain<typeof projectDomainSpec>,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const result = this.operationTail.then(async () => {
+      await this.recoverPendingMutation(domain)
+      return await operation()
+    })
+    // The tail observes failure without adopting it: a rejected mutation must not
+    // poison every later one. Same shape as the official registry's chain.
+    this.operationTail = result.then(() => {}, () => {})
+    return result
+  }
+
+  /**
    * Reject a title another project already uses.
    *
    * Titles are unique, the way Workspace titles are: `dsh-client-ui-workspace` blocks a rename
@@ -139,8 +208,10 @@ export class ProjectController extends TypertRemoteService {
     title: string,
     exceptId?: string,
   ): void {
-    // Scanned over the table rather than `order()`: the order is the display list, and a project
-    // missing from it must still reserve its name.
+    // Scanned over the table rather than `order()`: the order is the display list, and a record
+    // that is not in it must still reserve its name — otherwise two records could hold one title
+    // and the duplicate would surface the moment either became visible. Recovery keeps the set
+    // free of interrupted creates; this remains a guard against external corruption.
     for (const [id, record] of domain.table('projects').entries()) {
       if (id !== exceptId && record.title === title) {
         throw new Error(`a project named "${title}" already exists`)
@@ -179,6 +250,19 @@ export class ProjectController extends TypertRemoteService {
   /**
    * The complete Client projection: projects in display order, the order itself,
    * and every assignment.
+   *
+   * Derived from the order alone, the way the official registry derives its list
+   * from `workspaceIds` (`workspace/src/index.ts`). A record whose id has not
+   * reached the order is **not** part of the projection, and that is what makes a
+   * create one visible transition: the interval between the record write and the
+   * order write is indistinguishable from the state before it, so the client's
+   * value-equality guard drops that frame and only the completed write renders.
+   * Listing such a record instead — appended below the ordered rows — showed the
+   * new row at the bottom and then moved it to the top, which read as a slide.
+   *
+   * Nothing is lost by not rendering it: a record can only be order-less while a
+   * mutation is in flight, and `recoverPendingMutation` removes whatever an
+   * interruption left, so the state cannot persist across a start.
    * @returns the baseline a following generation opens with.
    */
   @Remote('baseline')
@@ -186,12 +270,7 @@ export class ProjectController extends TypertRemoteService {
     const domain = await this.ready()
     const projects = domain.table('projects')
     const assignments = domain.table('assignments')
-    // The order array is authoritative, but a record that landed without an
-    // order entry (an interrupted write, or a hand-edited medium) must still be
-    // visible rather than silently dropped.
     const ordered = this.order().filter(id => projects.get(id) !== undefined)
-    const seen = new Set(ordered)
-    for (const id of projects.keys()) if (!seen.has(id)) ordered.push(id)
     return {
       projects: ordered.map(id => this.projectValue(id, projects.get(id) as ProjectRecord)),
       projectIds: ordered,
@@ -223,6 +302,25 @@ export class ProjectController extends TypertRemoteService {
    * ...state.workspaceIds]`). A new row appears where the user is looking instead
    * of below however many rows already exist, which is what makes a long list
    * workable.
+   *
+   * Three writes, in the official registry's order — marker, record, order — and
+   * the sequence carries two separate guarantees:
+   *
+   * - **The order is written last**, so an interruption always leaves the id
+   *   absent from `projectIds` and the record as the only thing recovery has to
+   *   name. Writing it earlier would strand the id there, where the marker
+   *   cannot reach it.
+   * - **The marker is its own write**, even though it shares the global with the
+   *   order. Folding the two together would publish the id in the order while
+   *   the record does not yet exist, which is the same stranding with extra
+   *   steps.
+   *
+   * Only the last write changes the projection, so the sidebar renders one
+   * insert. The first two produce frames that are value-equal to the one before
+   * them, and the client drops those (`src/client/projects.ts` compares by
+   * value before publishing). Without that, the record-only frame would show the
+   * new row appended below the ordered ones and then move it to the top, which
+   * reads as a slide.
    * @param request - display title; surrounding whitespace is trimmed.
    * @returns the created project.
    */
@@ -231,13 +329,19 @@ export class ProjectController extends TypertRemoteService {
     const title = request.title.trim()
     if (title === '') throw new Error('a project title is required')
     const domain = await this.ready()
-    this.assertTitleFree(domain, title)
-    const projectId = newProjectId()
-    const now = new Date().toISOString()
-    const record: ProjectRecord = { title, docPath: '', createdAt: now, updatedAt: now }
-    await domain.table('projects').put(projectId, record)
-    await this.setGlobal(domain, { projectIds: [projectId, ...this.order()] })
-    return { project: this.projectValue(projectId, record) }
+    return await this.operate(domain, async () => {
+      this.assertTitleFree(domain, title)
+      const projectId = newProjectId()
+      const now = new Date().toISOString()
+      const record: ProjectRecord = { title, docPath: '', createdAt: now, updatedAt: now }
+      await this.setGlobal(domain, { pendingMutation: { operation: 'create', projectId } })
+      await domain.table('projects').put(projectId, record)
+      await this.setGlobal(domain, {
+        projectIds: [projectId, ...this.order()],
+        pendingMutation: undefined,
+      })
+      return { project: this.projectValue(projectId, record) }
+    })
   }
 
   /**
@@ -267,18 +371,35 @@ export class ProjectController extends TypertRemoteService {
    * Session without one is simply Ungrouped. The expansion and order go with the
    * project because both are keyed by project id and would otherwise be
    * unreachable state.
+   *
+   * The order is written **first** here, the mirror of create and the official
+   * registry's shape (`workspace/src/index.ts`). The row leaves the display
+   * before its records are dropped, so an interruption leaves the id absent from
+   * `projectIds` — which is what lets recovery treat a half-finished delete
+   * exactly like a half-finished create: delete the record set, clear the
+   * marker. Writing the order last would leave the id in it with nothing to
+   * name, and the marker could not repair that.
+   *
+   * It also makes the row disappear on the first write rather than after four
+   * table sweeps, which is what the user is watching.
    * @param request - target project.
    */
   @Remote('delete')
   async remove(request: ProjectDeleteRequest): Promise<void> {
     const domain = await this.ready()
-    for (const [sessionId, record] of [...domain.table('assignments').entries()]) {
-      if (record.projectId === request.projectId) await domain.table('assignments').delete(sessionId)
-    }
-    await domain.table('projects').delete(request.projectId)
-    await domain.table('expansions').delete(request.projectId)
-    await domain.table('orders').delete(request.projectId)
-    await this.setGlobal(domain, { projectIds: this.order().filter(id => id !== request.projectId) })
+    await this.operate(domain, async () => {
+      await this.setGlobal(domain, {
+        projectIds: this.order().filter(id => id !== request.projectId),
+        pendingMutation: { operation: 'delete', projectId: request.projectId },
+      })
+      for (const [sessionId, record] of [...domain.table('assignments').entries()]) {
+        if (record.projectId === request.projectId) await domain.table('assignments').delete(sessionId)
+      }
+      await domain.table('projects').delete(request.projectId)
+      await domain.table('expansions').delete(request.projectId)
+      await domain.table('orders').delete(request.projectId)
+      await this.setGlobal(domain, { pendingMutation: undefined })
+    })
   }
 
   /**

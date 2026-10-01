@@ -153,6 +153,27 @@ export const baseWorkspaceSetting = z.object({
 export type BaseWorkspaceSetting = z.infer<typeof baseWorkspaceSetting>
 
 /**
+ * A recoverable in-flight mutation marker, mirroring the official registry's
+ * `pendingMutation` (`packages/workspace/workspace/src/spec.ts`).
+ *
+ * A create or a delete is several writes, and a crash between them leaves a
+ * half-applied state that no reader could tell from corruption. The marker is
+ * written first, so startup can name what was in flight instead of guessing.
+ *
+ * Both operations recover the same way — the record must not survive — because
+ * the order is written *after* the record on create and *before* it on delete.
+ * Either interruption therefore leaves the id **absent** from `projectIds`, so
+ * the leftover is always the record set, and removing it is the whole repair.
+ */
+export const pendingMutation = z.discriminatedUnion('operation', [
+  z.object({ operation: z.literal('create'), projectId: z.string() }),
+  z.object({ operation: z.literal('delete'), projectId: z.string() }),
+])
+
+/** One stored in-flight mutation. */
+export type PendingMutation = z.infer<typeof pendingMutation>
+
+/**
  * Durable shape of the global singleton: the project display order plus the
  * destination policy for unscoped New Sessions.
  *
@@ -165,11 +186,18 @@ export type BaseWorkspaceSetting = z.infer<typeof baseWorkspaceSetting>
  * `baseWorkspace` uses the same mechanism for the same reason: a global written
  * before it existed reads back as `{ mode: 'default' }`, which is exactly the
  * behaviour such an install already had.
+ *
+ * `pendingMutation` is `.optional()` for the same compatibility reason: a global
+ * written before it existed reads back as `undefined`, which is the correct
+ * "nothing was in flight". No version bump is needed — see the note on
+ * `projectDomainSpec` below.
  */
 export const globalRecord = z.object({
   projectIds: z.array(z.string()),
   newSessionTarget: newSessionTarget.default('ungrouped'),
   baseWorkspace: baseWorkspaceSetting.default({ mode: 'default' }),
+  /** The mutation a previous process left unfinished, if any. */
+  pendingMutation: pendingMutation.optional(),
 })
 
 /** The stored global singleton. */

@@ -321,20 +321,76 @@ function bench() {
     baseline.assignments['session-1'] === undefined)
 }
 
-// 9. A record without an order entry stays visible.
+// 9. A record whose id is absent from the order is not projected, and an
+//    interrupted mutation is repaired on the next start.
+//
+//    The state has to be injected through the BACKEND, then observed by a
+//    controller that opens over it. Assigning to `unit.global` alone would not
+//    work: the facility reads `loadAll()` once, at open, and the live domain
+//    keeps its own in-memory copy — so a later write to the backend's state
+//    object is invisible to `baseline()`. That is how this test used to pass
+//    against the old backfill without ever exercising it.
+{
+  const backend = memoryBackend()
+  const first = new ProjectController(benchContext(backend))
+  const created = await first.create({ title: 'orphan' })
+  const orphanId = created.project.projectId
+
+  // Rewind to the instant a crash would leave: the record is durable, the id was
+  // never added to the order, and the marker names what was in flight.
+  const unit = backend.units.get(PROJECT_DOMAIN_NAME)
+  unit.global = { projectIds: [], pendingMutation: { operation: 'create', projectId: orphanId } }
+
+  // A fresh controller over the same backend — the only way to see what a restart
+  // sees, because the projection is derived at open.
+  const restarted = new ProjectController(benchContext(backend))
+  const baseline = await restarted.baseline()
+  check('an interrupted create is not listed',
+    baseline.projects.length === 0, baseline.projects.map(p => p.title).join(','))
+  check('and the reported order is empty as well',
+    baseline.projectIds.length === 0, baseline.projectIds.join(','))
+  check('and recovery removed the interrupted record',
+    Object.keys(unit.tables.projects).length === 0, JSON.stringify(unit.tables.projects))
+  check('and cleared the marker',
+    unit.global.pendingMutation === undefined, JSON.stringify(unit.global))
+}
+
+// 9b. A settled create leaves no marker or stray order entry behind. The positive
+//     half of the guarantee: repair only matters if the normal path needs none.
 {
   const { controller, backend } = bench()
-  await controller.create({ title: 'orphan' })
-  // Simulate a medium whose order array lost an entry (an interrupted write, or
-  // a hand-edit): the record must still be listed rather than silently dropped.
+  const created = await controller.create({ title: 'settled' })
   const unit = backend.units.get(PROJECT_DOMAIN_NAME)
-  unit.global = { projectIds: [] }
-  const baseline = await controller.baseline()
-  check('a record missing from the order is still listed',
-    baseline.projects.map(p => p.title).join(',') === 'orphan',
-    baseline.projects.map(p => p.title).join(','))
-  check('and it is appended to the reported order',
-    baseline.projectIds.length === 1, baseline.projectIds.join(','))
+  check('a settled create clears its marker', unit.global.pendingMutation === undefined,
+    JSON.stringify(unit.global))
+  check('and the order holds exactly that one id',
+    (unit.global.projectIds ?? []).length === 1
+    && unit.global.projectIds[0] === created.project.projectId,
+    JSON.stringify(unit.global.projectIds))
+  check('and the record is present',
+    Object.keys(unit.tables.projects).length === 1, JSON.stringify(unit.tables.projects))
+}
+
+// 9c. Interrupted delete: the order write landed, the records did not. Recovery
+//     must clear what a delete would have removed, including the assignment.
+{
+  const backend = memoryBackend()
+  const first = new ProjectController(benchContext(backend))
+  const created = await first.create({ title: 'doomed' })
+  const doomedId = created.project.projectId
+
+  const unit = backend.units.get(PROJECT_DOMAIN_NAME)
+  unit.global = { projectIds: [], pendingMutation: { operation: 'delete', projectId: doomedId } }
+  unit.tables.assignments = { 'session-1': { projectId: doomedId, assignedAt: 'now' } }
+
+  const restarted = new ProjectController(benchContext(backend))
+  const baseline = await restarted.baseline()
+  check('an interrupted delete leaves no assignment behind',
+    Object.keys(baseline.assignments).length === 0, JSON.stringify(baseline.assignments))
+  check('and removed the record it named',
+    Object.keys(unit.tables.projects).length === 0, JSON.stringify(unit.tables.projects))
+  check('and cleared the marker',
+    unit.global.pendingMutation === undefined, JSON.stringify(unit.global))
 }
 
 // 10. The domain descriptor this plugin hands the facility is the one it owns.
