@@ -3069,6 +3069,25 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
       （正常路径零残留的正面断言）、9c（中断的 delete，含 assignment 清理）。
       **断言数 354 → 362**（#9 由 2 条变 4 条，新增 9b 3 条、9c 3 条）。
       实测 **362 PASS / 0 FAIL / 13 suites**。
+
+      ### ⚠️ 实测复核：**方案 D 没有修好动画（2026-10-01，用户实测）**
+      **用户重装（`link:` 指向本地 HEAD，产物哈希已核对一致、含本次全部改动）
+      后实测：新建项目仍然滑动。**
+      ⇒ **上面"三笔写入 ⇒ 前两帧与上一帧值相等 ⇒ 客户端守卫丢弃 ⇒ 单次
+      淡入"的推理是错的。** 该推理基于静态阅读 `src/client/projects.ts:668-677`
+      的值相等守卫，**未做运行时验证**。
+      **不确定的部分**：`accept()` 的守卫比较的是
+      `projects/assignments/expansions/orders/newSessionTarget/baseWorkspace`
+      ——**而 `projectIds` 不在比较列表里**。若 `projects` 数组在帧 1/2 之间
+      确实变化（例如 `baseline()` 的 `projects` 派生与 `order()` 不同步，
+      或 `follow` 的帧到达顺序与写入顺序不一致），守卫就不会丢弃。
+      **这正是需要逐帧实测确认的点，不再靠推演。**
+      **待办**：按 `probe-row-key-motion.mjs` 的逐帧采样机制实测——记录
+      新建一次项目期间**每一动画帧**的 `data-row-key` 列表与位置，
+      用数据定位"到底几帧、哪一帧引入了底部行"。
+      **方案 D 本身的价值不因此作废**：它达成的
+      「投影纯派生 + 官方恢复标记 + 零残留」是独立成立的正确改进
+      （362 断言的测试覆盖它），**只是没有解决动画**。
 - [ ] **Z-2 新会话入口仍用「工作区」措辞**（结论已修正，2026-10-01）
       首页新建会话的下拉（「默认工作区 / 添加工作区」）没有反映项目分组，
       左侧栏已按「项目」组织，此处仍说「工作区」。
@@ -3085,6 +3104,39 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
         一次性技术配置，在设置卡里设）
       - **下拉** = 会话归到哪个项目（用户真正关心的归属）
       ⇒ 两者是不同层级的问题，不重叠。
+- [ ] **Z-3 新建项目不创建会话，官方会创建**（用户实测发现，2026-10-01）
+      **官方链路已核实**：
+      `WorkspacePicker.tsx:132-134` `createWorkspace({path}) → onPick(id)`
+      ⇒ `WorkspaceBrowser.tsx:1316-1319` `onPick: { closeAddWorkspace();
+      startSession(workspaceId) }` ⇒ `navigation.ts:223-241` `startSession`
+      → `openWorkspace` → `connectWorkspace` ⇒ `navigation.ts:179-189`
+      `reuseOrCreateBlank`：**没有可复用的空白会话就 `sessions.create`**。
+      ⇒ **官方"添加工作区" = 建注册 + 立即开一个新会话。**
+      **我们的链路**（`WorkspaceBrowser.tsx:1728-1739`）：`createProject({title})`
+      **只写一条记录就结束**，不创建任何会话 ⇒ 与官方不一致。
+      **用户意见：做成一个开关。** 设计张力需先定：
+      官方那一步的实质是"在**新目录**里开一个会话"，而**项目没有目录**
+      （所有项目共用同一个底层工作区）⇒ 对应行为应是
+      "新建项目后在其中开一个空白会话"（语义说得通），
+      但**开关的默认值、以及开关放在设置卡还是对话框**需要先定。
+- [ ] **Z-4 删除项目时会话淡入，官方是滑动**（用户实测发现，2026-10-01；根因已核实）
+      **现象**：官方删除工作区时，其会话会**滑动**到下方；我们的会话在下方
+      **淡入**，失去了滑动。
+      **根因 = 我们自己的 `sessionRowKey`（deviation 6）**：
+      - 我们的行键把**所属组编进键**：`session:<id>@<groupKey>`
+        （`Rows.tsx:78-80`）。
+      - 删除项目时其会话落入「未分组」⇒ **`groupKey` 变** ⇒ **整个行键变**。
+      - `AnimatedRows` 于是看到：旧键消失（退出淡出）+ 新键出现
+        （`previousRow === undefined` ⇒ 进入淡入，`AnimatedRows.tsx:95-97`）。
+      - 官方行键**不含组**（`session:<id>`）⇒ 键不变、只位置变
+        ⇒ `dx/dy ≠ 0` ⇒ **滑动**（`AnimatedRows.tsx:102-105`）。
+      **⚠️ 这是真实取舍，不是单纯 bug**：把组编进行键，**正是为了跨项目拖拽时
+      淡出淡入而非横穿侧栏滑动**（deviation 6，有 `probe-row-key-motion.mjs` 钉住）。
+      ⇒ **"删除时滑动"与"拖拽时淡入"共用同一个机制**，不能只改一头。
+      若要两者兼得，必须**区分原因**（用户拖拽 vs 组消失）——例如让
+      `AnimatedRows` 的判定能看到"该行是被移除后重新出现"还是"用户搬动"，
+      或让删除路径换一个不改变行键的中转。
+      **需先定：是要"两个行为都对"，还是接受其中一边与官方不同。**
 
 ### 通用
 - [x] 构建配置（tsdown + `cordis.patch.yml`）
