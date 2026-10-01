@@ -70,6 +70,7 @@ export interface ProjectRemote {
   setExpanded(request: { projectId: string; expanded: boolean }): Promise<RemoteOutcome<unknown>>
   setOrders(request: { orders: Readonly<Record<string, readonly string[]>> }): Promise<RemoteOutcome<unknown>>
   setNewSessionTarget(request: { target: NewSessionTarget }): Promise<RemoteOutcome<unknown>>
+  setCreateOpensSession(request: { value: boolean }): Promise<RemoteOutcome<unknown>>
   setBaseWorkspace(request: BaseWorkspaceSetting): Promise<RemoteOutcome<unknown>>
   defaultWorkspacePath(): Promise<RemoteOutcome<{ path: string | null }>>
   rebuildBaseWorkspace(): Promise<RemoteOutcome<unknown>>
@@ -116,6 +117,13 @@ interface ProjectState {
    * `path`.
    */
   readonly baseWorkspace: BaseWorkspaceSetting
+  /**
+   * Whether creating a project also opens a Session inside it.
+   *
+   * Read by the vendored sidebar region — where the create dialog lives — to choose
+   * between following the official add-workspace flow and only adding the row.
+   */
+  readonly createOpensSession: boolean
 }
 
 const EMPTY_STATE: ProjectState = Object.freeze({
@@ -125,6 +133,7 @@ const EMPTY_STATE: ProjectState = Object.freeze({
   orders: Object.freeze({}),
   newSessionTarget: 'ungrouped',
   baseWorkspace: Object.freeze({ mode: 'default' as const }),
+  createOpensSession: true,
 })
 
 /**
@@ -274,6 +283,27 @@ export class ProjectModel {
     },
   }
 
+  /**
+   * Whether creating a project opens a Session.
+   *
+   * Its own observable like the two above, with one difference worth stating: this
+   * one **is** handed to the vendored browser, because the create dialog lives there
+   * and that is where the value is spent. The settings card reads the same
+   * observable, which is what keeps one switch driving the behaviour the user sees.
+   */
+  readonly createOpensSession$: HostObservable<boolean> = {
+    getSnapshot: () => this.state.createOpensSession,
+    subscribe: (listener) => {
+      this.listeners.add(listener)
+      return () => { this.listeners.delete(listener) }
+    },
+  }
+
+  /** @returns whether creating a project also opens a Session inside it. */
+  createOpensSessionValue(): boolean {
+    return this.state.createOpensSession
+  }
+
   /** @returns projects in display order. */
   list(): readonly ProjectValue[] {
     return this.state.projects
@@ -335,9 +365,19 @@ export class ProjectModel {
     return () => { controller.abort() }
   }
 
-  /** Create a project; the state updates when the Host's write reaches the stream. */
-  async create(title: string): Promise<void> {
-    unwrap(await this.remote.create({ title: title.trim() }), 'create project')
+  /**
+   * Create a project and return its id.
+   *
+   * The id is returned because the caller needs it immediately: the official
+   * add-workspace flow opens a Session as part of creating the row, and filing that
+   * Session under the new project requires its id. It cannot be read back from state,
+   * because the Host's `follow` frame has not necessarily landed when this resolves.
+   * @param title - display title; surrounding whitespace is trimmed.
+   * @returns the created project's id.
+   */
+  async create(title: string): Promise<string> {
+    const value = unwrap(await this.remote.create({ title: title.trim() }), 'create project')
+    return (value as { project: { projectId: string } }).project.projectId
   }
 
   /** Retitle a project. */
@@ -543,6 +583,31 @@ export class ProjectModel {
   }
 
   /**
+   * Persist whether creating a project opens a Session.
+   *
+   * Optimistic like {@link setNewSessionTarget}, and for the same reason: the switch
+   * has to follow the click in the frame it happened, or it springs back before the
+   * Host's frame arrives.
+   * @param value - the chosen behaviour.
+   */
+  async setCreateOpensSession(value: boolean): Promise<void> {
+    const previous = this.state.createOpensSession
+    if (previous === value) return
+    this.state = Object.freeze({ ...this.state, createOpensSession: value })
+    for (const listener of [...this.listeners]) listener()
+    try {
+      unwrap(await this.remote.setCreateOpensSession({ value }), 'set create-opens-session')
+    } catch (error: unknown) {
+      // Only revert when the Host has not already answered with something newer.
+      if (this.state.createOpensSession === value) {
+        this.state = Object.freeze({ ...this.state, createOpensSession: previous })
+        for (const listener of [...this.listeners]) listener()
+      }
+      throw error
+    }
+  }
+
+  /**
    * Store the base workspace: the Workspace every New Session lands in.
    *
    * Optimistic like {@link setNewSessionTarget}, and for the same reason: the card
@@ -665,17 +730,25 @@ export class ProjectModel {
     // Same guard for the base-workspace setting: a Host predating the field means
     // "the official default Workspace", which is what it already did.
     const baseWorkspace = baseline.baseWorkspace ?? { mode: 'default' as const }
+    // And the same for this one: a Host predating the field did not open a Session on
+    // create, so the value it actually behaves as is the official add-workspace
+    // behaviour — on. Reading through a default keeps the switch honest against an
+    // older Host instead of showing "off" for behaviour that is on.
+    const createOpensSession = baseline.createOpensSession ?? true
     if (
       sameProjects(this.state.projects, projects)
       && sameAssignments(this.state.assignments, assignments)
       && sameExpansions(this.state.expansions, expansions)
       && sameOrders(this.state.orders, orders)
       && this.state.newSessionTarget === newSessionTarget
+      && this.state.createOpensSession === createOpensSession
       && sameBaseWorkspace(this.state.baseWorkspace, baseWorkspace)
     ) {
       return
     }
-    this.state = Object.freeze({ projects, assignments, expansions, orders, newSessionTarget, baseWorkspace })
+    this.state = Object.freeze({
+      projects, assignments, expansions, orders, newSessionTarget, createOpensSession, baseWorkspace,
+    })
     this.derived = undefined
     for (const listener of [...this.listeners]) listener()
   }

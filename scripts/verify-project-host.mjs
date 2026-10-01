@@ -611,8 +611,45 @@ function bench() {
     JSON.stringify(baseline.projects.map(p => p.title)))
   check('and reads back the default destination', baseline.newSessionTarget === 'ungrouped',
     String(baseline.newSessionTarget))
+  // The same compatibility argument for the create-opens-Session switch: a medium
+  // written before the field existed behaves as the official add-workspace flow did,
+  // which is "on", so the value it reads back must say so rather than `undefined`.
+  check('and reads back the create switch as on', baseline.createOpensSession === true,
+    String(baseline.createOpensSession))
   check('with its project order intact', baseline.projectIds.length === 1,
     baseline.projectIds.join(','))
+}
+
+// 16. The create-opens-Session switch: stored, reported, and sharing the global with
+//     the project order it must not disturb.
+{
+  const { controller, backend } = bench()
+  const a = (await controller.create({ title: 'a' })).project.projectId
+
+  check('a fresh registry opens a Session on create',
+    (await controller.baseline()).createOpensSession === true,
+    String((await controller.baseline()).createOpensSession))
+
+  await controller.setCreateOpensSession({ value: false })
+  check('the choice is reported by the baseline',
+    (await controller.baseline()).createOpensSession === false,
+    String((await controller.baseline()).createOpensSession))
+
+  // `global.set` replaces the whole singleton, so this is the regression that
+  // matters: writing the switch must leave the project order intact.
+  check('writing the switch did NOT drop the project order',
+    (await controller.baseline()).projectIds.join(',') === a,
+    (await controller.baseline()).projectIds.join(','))
+
+  // And the reverse direction: creating another project must not reset it.
+  await controller.create({ title: 'b' })
+  check('creating a project did NOT reset the switch',
+    (await controller.baseline()).createOpensSession === false,
+    String((await controller.baseline()).createOpensSession))
+
+  check('the durable unit holds the choice',
+    backend.units.get(PROJECT_DOMAIN_NAME).global.createOpensSession === false,
+    JSON.stringify(backend.units.get(PROJECT_DOMAIN_NAME).global))
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)

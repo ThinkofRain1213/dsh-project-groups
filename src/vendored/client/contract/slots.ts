@@ -265,6 +265,21 @@ export type WorkspaceBrowserInjected = {
      * store, exactly as upstream.
      */
     orders: HostObservable<Readonly<Record<string, readonly string[]>>>
+    /**
+     * Whether creating a caller-supplied project also opens a Session inside it.
+     *
+     * Mandatory as a hook, like the three above: the renderer binds hooks from the
+     * observable's identity, so a composition without one supplies an observable
+     * answering `false`. That default is never consulted without a project model —
+     * the create dialog returns early when `createProject` is absent — so it stays
+     * the conservative answer: add the row and do nothing else, which is what this
+     * region does on its own.
+     *
+     * Read here rather than left to the caller's own settings surface because this
+     * region is where the create dialog lives, so it is what chooses between
+     * following the official flow and only adding the row.
+     */
+    createOpensSession: HostObservable<boolean>
   }
   /** Open the browser search and focus its input. */
   requestSearch: () => void
@@ -277,7 +292,7 @@ export type WorkspaceBrowserInjected = {
    * caller-supplied group renders with no row menu or drag target, because there
    * is nothing behind it to drive.
    */
-  createProject?: ((input: { title: string }) => Promise<void>) | undefined
+  createProject?: ((input: { title: string }) => Promise<{ projectId: string }>) | undefined
   /** Retitle one caller-supplied project. */
   renameProject?: ((id: string, title: string) => Promise<void>) | undefined
   /** Remove one caller-supplied project; its Sessions are not touched. */

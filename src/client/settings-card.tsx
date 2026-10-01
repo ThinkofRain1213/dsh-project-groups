@@ -13,12 +13,12 @@
  * ignores `form` in favour of its `configure` Remote.
  */
 import { useEffect, useState } from 'react'
-import { IconChevronDownOutlineRegular, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconChevronDownOutlineRegular, Menu, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { WorkspaceSource } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { HostObservable, InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { BaseWorkspaceSetting, NewSessionTarget } from '../protocol.ts'
 import type { BaseWorkspaceChooserRequest } from './index.ts'
-import type { clientBaseWorkspace, clientNewSessionTarget } from './grouping.ts'
+import type { clientBaseWorkspace, clientCreateOpensSession, clientNewSessionTarget } from './grouping.ts'
 import type { SETTINGS_NS } from './settings-locales.ts'
 import { BaseWorkspacePicker } from './base-workspace-picker.tsx'
 import css from './settings-card.module.css'
@@ -41,6 +41,13 @@ export interface ProjectGroupsCardInjected {
     /** The stored base-workspace setting; see `spec.ts` for why a path, not an id. */
     baseWorkspace: typeof clientBaseWorkspace
     /**
+     * Whether creating a project also opens a Session inside it.
+     *
+     * The same observable the vendored sidebar reads, so the switch and the create
+     * dialog can never disagree about the behaviour.
+     */
+    createOpensSession: typeof clientCreateOpensSession
+    /**
      * The Workspace registry, for the chooser. Absent when the controller is not
      * composed, in which case the chooser reports "暂无工作区" rather than throwing.
      */
@@ -58,6 +65,8 @@ export interface ProjectGroupsCardInjected {
   setTarget: (target: NewSessionTarget) => void
   /** Persist the base-workspace choice. Resolves after the Host accepts it. */
   setBaseWorkspace: (setting: BaseWorkspaceSetting) => void
+  /** Persist whether creating a project opens a Session. */
+  setCreateOpensSession: (value: boolean) => void
 }
 
 /** Full component props assembled by the Plugin manager renderer. */
@@ -73,7 +82,8 @@ export type ProjectGroupsCardProps =
  */
 export function ProjectGroupsCard({
   useTarget, setTarget, useBaseWorkspace, setBaseWorkspace, useWorkspaces,
-  useChooserRequest, settleBaseWorkspaceChooser, t,
+  useChooserRequest, settleBaseWorkspaceChooser,
+  useCreateOpensSession, setCreateOpensSession, t,
 }: ProjectGroupsCardProps) {
   const target = useTarget(value => value)
   const [open, setOpen] = useState(false)
@@ -83,6 +93,7 @@ export function ProjectGroupsCard({
   const selected = OPTIONS.includes(target) ? target : 'ungrouped'
 
   const base = useBaseWorkspace(value => value)
+  const openOnCreate = useCreateOpensSession(value => value)
   // The hook is optional in the face, so the call is guarded rather than assumed.
   const workspaceSnapshot = useWorkspaces === undefined ? undefined : useWorkspaces(value => value)
   const workspaces = workspaceSnapshot?.items ?? []
@@ -157,6 +168,24 @@ export function ProjectGroupsCard({
               <IconChevronDownOutlineRegular className={css.chevron} />
             </button>
           )}
+        />
+      </div>
+
+      {/*
+        Creating a project, and whether it also opens a Session. Placed between the
+        destination and the base workspace because it belongs to the same question —
+        what a New Session does — while the row below is a technical choice about
+        where the directory is.
+      */}
+      <div className={css.row}>
+        <div className={css.rowText}>
+          <div className={css.title}>{t('createOpensTitle')}</div>
+          <div className={css.desc}>{t('createOpensDesc')}</div>
+        </div>
+        <Switch
+          checked={openOnCreate}
+          onChange={setCreateOpensSession}
+          label={t('createOpensTitle')}
         />
       </div>
 

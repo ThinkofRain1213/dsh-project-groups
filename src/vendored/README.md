@@ -113,10 +113,13 @@ source with a comment naming the seam.
 | `tree.ts` | adds `GroupSource`, `owningSourceKey`, and `groupBySource` (a line-for-line twin of `groupByWorkspace`); `deriveGroups` takes an optional 6th `sources` parameter | re-apply on top of the new `groupByWorkspace` |
 | `tree.ts` | `deriveSearchResults` takes an optional 9th `sources` parameter and labels a result row from it, so a search result names its project the way the tree does; the `sources === undefined` branch is upstream's, unchanged (see below) | add the parameter, the `groupBySession` map, and the branch in `labelOf` |
 | `contract/slots.ts` | adds a mandatory `grouping` hook to `WorkspaceBrowserInjected.hooks`, plus the `GroupSource` type import | re-add the one field + import |
+| `contract/slots.ts` | adds a mandatory `createOpensSession` hook to the same `hooks` block, and `createProject` returns `{ projectId }` rather than `void` (both **behaviour-relevant**, see below) | re-add the hook field and the return type |
+| `client/index.ts` | `ProjectActions.createProject` returns `{ projectId }` rather than `void`, and `apply` takes a sixth `createOpensSessionOverride` argument threaded into that hook | re-add the return type, the parameter, and its two defaults |
 | `shortcuts.ts` | `installWorkspaceShortcuts` takes a fifth argument, `projectModel: boolean`; with it the `workspace.add` command is relabelled and re-aliased to the project dialog (`project.add` / `new project`) and its directory-flow availability check is skipped (**behaviour change**, see below). Called with `false`, every branch is upstream's | re-add the parameter and the three `projectModel` branches; the call site is `client/index.ts` (`projectActions !== undefined`) |
 | `rows/WorkspaceBrowser.tsx` | consumes `useGrouping`, threads `groupingOverride` into `SessionTree`, uses it for `ungroupedMemberIds` / `expandedGroups` / the two `owningGroupKey` call sites | re-apply the same six edits |
 | `rows/WorkspaceBrowser.tsx` | `onCreate` drops its `if (group.workspaceId !== undefined)` guard and always expands (**behaviour change**, see below) | remove the guard again |
 | `rows/WorkspaceBrowser.tsx` | `onCreate` files what a row creates: a project row under itself through `assignSession`, the Ungrouped bucket under **nothing** through `unassignSession` (see below) | re-apply the three-way `file` dispatch |
+| `rows/WorkspaceBrowser.tsx` | the header's create dialog opens a Session after adding a caller-supplied project — the official add-workspace flow — filing it under the new project and gated on the `createOpensSession` hook (**behaviour change**, see below) | re-apply the `startSession` call, the hook read, and the closed-dialog ordering |
 | `rows/WorkspaceBrowser.tsx` | expansion is routed by key ownership: caller-supplied keys go through `setProjectExpanded` / `projectExpansion`, every other key through the view store (see below) | re-apply `isCallerOwned` / `recordExpansion` / `hasExpansion` and the merge in `expandedGroups` |
 | `rows/WorkspaceBrowser.tsx` | caller-supplied groups get the same two-mode member ordering the Workspace rows get, from `orderedProjects` + the `orders` hook; `commitSessionDrag` resolves a caller key after the Workspace lookup; `saveSessionOrder` and the order menu dispatch by key ownership (see below) | re-apply `orderedProjects` / `allProjectOrders`, the `?? groupingOverride?.find(...)` in `commitSessionDrag`, and the two dispatches |
 | `rows/WorkspaceBrowser.tsx` | a Session can be dragged **between** groups: `DragState.overGroupKey` names the target, a row drop is positional and a header drop is not, and `commitCrossGroupDrag` files it through `assignSession` / `unassignSession` before writing the order (see below) | re-apply `overGroupKey`, `canReceiveDrag`, `insertIntoTargetOrder`, `commitCrossGroupDrag`, and the `groupDrop` wiring |
@@ -570,6 +573,32 @@ Which key is bound is **not** part of this patch: upstream moved `session.rename
 to `primary+alt+G` in 0.2.0 and this copy followed, so a re-sync should take upstream's keymap as
 given and re-apply only the label, aliases and the bypassed check.
 
+**15. Adding a project also opens a Session in it, the way adding a Workspace does.**
+
+Upstream's add-workspace flow is two steps, not one: `WorkspacePicker` calls
+`createWorkspace({ path })` and then hands the new id to `onPick`, which runs
+`startSession(workspaceId)` (`WorkspaceBrowser.tsx`). The user lands in a Session they can
+type into rather than in an empty sidebar. This copy's header dialog did only the first
+step, so adding a project left the cursor where it was.
+
+The fix follows upstream with the one substitution a project forces: a project has no
+Workspace id, so the target is the caller's base workspace and the filing rides
+`beforeOpen` — exactly the call a project row's `＋` already makes. Without that filing the
+Session would land in whatever project the reusable blank Session happened to belong to.
+
+Two consequences are deliberate:
+
+- **The flag is a hook, not a constant.** `createOpensSession` is a mandatory observable on
+  the inject face, defaulting to `false` for a composition with no project model (where the
+  dialog returns early anyway) and supplied from the user's own setting otherwise. The
+  switch lives on the plugin's settings card and is stored in its domain, so the value
+  survives a restart instead of being reinterpreted per launch.
+- **A blank Session moves rather than accumulating.** Upstream's `reuseOrCreateBlank` keeps
+  one blank Session per Workspace, and every project here shares one Workspace. Creating a
+  second project therefore moves the blank to it — which is upstream's own behaviour for a
+  second Workspace, and is pinned by `probe-recent-blank.mjs` and
+  `probe-two-project-plus.mjs`. It is **not** a defect introduced here.
+
 ## Keeping it in sync
 
 Upstream ships this package at the same version as the whole harness line, so a DSH upgrade is the
@@ -659,6 +688,7 @@ browser probes that drive a live instance. They are run by hand rather than by
 | `scripts/probe-new-session-motion.mjs` | records the sidebar frame by frame while a project row's ＋ is pressed, on a blank Session that has been collapsed and re-created, so a placement that renders the previous owner for one frame shows up as a glide instead of a fade | spawns a server; the pre-fix bundle must fail its two cross-project checks |
 | `scripts/probe-row-key-motion.mjs` | samples every Session row each animation frame across all four transitions (a project's ＋, the same ＋ again, another project's ＋, a blank becoming real) plus a cross-group drag, so a glide shows as a run of intermediate positions and a fade as `opacity→opacity`; asserts the blank→real case has no animation at all | spawns a server; the shipped `session:<id>` key must fail its four cross-project checks |
 | `scripts/probe-project-create-motion.mjs` | creates a project while sampling every project row from both a rAF loop and a MutationObserver, so a new row that starts at the bottom and travels to the top shows as a run of y values while a row that simply appears shows one; also records the keyframes each row ran | spawns a server; the pre-fix Host (with the order backfill) must fail it — measured `654→594→…→206`, against a constant `206` after the fix |
+| `scripts/probe-two-project-plus.mjs` | clicks project A's ＋ and then B's, tracking Session **ids** rather than counts, so "the blank moved" is distinguishable from "each project got its own" | spawns a server; pins upstream's `reuseOrCreateBlank` semantics in the project model — measured: the same id leaves A and appears under B |
 | `scripts/probe-base-workspace-dialog.mjs` | deletes the default Workspace's **registration** (files and Sessions kept, by design) and then clicks New Session: asserts the dialog appears instead of silence, names the Host-derived path, stacks three full-width non-overflowing actions, leaves the two repairs disabled, and that 取消 closes it without writing | spawns a server; the shipped silent `return` must fail its "dialog appears" check |
 
 `probe-plugin-toggle.mjs` owns its lifecycle deliberately: localStorage is scoped

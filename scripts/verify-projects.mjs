@@ -71,7 +71,10 @@ const groupsOf = (model, expanded = []) => deriveGroups(
  *    stale frame (one produced before the write) is reproduced.
  */
 function fakeRemote({ failOn, holdAssign = [], refuseAssignFor } = {}) {
-  const state = { projects: [], assignments: {}, expansions: {}, orders: {}, newSessionTarget: 'ungrouped' }
+  const state = {
+    projects: [], assignments: {}, expansions: {}, orders: {},
+    newSessionTarget: 'ungrouped', createOpensSession: true,
+  }
   const calls = []
   const ok = value => Promise.resolve({ ok: true, value })
   const guard = name => {
@@ -168,6 +171,14 @@ function fakeRemote({ failOn, holdAssign = [], refuseAssignFor } = {}) {
       state.newSessionTarget = target
       landed()
       return ok({ target })
+    },
+    async setCreateOpensSession({ value }) {
+      calls.push(['setCreateOpensSession', value])
+      const refused = guard('setCreateOpensSession')
+      if (refused !== undefined) return refused
+      state.createOpensSession = value
+      landed()
+      return ok({ value })
     },
     async reorder({ projectId, beforeId }) {
       calls.push(['reorder', projectId, beforeId])
@@ -692,6 +703,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
     setExpanded: async () => ({ ok: true, value: {} }),
     setOrders: async () => ({ ok: true, value: {} }),
     setNewSessionTarget: async () => ({ ok: true, value: {} }),
+    setCreateOpensSession: async () => ({ ok: true, value: {} }),
     follow: () => (async function* () {})(),
   })
   let survived = true
@@ -704,6 +716,12 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   check('and reads as no manual order', Object.keys(legacy.orders.getSnapshot()).length === 0)
   check('and a baseline without a destination reads as Ungrouped',
     legacy.target() === 'ungrouped', String(legacy.target()))
+  // The switch must not read "off" against a Host that predates it: such a Host did
+  // not open a Session on create, but this plugin's own `EMPTY_STATE` and the current
+  // Host both default to on, so defaulting the other way would show the user a
+  // setting that does not describe the behaviour they are getting.
+  check('and a baseline without the field reads as on',
+    legacy.createOpensSessionValue() === true, String(legacy.createOpensSessionValue()))
   stop()
 }
 
@@ -753,6 +771,57 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   }
   check('a refused destination write rejects', threw)
   check('and the optimistic choice was rolled back', model.target() === 'ungrouped', String(model.target()))
+  stop()
+}
+
+// 22b. Creating a project returns its id, and the create-opens-Session switch is
+//      stored, reported, and optimistic — the same shape as the destination above.
+{
+  const { model, remote, stop } = await started()
+  const first = await model.create('a')
+  check('create answers the new project id', typeof first === 'string' && first !== '', String(first))
+  await model.start()
+  check('and it matches the id the Host reports',
+    model.list()[0]?.projectId === first, JSON.stringify(model.list().map(p => p.projectId)))
+
+  check('a fresh model starts with the switch on',
+    model.createOpensSessionValue() === true, String(model.createOpensSessionValue()))
+
+  let notified = 0
+  const unsubscribe = model.createOpensSession$.subscribe(() => { notified += 1 })
+  await model.setCreateOpensSession(false)
+  const afterChange = notified
+  check('the write reached the namespace',
+    remote.calls.some(c => c[0] === 'setCreateOpensSession'),
+    JSON.stringify(remote.calls.map(c => c[0])))
+  check('the switch notifies on a change', afterChange > 0, String(afterChange))
+  check('and answers the new value', model.createOpensSessionValue() === false,
+    String(model.createOpensSessionValue()))
+
+  await model.start()
+  check('and the Host projection carries it', model.createOpensSessionValue() === false,
+    String(model.createOpensSessionValue()))
+
+  await model.setCreateOpensSession(false)
+  check('an identical choice does not notify again', notified === afterChange, String(notified))
+  unsubscribe()
+  stop()
+}
+
+// 22c. A refused switch write reverts.
+{
+  const { model, stop } = await started({ failOn: 'setCreateOpensSession' })
+  await model.create('a')
+  await model.start()
+  let threw = false
+  try {
+    await model.setCreateOpensSession(false)
+  } catch {
+    threw = true
+  }
+  check('a refused switch write rejects', threw)
+  check('and the optimistic value was rolled back',
+    model.createOpensSessionValue() === true, String(model.createOpensSessionValue()))
   stop()
 }
 

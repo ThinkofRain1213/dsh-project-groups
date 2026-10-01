@@ -35,11 +35,13 @@ import {
   type ProjectAssignRequest, type ProjectAssignmentValue, type ProjectBaseline,
   type ProjectBaseWorkspaceValue,
   type ProjectCreateRequest, type ProjectDeleteRequest, type ProjectExpansionValue,
+  type ProjectCreateOpensSessionValue,
   type ProjectFollowFrame, type ProjectOrderValue, type ProjectOrdersValue,
   type ProjectNewSessionTargetValue,
   type ProjectRenameRequest, type ProjectRenameValue, type ProjectReorderRequest,
   type ProjectRebuildBaseWorkspaceValue,
   type ProjectSetBaseWorkspaceRequest,
+  type ProjectSetCreateOpensSessionRequest,
   type ProjectSetExpandedRequest, type ProjectSetNewSessionTargetRequest, type ProjectSetOrdersRequest,
   type ProjectUnassignRequest, type ProjectUnassignValue,
   type ProjectValue, type ProjectValueResult,
@@ -291,6 +293,7 @@ export class ProjectController extends TypertRemoteService {
       // written before this field existed already reads back as its default.
       newSessionTarget: domain.global.get().newSessionTarget,
       baseWorkspace: domain.global.get().baseWorkspace,
+      createOpensSession: domain.global.get().createOpensSession,
     }
   }
 
@@ -532,6 +535,25 @@ export class ProjectController extends TypertRemoteService {
     const domain = await this.ready()
     await this.setGlobal(domain, { newSessionTarget: request.target })
     return { target: request.target }
+  }
+
+  /**
+   * Choose whether creating a project also opens a Session inside it.
+   *
+   * The stored global is spread before the write because `Domain.global.set`
+   * replaces the whole singleton rather than merging into it: sending only this
+   * value would drop `projectIds` and make every project disappear from the
+   * sidebar.
+   * @param request - the chosen behaviour.
+   * @returns the stored value.
+   */
+  @Remote('setCreateOpensSession')
+  async setCreateOpensSession(
+    request: ProjectSetCreateOpensSessionRequest,
+  ): Promise<ProjectCreateOpensSessionValue> {
+    const domain = await this.ready()
+    await this.setGlobal(domain, { createOpensSession: request.value })
+    return { value: request.value }
   }
 
   /**

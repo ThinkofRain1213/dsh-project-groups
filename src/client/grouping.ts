@@ -57,6 +57,8 @@ const pendingOrders = new Set<() => void>()
 const pendingTargets = new Set<() => void>()
 /** The same, for {@link clientBaseWorkspace}. */
 const pendingBase = new Set<() => void>()
+/** The same, for {@link clientCreateOpensSession}. */
+const pendingCreateOpens = new Set<() => void>()
 
 /** @returns the live model, once its baseline has landed. */
 export function projectModel(): ProjectModel | undefined {
@@ -100,6 +102,11 @@ export function installProjectModel(started: ProjectModel): void {
   pendingBase.clear()
   for (const notify of earlyBase) started.baseWorkspace$.subscribe(notify)
   for (const notify of earlyBase) notify()
+
+  const earlyCreateOpens = [...pendingCreateOpens]
+  pendingCreateOpens.clear()
+  for (const notify of earlyCreateOpens) started.createOpensSession$.subscribe(notify)
+  for (const notify of earlyCreateOpens) notify()
 }
 
 /**
@@ -217,5 +224,30 @@ export const clientBaseWorkspace: HostObservable<BaseWorkspaceSetting> = {
       return () => { pendingBase.delete(listener) }
     }
     return live.baseWorkspace$.subscribe(listener)
+  },
+}
+
+/**
+ * Whether creating a project opens a Session, handed to the vendored browser **and**
+ * read by the settings card.
+ *
+ * Unlike {@link clientNewSessionTarget} and {@link clientBaseWorkspace}, this seat
+ * **is** given to the vendor tree: the create dialog lives there, so that half is
+ * where the value is spent, and it cannot read the plugin's own model. The card reads
+ * the same observable, which is what keeps one switch driving the behaviour the user
+ * then sees.
+ *
+ * Before the model exists the snapshot is `true`, matching `EMPTY_STATE` and the
+ * Host's default — so a fresh install shows the behaviour it would actually get.
+ */
+export const clientCreateOpensSession: HostObservable<boolean> = {
+  getSnapshot: () => model?.createOpensSessionValue() ?? true,
+  subscribe: (listener) => {
+    const live = model
+    if (live === undefined) {
+      pendingCreateOpens.add(listener)
+      return () => { pendingCreateOpens.delete(listener) }
+    }
+    return live.createOpensSession$.subscribe(listener)
   },
 }

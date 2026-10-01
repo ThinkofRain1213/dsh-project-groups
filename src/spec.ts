@@ -149,6 +149,27 @@ export const baseWorkspaceSetting = z.object({
   name: z.string().optional(),
 })
 
+/**
+ * Whether creating a project also opens a Session inside it.
+ *
+ * Defaults to **on**, which is the official add-workspace behaviour: that flow
+ * creates the row and then opens a Session in it (`WorkspacePicker.onPick` →
+ * `startSession`), so the user lands somewhere they can type instead of an empty
+ * sidebar. A project has no directory, so "in it" means the caller's 底层工作区 with
+ * the Session filed under the new project — the same call a project row's ＋ already
+ * makes.
+ *
+ * Off restores this plugin's earlier behaviour: the row appears and nothing else
+ * happens, which is what a user who files Sessions by hand wants.
+ *
+ * Carries a default rather than being optional, the same compatibility mechanism
+ * `newSessionTarget` uses: the domain parses the stored global through this schema on
+ * open, so a unit written before the field existed reads back as `true` — the official
+ * behaviour such an install already had. No version bump is needed, for the reason
+ * stated on `projectDomainSpec`.
+ */
+export const createOpensSession = z.boolean().default(true)
+
 /** The stored base-workspace setting. */
 export type BaseWorkspaceSetting = z.infer<typeof baseWorkspaceSetting>
 
@@ -196,6 +217,8 @@ export const globalRecord = z.object({
   projectIds: z.array(z.string()),
   newSessionTarget: newSessionTarget.default('ungrouped'),
   baseWorkspace: baseWorkspaceSetting.default({ mode: 'default' }),
+  /** Whether creating a project also opens a Session inside it. */
+  createOpensSession: createOpensSession.default(true),
   /** The mutation a previous process left unfinished, if any. */
   pendingMutation: pendingMutation.optional(),
 })
@@ -214,6 +237,9 @@ export const initialGlobal: GlobalRecord = {
   projectIds: [],
   newSessionTarget: 'ungrouped',
   baseWorkspace: { mode: 'default' },
+  // The same value the schema's default supplies; stated here because this literal
+  // is typed, so a field with a default still has to appear.
+  createOpensSession: true,
 }
 
 /**

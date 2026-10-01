@@ -106,6 +106,14 @@ export interface ProjectBaseline {
    * see `spec.ts` for why not by id).
    */
   readonly baseWorkspace: BaseWorkspaceSetting
+  /**
+   * Whether creating a project also opens a Session inside it.
+   *
+   * Read by the sidebar region, which is where the create dialog lives: that half
+   * decides whether to follow the official add-workspace flow, so the value has to
+   * reach it through the inject face rather than staying in the settings card.
+   */
+  readonly createOpensSession: boolean
 }
 
 /** One ordered change after a generation's baseline. */
@@ -233,6 +241,22 @@ export interface ProjectSetNewSessionTargetRequest {
 /** `setNewSessionTarget` result: the stored choice. */
 export interface ProjectNewSessionTargetValue {
   readonly target: NewSessionTarget
+}
+
+/**
+ * `setCreateOpensSession` request: whether creating a project opens a Session.
+ *
+ * Only the flag travels. The Host spreads the stored global before writing, so the
+ * project order and every other setting it holds survive — `global.set` replaces the
+ * whole singleton rather than merging into it.
+ */
+export interface ProjectSetCreateOpensSessionRequest {
+  readonly value: boolean
+}
+
+/** `setCreateOpensSession` result: the stored value. */
+export interface ProjectCreateOpensSessionValue {
+  readonly value: boolean
 }
 
 /**

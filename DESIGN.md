@@ -3113,7 +3113,7 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
         一次性技术配置，在设置卡里设）
       - **下拉** = 会话归到哪个项目（用户真正关心的归属）
       ⇒ 两者是不同层级的问题，不重叠。
-- [ ] **Z-3 新建项目不创建会话，官方会创建**（用户实测发现，2026-10-01）
+- [x] **Z-3 新建项目不创建会话，官方会创建** ✅ **已实现（2026-10-01）**
       **官方链路已核实**：
       `WorkspacePicker.tsx:132-134` `createWorkspace({path}) → onPick(id)`
       ⇒ `WorkspaceBrowser.tsx:1316-1319` `onPick: { closeAddWorkspace();
@@ -3128,6 +3128,54 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
       （所有项目共用同一个底层工作区）⇒ 对应行为应是
       "新建项目后在其中开一个空白会话"（语义说得通），
       但**开关的默认值、以及开关放在设置卡还是对话框**需要先定。
+      （2026-10-01 完成，见下方"实施方案与实测"。）
+
+      #### 实施方案与实测（2026-10-01 完成）
+
+      **用户确认的设计**：开关进**插件自有设置页**，值进**插件自有领域**
+      （随 profile 持久），默认**开**，行为**照抄项目行 `＋`**。
+
+      **关键实现事实**：
+
+      1. **Host 早就返回了 `projectId`** —— `protocol.ts` 的
+         `ProjectValueResult { project: ProjectValue }` 一直带着它，是客户端
+         `create` 声明成 `Promise<void>` 把它丢掉了。**零协议改动、零 Host 改动**。
+      2. **行为 = `startSession(undefined, file)`** —— 项目没有 `workspaceId`
+         （纯前端标签），带 `undefined` 调用走 `navigation.ts` 的"无目标"分支
+         ⇒ 解析**底层工作区**，`beforeOpen` 归档到新项目。**与项目行 `＋`
+         （`WorkspaceBrowser.tsx:887-896`）完全同一条路径**。
+      3. **开关值必须经注入面 hook 进 vendored 树** —— 调用 `startSession` 的是
+         `WorkspaceBrowser`，它读不到插件领域状态。新增 `createOpensSession` hook
+         （第 4 个，与 `grouping`/`expansions`/`orders` 并列）。
+      4. **`Switch` 组件**（`dsh-client-ui-primitives`）已在 `PLATFORM_MODULES` 里，
+         **无需改构建配置**。
+
+      **三个实施时踩到的坑（都已解决）**：
+
+      - **`initialGlobal` 必须加新字段** —— 它被标注成 `GlobalRecord`，而
+        `.default()` 使字段在输出类型里为**必需**；`tsc` 直接报错（好事）。
+      - **`accept()` 的逐字段相等守卫必须加新字段** —— 漏了会导致"开关点了卡片
+        不动"（守卫提前 return）。
+      - **开关判断必须在 `setCreating(false)` 之后** —— 放前面会导致关掉开关时
+        **对话框不关闭**。
+
+      **实测（真实浏览器，两个开关位置）**：
+
+      | 场景 | 结果 |
+      |---|---|
+      | 开关开（默认）：建项目 | ✅ 会话出现在**新项目下**（`rows=1`） |
+      | 开关关：建项目 | ✅ **不创建任何会话**（会话总数 3 → 3） |
+      | 页面错误 | ✅ 无 |
+
+      探针 `probe-create-opens-session.mjs`（新）驱动真实 UI 验证以上三项。
+
+      **空白会话"移动"是官方语义，不是缺陷**：
+      `reuseOrCreateBlank`（`navigation.ts:208-218`）为**每个工作区保留一个**空白
+      会话，而所有项目**共用同一个底层工作区** ⇒ 建第二个项目会把那个空白会话
+      **挪过去**。实测确认（`probe-two-project-plus.mjs`）：点 A 的 `＋` 后会话
+      归 A；点 B 的 `＋` 后**同一个会话 id** 移到 B，A 变空。官方对第二个
+      **工作区**是同样行为（目录不同才不复用）——
+      `probe-recent-blank.mjs` 早已记录这一性质。**故按官方语义接受**。
 - [ ] **Z-4 删除项目时会话淡入，官方是滑动**（用户实测发现，2026-10-01；根因已核实）
       **现象**：官方删除工作区时，其会话会**滑动**到下方；我们的会话在下方
       **淡入**，失去了滑动。

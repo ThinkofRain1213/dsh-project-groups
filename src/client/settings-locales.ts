@@ -21,6 +21,8 @@ export const zh = {
   ungrouped: '未分组',
   current: '当前会话所在项目',
   recent: '最后活跃的会话所在项目',
+  createOpensTitle: '新建项目时开启会话',
+  createOpensDesc: '与官方「添加工作区」一致：建完项目直接进入一个可对话的会话',
   // The base workspace: the directory every New Session lands in.
   baseTitle: '底层工作区',
   baseModeDefault: '默认工作区',
@@ -49,6 +51,8 @@ export const en: Record<ProjectGroupsSettingsKey, string> = {
   ungrouped: 'Ungrouped',
   current: "The current Session's project",
   recent: 'The most recently active project',
+  createOpensTitle: 'Open a Session on create',
+  createOpensDesc: 'Like the official add-workspace flow: land in a Session you can type into',
   baseTitle: 'Base workspace',
   baseModeDefault: 'Default workspace',
   baseDefaultHint: 'the workspace created on first use',

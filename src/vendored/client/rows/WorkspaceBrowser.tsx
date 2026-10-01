@@ -1289,6 +1289,7 @@ export function WorkspaceBrowser({
   setProjectOrders,
   useExpansions,
   useOrders,
+  useCreateOpensSession,
   renderSlot,
   t,
 }: WorkspaceBrowserProps) {
@@ -1317,6 +1318,10 @@ export function WorkspaceBrowser({
   // the expansion seat: a composition without it supplies an empty record, and
   // with no `setProjectOrders` verb every key resolves to the view store.
   const projectOrders = useOrders(orders => orders)
+  // Whether the caller wants creating a project to open a Session, the way the
+  // official add-workspace flow does. A composition without the state supplies an
+  // observable answering `true`, which is that official behaviour.
+  const openSessionOnCreate = useCreateOpensSession(value => value)
   // The resolved name, not `t`, is the memo dependency: the bound seat keeps
   // its identity across a language switch.
   const defaultWorkspaceName = t('workspace.defaultName')
@@ -1729,9 +1734,34 @@ export function WorkspaceBrowser({
     if (createBlocked || createProject === undefined) return
     setCreateBusy(true)
     setCreateError(null)
-    createProject({ title: createTrimmed }).then(() => {
+    createProject({ title: createTrimmed }).then(({ projectId }) => {
       setCreateBusy(false)
       setCreating(false)
+      // The official add-workspace flow opens a Session as part of creating the row
+      // (`WorkspacePicker.onPick` → `startSession`), so the user lands in something
+      // they can type into instead of an empty sidebar. This follows it, with the
+      // substitution a project forces: it has no Workspace id, so the target is the
+      // caller's base workspace and the filing rides `beforeOpen` — exactly the call
+      // a project row's ＋ makes. That filing is what puts the Session under the
+      // project just created.
+      //
+      // A reused blank Session moves here rather than being duplicated, which is
+      // upstream's own behaviour: `reuseOrCreateBlank` keeps one blank Session per
+      // Workspace, and every project shares one Workspace. So this reads as "the
+      // current blank moves to the project you just made", not as a second Session.
+      //
+      // Guarded like the row's own opening: the Session is best-effort, and a failure
+      // to open must not read as a failure to create — the project exists and is on
+      // screen either way. The dialog closes in both cases too, which is why the flag
+      // is read after `setCreating(false)` rather than before it.
+      if (!openSessionOnCreate) return
+      startSession(undefined, assignSession === undefined
+        ? undefined
+        : (sessionId) => {
+          void assignSession(sessionId, projectId).catch((reason: unknown) => {
+            console.warn('file session rejected:', reason)
+          })
+        })
     }).catch((reason: unknown) => {
       setCreateBusy(false)
       setCreateError(reason instanceof Error ? reason.message : String(reason))

@@ -115,7 +115,14 @@ const EMPTY_ORDERS: Readonly<Record<string, readonly string[]>> = Object.freeze(
  * group renders with no row menu or drag target.
  */
 export interface ProjectActions {
-  createProject: (input: { title: string }) => Promise<void>
+  /**
+   * Create a project and return its id.
+   *
+   * The id is what lets the caller open a Session inside the project it just made:
+   * the official add-workspace flow creates the row and then opens a Session in it,
+   * and filing that Session under the new project needs the id.
+   */
+  createProject: (input: { title: string }) => Promise<{ projectId: string }>
   renameProject: (id: string, title: string) => Promise<void>
   deleteProject: (id: string) => Promise<void>
   reorderProject: (id: string, beforeId?: string) => Promise<void>
@@ -220,6 +227,11 @@ export interface UnscopedPlacement {
  * member order, keyed by group key. Omitted, every group's order lives in this
  * browser's own view store, exactly as upstream. Supplied, the caller owns it,
  * for the same reason as `expansionsOverride`.
+ * @param createOpensSessionOverride - optional flag telling the create dialog to
+ * open a Session after adding a caller-supplied project, the way the official
+ * add-workspace flow does. Omitted, the flag answers `false` so adding a project
+ * stays the row-only action this region performs on its own; a composition with a
+ * project model supplies the user's own choice.
  */
 export function apply(
   ctx: Context,
@@ -227,6 +239,7 @@ export function apply(
   projectActions?: ProjectActions,
   expansionsOverride?: HostObservable<Readonly<Record<string, boolean>>>,
   ordersOverride?: HostObservable<Readonly<Record<string, readonly string[]>>>,
+  createOpensSessionOverride?: HostObservable<boolean>,
 ): void {
   const sessions = ctx.get('sessions') as ISessions
   const workspaces = ctx.get('workspaces') as IWorkspaces
@@ -325,6 +338,13 @@ export function apply(
   // resolves to this browser's own view store — upstream behaviour.
   const orders: HostObservable<Readonly<Record<string, readonly string[]>>> = ordersOverride ?? {
     getSnapshot: () => EMPTY_ORDERS,
+    subscribe: () => () => {},
+  }
+  // Same shape once more: a composition that says nothing about opening a Session
+  // on create gets `false`, so adding a project stays the row-only action it is
+  // without a project model at all.
+  const createOpensSession: HostObservable<boolean> = createOpensSessionOverride ?? {
+    getSnapshot: () => false,
     subscribe: () => () => {},
   }
   const hostInfo: HostObservable<RemoteHostFacts> = {
@@ -476,6 +496,7 @@ export function apply(
       grouping,
       expansions,
       orders,
+      createOpensSession,
     },
   })
   const pickerInjected = (): WorkspacePickerInjected => ({

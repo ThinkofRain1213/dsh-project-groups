@@ -51,7 +51,8 @@ import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { WorkspaceSource } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import {
-  clientBaseWorkspace, clientExpansions, clientGrouping, clientNewSessionTarget, clientOrders,
+  clientBaseWorkspace, clientCreateOpensSession, clientExpansions, clientGrouping,
+  clientNewSessionTarget, clientOrders,
   installProjectModel, projectModel,
 } from './grouping.ts'
 import { ProjectModel } from './projects.ts'
@@ -115,7 +116,7 @@ export interface BaseWorkspaceChooserRequest {
  * these calls.
  */
 const projectActions: ProjectActions = {
-  createProject: async ({ title }) => { await requireModel().create(title) },
+  createProject: async ({ title }) => ({ projectId: await requireModel().create(title) }),
   renameProject: async (id, title) => { await requireModel().rename(id, title) },
   deleteProject: async (id) => { await requireModel().remove(id) },
   reorderProject: async (id, beforeId) => { await requireModel().reorder(id, beforeId) },
@@ -244,7 +245,9 @@ export function apply(ctx: Context): void {
   // sidebar then renders one Ungrouped bucket and the project verbs refuse
   // loudly, which is better than a dead sidebar.
   void mountProjects(ctx)
-  applyVendored(ctx, clientGrouping, projectActions, clientExpansions, clientOrders)
+  applyVendored(
+    ctx, clientGrouping, projectActions, clientExpansions, clientOrders, clientCreateOpensSession,
+  )
   registerSettingsCard(ctx)
 }
 
@@ -276,6 +279,7 @@ function registerSettingsCard(ctx: Context): void {
       hooks: {
         target: clientNewSessionTarget,
         baseWorkspace: clientBaseWorkspace,
+        createOpensSession: clientCreateOpensSession,
         // Spread rather than assigned as `undefined`: the hooks compartment holds
         // observables, and a present-but-undefined key would break the renderer's
         // binding. Absent, the chooser reports "暂无工作区".
@@ -303,6 +307,17 @@ function registerSettingsCard(ctx: Context): void {
         if (live === undefined) return
         void live.setBaseWorkspace(setting).catch((reason: unknown) => {
           console.warn('set base workspace rejected:', reason)
+        })
+      },
+      setCreateOpensSession: (value: boolean) => {
+        // Same reasoning again: the card can render before the baseline lands, and a
+        // click then must be a no-op rather than a thrown error out of a React event
+        // handler. The optimistic write inside the model is what makes the switch
+        // follow the click immediately.
+        const live = projectModel()
+        if (live === undefined) return
+        void live.setCreateOpensSession(value).catch((reason: unknown) => {
+          console.warn('set create-opens-session rejected:', reason)
         })
       },
     }),
