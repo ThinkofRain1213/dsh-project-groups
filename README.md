@@ -109,8 +109,17 @@ bundle 的构建满足与上游相同的模块边界规则：
 pnpm install
 pnpm typecheck        # tsc --noEmit，覆盖 src（含 vendored 树）
 pnpm build            # tsdown -> lib/index.js + lib/client.js
-pnpm check            # typecheck + build + bundle/patch/分组/项目校验 + 探针（354 条断言）
+pnpm check            # typecheck + build + bundle/patch/分组/项目校验 + 探针（362 条断言）
 ```
+
+> **⚠️ 本地开发（`dsh plugin add .` / `link:` 安装）时，改完 `src/` 必须
+> 两步都做，缺一不可：**
+> 1. **`pnpm build`** —— 重建 `lib/`（`link:` 装的是 `lib/` 里的产物，不是源码）
+> 2. **重启 DSH** —— Host 半的 `lib/index.js` **不会热加载**
+>
+> 只重建不重启，看到的是旧 Host 行为；只重启不重建，同样不生效。
+> （客户端 `lib/client.js` 可能热载，**Host 端不行**。）
+> 这个坑曾导致一次真实的误判：修复已生效但未重启，被当成"没修好"。
 
 源码结构：
 
