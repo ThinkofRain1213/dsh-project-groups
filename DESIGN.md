@@ -3264,7 +3264,7 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
           单条链接的形状（只存 URL，还是 `{label, url}` 对）
         - 数量——一个项目只连一个上游，还是可连多个（多个则要列表 UI + 排序）
         - 呈现——项目行/hover 卡是否显示；**注入文本是否带上**（带上就等于
-          每次注入多几行，且官方 `Related folders` 的语域会被拉宽）
+          每次注入多几行，且官方 `Relevant directory` 的语域会被拉宽）
         - 校验——是否要求 `http(s)://`；是否允许非 URL 的自由文本
         - 与文档的关系——`PROJECT-SPEC.md` 的「关联资产」一节**已经**在文档里记链接，
           需要说清两者分工（文档里是叙述，这里是结构化字段）
@@ -3461,21 +3461,199 @@ return {
 
 > 探针脚本为一次性验证，跑完即删；结论以本表为准。
 
-### 25.3 注入文案（定案）
+### 25.3 注入文案（定案：2026-10-06 重写，XML 块 + 声明段）
 
-所有 context 会被 `joinContextSections` 合并成**同一条** user 消息，前缀为：
-`Current runtime context. This snapshot supersedes earlier runtime-context snapshots.`
-**因此不存在独立的 `<project-context>` 消息**——这是 B 路线的既定形态，已确认接受。
+**形态**：`<project-context>` 包裹的**多行块**，字段平铺 `Label: value`。
 
-**无「其他信息」段。** 字段缺失写「无」而**不省略行**——**唯一例外是未分组**：它没有记录，
-故只报状态（见下 D 与格式规则）。
+> **本节 2026-10-06 被重写。** 旧定案（2026-10-05）是"纯文本、无 XML 包裹、两行块"，
+> 现**已废止**。改动理由见本节末尾「为什么改回 XML」，其中记录了两条**实测证据**
+> （真实会话里模型为定位自己而反复侦察），而不是审美偏好。
 
-> ### ⏸ 文档行当前**不实现**（2026-10-04）
->
-> 下面的 A/B/C 示例中的「工作文档」行是**目标形态**，**当前实现不产出它**——
-> `src/injection.ts` 的 `renderProjectInjection` 只渲染项目行与关联目录行，
-> `injectProjectDoc` 开关在前端**灰显禁点**。
-> 因此现在实际注入的是 D/E 那种两行块；「工作文档」行待文档功能（§25.9 / §8）实施时再加。
+**这一段仍合进官方同一条 runtime-context 消息**（`joinContextSections`），
+不存在独立的 user 消息；`<project-context>` 是**这条消息内部的块**。
+
+结构固定为**三段**，其中前两段恒定、第三段随数据：
+
+```
+<project-context>
+① 声明段        —— 恒定（除非「段清单」变化）
+② Owning project —— 永远存在（未分组也在）
+③ Relevant directory(ies) —— 按数量：0 / 1 / 多
+   （文档段、链接段、漂移段依次接在其后）
+</project-context>
+```
+
+#### 25.3.1 声明段（恒定）
+
+```
+This section is injected by the `project-groups` plugin. It provides context
+information about the session's `owning project` `relevant directories` `related links`
+`work document`. Project membership is classified by the plugin layer; the plugin does
+not modify the official workspace system, so all projects' workspace directories fall
+into a single base workspace. The "working directory" injected in the earlier system
+prompt is the official base workspace directory, and has no substantive relation to the
+project this session belongs to under this plugin.
+```
+
+**逐条理由**
+
+| 句子 | 作用 |
+|---|---|
+| `This section is injected by the …` | **出处**。官方那条 cwd 来自 persona 层，自定义 profile 可去掉；写明出处后，即使它不在也能指向 |
+| `about the session's `owning project` `relevant directories` `related links` `work document`` | **段清单，动态裁剪**（见 25.3.4）。**平铺、无 `and`、无逗号**（用户定案）。反引号**保留**（用户定案） |
+| `classified by the plugin layer … single base workspace` | 解释**为什么**目录与项目无关：是架构决定，不是巧合 |
+| `The "working directory" … has no substantive relation to the project` | **核心句**。直接免除模型"调和两条互相矛盾信息"的负担 |
+
+**为什么必须有最后那句（实测证据）**
+
+真实会话里，模型收到 `Your working directory is …\default-workspace`（官方）
+与 `Current project: dsh-project-groups`（旧插件文案）后**反复侦察**：
+
+| 会话 | 注入 | 注入后出现"哪个项目"犹豫的 step |
+|---|---|---|
+| codearts | `Current project: deepseek-harness-codearts` / `Related folders: none` | **27 个** |
+| minecraft | `Current project: dsh-project-groups` | **3 个** |
+| a18c5dad | `none (ungrouped)` | 6 个 |
+| ac2b7c25 | `none (ungrouped)` | 0 |
+
+模型的推理原文（minecraft，`seq 102`）：
+
+> "But which project? The runtime says "Current project: dsh-project-groups" …
+> **Hmm, but the working directory is the default-workspace.** … There's ambiguity"
+
+codearts 会话里，模型为定位自己跑了 6 条侦察命令（含 `-Recurse -Depth 6 -Filter "*codearts*"`
+和翻 `project_groups.json`），**27 个 step 后才确认**自己在哪个项目。
+
+⇒ **不是"指向不清"，而是两条无定语信息并列且无人交代关系。** 最后那句就是那句交代。
+
+#### 25.3.2 归属段（`Owning project`）
+
+**两种情况分开写**（用户定案，不做统一句式）：
+
+**已归档**
+```
+Owning project: You are currently working on this project, project name "dsh-project-groups"
+```
+
+**未分组**
+```
+Owning project: This conversation does not belong to any project. It is under the "Ungrouped" category.
+```
+
+**为什么分开**：统一句式会产出
+`You are currently working on this project, project name "none (ungrouped)"` ——
+**自相矛盾句**（说正在处理，名字却是"无"）。且 `none (ungrouped)` 是**代码常量**
+（`UNFILED_PROJECT`），不是用户起的名字，套进 `project name "…"` 会被读成
+"一个叫这名字的项目"。
+
+#### 25.3.3 目录段（按数量三态，**标签随数量变**）
+
+| 数量 | 渲染 |
+|---|---|
+| 0 | `Relevant directory: The user has not yet set up the relevant directory.` |
+| 1 | `Relevant directory: C:\…\dsh-project-groups` |
+| ≥2 | `Relevant directories:` + 每个一行 `- <路径>`（平铺破折号，**不用 XML 列表**） |
+
+**0 条**用用户定案的句子（`The user has not yet set up the relevant directory.`），
+**不用旧的 `none`** —— 旧写法是"没有"，新写法是"用户尚未设置"，**后者更有行动指向**，
+且 `yet` 准确（目录确实可后加：codearts 那次会话 12:21 创建、目录 12:36 才关联）。
+
+**单条也用单数标签**（用户定案）：1 条走 `directory`，≥2 走 `directories`。
+这与旧定案"每条都用同一列表形态"**相反**，旧理由（形状只取决于数量）**已让位于**
+"标签与数量一致"的可读性。
+
+#### 25.3.4 段清单动态裁剪（用户定案）
+
+声明段里的清单**只列实际会注入的段**，顺序固定：
+
+```
+owning project → relevant directories → related links → work document
+```
+
+| 段 | 列出条件 | 当前状态 |
+|---|---|---|
+| `owning project` | **永远**（未分组也列） | ✅ |
+| `relevant directories` | 已归档时**永远**（0 目录也列，因为目录段本身会渲染） | ✅ |
+| `related links` | **功能实现后**自动列入 | ⏸ **未实现 ⇒ 不列**（Z-6 待办） |
+| `work document` | `injectProjectDoc` 开 **且** 已归档 | ✅（默认关） |
+
+**⇒ 未分组时清单只剩 `` `owning project` ``** —— 这同时回答了"清单会不会为空"：
+**永不为空，最少一项**。所以不需要"全空兜底"措辞。
+
+#### 25.3.5 文档段与漂移段（沿用 §26，措辞不变）
+
+文档段接在目录段之后，`injectProjectDoc` **开** 且**已归档**时才出现：
+
+```
+Project document: <绝对路径> — a failed read means it has not been created yet; create it following the spec.
+Project document spec: <绝对路径>
+```
+
+**规范为「无」时**（含 `custom` 但文件名未选/文件已删 ⇒ 也解析为 `none`，`spec-store.ts:203`）：
+
+```
+Project document: <路径> — a failed read means it has not been created yet; create it as the project needs.
+Project document spec: none — no format is required, and the document's format is left as it is: write freely if it has no format of its own, or add to the existing format rather than reorganising the document.
+```
+
+**漂移段**（§26.4 已定案，措辞与匹配规则不变）：三段标记 + 严格逐字 + `REWRITE-FLOW.md` 路径；
+**问题与选项随界面语言**，其余句子恒为英文。
+
+#### 25.3.6 全部可通状态（枚举自代码，2026-10-06）
+
+可达性由主机侧三个决策点决定：
+
+```
+src/index.ts:753  injectProjectInfo 关 → 返回 ""（整个插件不贡献任何东西）
+src/index.ts:756  projectId → 记录；记录已删 ⇒ project undefined（悬空 assignment）
+src/index.ts:759  document 仅在【有项目】且【injectProjectDoc 开】时构造
+src/injection.ts:235  未分组在【第一行就 return】，文档段代码不执行
+```
+
+| # | 状态 | 可达条件 | 段结构 |
+|---|---|---|---|
+| **A** | 注入总开关关 | `injectProjectInfo = false` | **空字符串** |
+| **B** | 未分组 | 无 assignment | ①＋②未分组句 |
+| **C** | **悬空 assignment** | assignment 有值但项目已删 ⇒ 与 B **同样渲染** | ①＋②未分组句 |
+| **D/E/F** | 已归档 · 1 / 0 / 多 目录 · 文档关 | `injectProjectDoc = false` | ①＋②＋③ |
+| **G/H/I** | 已归档 · 1 / 0 / 多 目录 · 文档开 | `spec.mode = default` | ①＋②＋③＋文档 |
+| **J/K** | 已归档 · 文档开 · **规范=无** | `mode = none`；**`custom` 未选文件也解析成 `none`** | ①＋②＋③＋文档（无规范句） |
+| **L** | 已归档 · 文档开 · **漂移（zh）** | `shouldAskSpecDrift` 为真 | ①＋②＋③＋文档＋漂移 |
+| **M** | 漂移 + 规范=无 | **不可达**（无规范不询问，`shouldAskSpecDrift` 首条即返回 false） | — |
+| **N** | 已归档 · 文档开 · 漂移（en） | `locale = en` | 同 L，问题与选项换英文 |
+
+**三种段结构**：未分组 = 1 段；归档＋文档关 = 3 段；归档＋文档开 = 3~5 段。
+
+**两处曾被误列（记录以免重犯）**
+
+- **未分组 + 文档**：**结构上不可能**。文档挂在项目记录上（`docSpecUsed`、路径按 `projectId`），
+  未分组没有记录 ⇒ 主机不发、渲染器也不执行。**不是"决定不给"，是"给不了"。**
+- **`custom` + 未选文件**：解析结果是 **`mode: 'none'`**，不是 `'custom'`
+  （`spec-store.ts:200-204`），故与 J 共用文案，**不是独立状态**。
+
+#### 25.3.7 为什么改回 XML（2026-10-06，推翻 2026-10-05 的决定）
+
+旧定案的两条理由，**现都不成立**：
+
+| 旧理由 | 为什么不成立 |
+|---|---|
+| "官方 24 处 `context()` 无一处用 XML" | **块的性质变了**：从 1~2 行状态句变成 4~6 行、且**含用户自定义的项目名与路径**（半可信数据）。官方给不可信/无界内容加边界（`agent-instructions` 包用户的 `AGENTS.md` 并转义闭合标签），正是同一情形 |
+| "加标签会在无标签正文末尾出现孤立标签" | **块现在有明确首尾**，不是孤立标签；而且**将来要加链接、文档等段**，需要一个能容纳扩展的容器 |
+
+**仍有代价，已接受**：`context()` 的文本由 `RuntimeContextProjection.project()` 去重，
+XML 不改变这一点；但声明段会随**段清单**变化（开关文档时），
+⇒ 那一次会重新注入一条上下文消息。
+
+**⇒ 待同步改动的测试**（`scripts/verify-project-injection.mjs`）：
+`no XML frame wraps the block` 这条断言**必须反向**为"断言 XML 框存在"，
+理由改写为"界定含用户数据的半可信块"。
+
+**当前实现态（2026-10-06）**：本节为**已定案、待实施**。
+`src/injection.ts` 仍是旧形态（`Current project:` / `Related folders` / 无 XML）。
+
+---
+
+### 25.3-old 旧定案（2026-10-05，**已废止**，留档）
 
 **A. 项目下，2 个关联目录**（文档行待实施）
 ```
@@ -3512,41 +3690,14 @@ Current project: none (ungrouped)
 `none` 在那里是**可执行的**状态，不是缺失。这个不对称是有意的。
 
 **格式规则（2026-10-04 定案）**：已归类项目 ⇒ 目录 **≥1 一律用 `- ` 列表**（含单个，不留特例）；
-**0 条写 `none`**。**未分组 ⇒ 只有 `Current project: none (ungrouped)` 一行**（理由见上）。
-**无 XML 包裹**。
-
-> **措辞与包裹形态的定案（2026-10-05）**：改用英文陈述句、不加任何标签。
-> 依据是官方自己的两条通路分工（实测源码）：
->
-> | 通路 | 形态 | 官方先例 |
-> |---|---|---|
-> | `systemPrompt.context()` | **纯文本 `Label: value`**，无标签 | `sandbox-policy:42`、`user-approval:73`、`subagent/child-agent:206` |
-> | 自建 `createUserMessage()` | `<system-reminder>` 包裹 | `skill-catalog:259`、`agent-instructions:242` |
->
-> `context()` 的文本会被 `joinContextSections` 合进**同一条**官方快照消息
-> （`system-prompt/src/index.ts:303-307`），而那条消息里的既有内容
-> （`Current DSH file policy: …` / `Approval prompts are disabled …`）**全是英文陈述句、全无标签**。
-> 走 `context()` 却自己加标签，会在一段无标签正文末尾出现孤立的一对标签，风格是混的。
->
-> 标签在官方是给**不可信/无界的长内容**做边界用的（`agent-instructions` 包用户的 `AGENTS.md`，
-> 还要 `escapeInstructionFrameBody` 转义闭合标签）；本项目注入的是**我们自己生成的标题与路径**，
-> 没有这个风险。且官方 24 处 `context()` **无一处**用 XML 标签。
->
-> 代价对比：改用 `<system-reminder>` 需放弃 `context()`、自建消息并**自己实现变更检测**
-> （官方 `tool-skill/src/index.ts:248` 就是这么做的），而 `context()` 的通路已由
-> `RuntimeContextProjection.project()` 提供去重。故取纯文本形态。
->
-> 英文而非中文：与同一条消息内官方那两行**同语言**，避免一条消息内中英混排。
-
-> 早先本节曾写"1 条直接跟在冒号后"，与情形 A/B/C 的示例不符，已废止。
-> 单目录也走列表，是为了让**信息块的形状只取决于目录数量**，不产生单条特例规则。
+**0 条写 `none`**；**未分组 ⇒ 只有单行**。**无 XML 包裹**（← 此条 2026-10-06 已推翻）。
 
 ### 25.4 两个开关
 
 | 开关 | 默认 | 控制 | 性质 | 实现状态 |
 |---|---|---|---|---|
 | `注入项目信息` | **开** | 项目行 + 关联目录行 | 基础功能 | ✅ **已实现** |
-| `注入项目文档` | **关** | 「工作文档」那一行 | **额外功能** | ⏸ **后端未实现**；前端灰显禁点 |
+| `注入项目文档` | **关** | 「工作文档」那一行 | **额外功能** | ✅ **已实现**（§26） |
 存储：`globalRecord` 增加两个带 default 的布尔（同 `createOpensSession` 的兼容机制，**不需要 bump version**）：
 
 ```ts
@@ -3879,7 +4030,7 @@ else                                    → 注入询问指令
 
 | 部分 | 语言 | 读者 |
 |---|---|---|
-| 框架句（`Current project:` / `The spec … differs …` / `strictly verbatim` …） | **恒英文** | **模型** |
+| 框架句（`Owning project:` / `The spec … differs …` / `strictly verbatim` …） | **恒英文** | **模型** |
 | `question` / `options[].label` / `options[].description` | **按 Host 语言** | **用户** |
 
 **Host 语言来源**：`settings` 服务的 `locale` 条目 `preference`；
