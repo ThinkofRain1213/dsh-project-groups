@@ -1625,6 +1625,7 @@ ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
 
 - **选项4（指定项目）**：需要项目选择器 + "所选项目被删除"的策略。枚举后加，向后兼容。
 - **问题4**：项目行不显示会话数（`GroupNode.sessionCount` 已存在，呈现方式待定）。
+  **⇒ 已升格为待办 Z-7**（2026-10-07 用户提出），决策点见那里，此处不再重复。
 - **已归档会话是否参与"最近活跃"**：官方 `recentWorkspace` 不剔除，我们目前也不剔除。
   若"最近活跃"停在已归档会话上，`recent` 会跟过去——**未决**。
 
@@ -3268,9 +3269,52 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
         - 校验——是否要求 `http(s)://`；是否允许非 URL 的自由文本
         - 与文档的关系——`PROJECT-SPEC.md` 的「关联资产」一节**已经**在文档里记链接，
           需要说清两者分工（文档里是叙述，这里是结构化字段）
-        **倾向**：先做**单个**「上游仓库」URL，进而在注入里以一行
-        `Upstream: <url>` 出现——它比「关联资产」更稳定、更适合被模型直接引用。
-        **未定，故未动代码。**
+        **已定（2026-10-07 用户）**：字段是 **`links` 数组，每条只存 URL**，
+        注入标签**随数量**（1 条 `Related link:`，≥2 条 `Related links:` + 平铺列表），
+        与 `directories` 的同名规则一致。
+        **实现照 `directories` 的完整链路做**（它是同构参照，四处一一对应）：
+        ```
+        领域   projectRecord.links: z.array(z.string()).default([])
+        协议   ProjectCreateRequest.links? / ProjectUpdateRequest.links
+        Remote create（可带）/ update（整份替换）/ setLinks（单独替换）
+        UI     照 DirectoryHeader + DirectoryRows 做 LinkHeader + LinkRows
+        ```
+        **两个必须照抄的细节**：
+        - `.default([])` 是**兼容性刚需**（同 `directories`，见 `src/spec.ts:58-72`）：
+          域打开时逐条校验，缺字段会让**整个文件打不开、连累所有项目**；
+          且**不能 bump version**（`single` 布局会因版本不符拒绝打开）。
+        - `setDirectories` 是**独立 Remote** 而非塞进 `update`（`update` 是整份替换），
+          `links` 需要同样的独立动词。
+        **注入侧零改动即可接通**：§25.3.4 已把 `related links` 定为预留段，
+        `src/injection.ts` 的 `declaredSegments` 留了注释锚点
+        （`// related links belongs here once the project record carries it.`），
+        实现时打开那一行 `if`，声明段与段清单**自动通**。
+        **未定**：是否强制 `http(s)://`（我倾向强制——注入会把它给模型读，
+        自由文本会被当成 URL）；若需要非 URL 的关联（如 Jira 单号），
+        则要改存 `{label, url}` 而非纯 URL。
+  - [ ] **Z-7 项目行显示会话数**（2026-10-07 用户提出）
+        **要做的**：项目行上显示该项目的会话数。
+        **已核实的前提**：
+        - **数据已经算好了，渲染层零成本**：`GroupNode.sessionCount`
+          （`src/vendored/client/tree.ts:170`）在 `:642` 由 `g.sessions.length` 赋值。
+        - **渲染层目前完全没用它** —— 全仓库只有"定义"与"赋值"两处，
+          **没有任何读取点**。
+        - **官方也不显示**：上游 `packages/client/ui-workspace/src/client/tree.ts`
+          同样只有 78（定义）与 459（赋值）两处，**渲染层从不引用**。
+          ⇒ 这个字段是**官方预留但未使用**的，我们 vendored 时原样带了过来。
+        **⇒ 因此这是"官方没有的行为"，需要权衡**：
+        - 与 §0 的总原则**"界面与官方 1:1"** 有张力——行上多一个数字就是可见差异。
+          参照 X-1（hover 卡显示项目）的判例：那条因"分组视图里已肉眼可见"
+          被判为**未做**；会话数**不是**肉眼可见的，所以理由不同，可以单独判断。
+        **要定的**：
+        - **诚实性**：`sessionCount` 是 `g.sessions.length`，即**已加载的可见会话**。
+          它是否等于用户理解的"这个项目的会话总数"？（已归档、未加载的算不算？）
+          若不等，显示一个会让人误解的数字比不显示更糟。
+        - **位置**：行标题右侧？与「未分组」桶一致？折叠时也显示吗？
+        - **形态**：裸数字，还是 `(3)` / 徽标？零会话时显示 `0` 还是隐藏？
+        - **未分组桶**是否同样显示。
+        - 与 `containsCurrent`（当前会话所在组的染色）在视觉上会不会打架。
+        **未动代码。**
 
 ### 通用
 - [x] 构建配置（tsdown + `cordis.patch.yml`）
