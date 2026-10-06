@@ -5,16 +5,21 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![DSH](https://img.shields.io/badge/DSH-0.2.0--rc.2-5965d8)](https://github.com/deepseek-ai/deepseek-harness)
 
-A [DSH](https://github.com/deepseek-ai/deepseek-harness) plugin that owns the sidebar's
-**Workspace** browser and takes grouping off the **directory** model, making it a pure
-**front-end project assignment**.
+A [DSH](https://github.com/deepseek-ai/deepseek-harness) plugin that does two things:
 
-> **The base feature set is "leave the official behaviour alone and only group by project".**
-> Disable the plugin and stock DSH is exactly what you get back.
+1. it **owns the sidebar's Workspace browser** and takes grouping off the **directory** model,
+   making it a pure **front-end project assignment**;
+2. it gives every project a **work document** and injects that document's **format spec** into the
+   session — so when the spec changes, the model is told to ask before migrating.
+
+> **Disable the plugin and stock DSH is exactly what you get back**: injections and listeners are
+> torn down with the plugin's fiber, leaving nothing behind.
 
 ---
 
 ## Why this exists
+
+### 1. Grouping should not be tied to directories
 
 DSH's official Workspace is a **directory ownership** record: a session belongs to a workspace
 because its immutable `cwd` equals the workspace's `path`. Membership is *derived on every read*,
@@ -28,7 +33,16 @@ workflow that is not organised by directory**, where that ceremony is pure overh
 - so a workspace can never answer "which of my projects is this conversation part of".
 
 **This plugin takes grouping off that model**: a project has **no directory** — it is a label on a
-session, used to keep different projects' conversations apart in the sidebar.
+session.
+
+### 2. A document deserves a spec for *how* it is written
+
+A project document records **what the project is doing, how far it has got, and what is next**, so it
+needs a structure (status / assets / log…). **Structure evolves.** When the spec changes, existing
+documents no longer match it — and **the model has no way to know that on its own**.
+
+So the plugin injects the **current spec** into the runtime context, and when it finds a document
+written under an **older** spec it requires the model to **ask the user first** before migrating.
 
 ## What it does
 
@@ -46,16 +60,41 @@ The official `@deepseek-ai/dsh-client-ui-workspace` row is **disabled** by `cord
 two claimants of the single slot (and two providers of those services) would be a hard startup
 error rather than a merge. That is also what makes the 1:1 UI possible.
 
-## Extra features (off by default)
+## Work documents and specs
 
-These go **beyond** "leave the official behaviour alone" and are **not implemented** by default:
+Each project has one markdown document, kept under `$DSH_HOME/project-groups/`; uploaded specs live
+in the `specs/` directory beside it. **The paths are not configurable**, so they stay correct on
+another machine.
 
-| Feature | Why it is extra |
+**Three sources for the spec** (the settings page's "Document spec"):
+
+| Card | Meaning |
 |---|---|
-| **Show the owning project on a session's hover card** | The official `SessionHoverContent` has no such concept, and in a grouped view the project title is already visible above the row |
-| **Work documents** (`docPath` binding + `agent/pre-step` injection) | The official model has no such concept, and it is the only action that injects content into a session |
+| **None** | No format update: write freely if the document has no format of its own, or add to the existing one |
+| **Default** | The plugin's built-in spec (ships with the package, so a plugin upgrade applies automatically) |
+| **Custom** | Your own uploaded markdown spec — upload, switch and delete them individually |
 
-See [`DESIGN.md` §24](DESIGN.md) (Chinese).
+There is also an "Adjust the document spec per project" switch: with it on, the create and edit
+project dialogs gain a dropdown (`Follow global / None / Default / each uploaded spec`) that lets one
+project diverge from the global choice.
+
+**A spec's identity is a content hash, not a file name** — so overwriting a file and a plugin upgrade
+changing the built-in spec **both** register as a change. When a document is found to be written under
+an older spec, the injection requires the model to ask, via `ask_user_question`:
+
+```
+1. Rewrite for the new spec   2. Skip this time   3. Ignore until the spec changes again
+```
+
+Choosing 1 sends the model through [`spec/REWRITE-FLOW.md`](spec/REWRITE-FLOW.md), whose one
+inviolable constraint is that **no information may be lost in the migration**.
+
+Injection happens **not on every step** (the official projection does not recommit unchanged text):
+on a session's first turn, after a compaction, and whenever a value that affects the text actually
+changes. That is why "Skip this time" needs to **store nothing at all** — it cannot loop.
+
+See [`DESIGN.md` §26](DESIGN.md) (Chinese). The built-in spec is
+[`spec/PROJECT-SPEC.md`](spec/PROJECT-SPEC.md).
 
 ## Install
 
@@ -119,24 +158,44 @@ official bundle, read out of the installed `app.asar`.
 pnpm install
 pnpm typecheck        # tsc --noEmit over src (including the vendored tree)
 pnpm build            # tsdown -> lib/index.js + lib/client.js
-pnpm check            # typecheck + build + bundle/patch/grouping/project checks + probes (354 assertions)
+pnpm check            # typecheck + build + 10 verification scripts + probes (609 assertions)
 ```
+
+> **⚠️ When developing locally (`dsh plugin add .` / a `link:` install), a change under `src/`
+> needs BOTH steps — neither alone is enough:**
+> 1. **`pnpm build`** — rebuild `lib/` (a `link:` install consumes the artifacts in `lib/`,
+>    not the sources);
+> 2. **restart DSH** — the Host half's `lib/index.js` is **not hot-loaded**.
+>
+> Rebuilding without restarting shows the old Host behaviour; restarting without rebuilding has no
+> effect either. (The client's `lib/client.js` may hot-reload; **the Host half will not**.) This trap
+> once caused a real misjudgement: a fix was already live but unreloaded, and was reported as "not
+> fixed".
 
 Source layout:
 
 | Path | Role |
 |---|---|
-| `src/index.ts` | Host half: the project domain, the Remotes, base-Workspace rebuild |
-| `src/client/index.ts` | Browser entry: the grouping injection, the settings card, the chooser |
-| `src/vendored/` | Copy of the official client source + **41 registered patches** (see its [README](src/vendored/README.md)) |
+| `src/index.ts` | Host half: the project domain, the Remotes, document/spec resolution, injection assembly, base-Workspace rebuild |
+| `src/injection.ts` | Injection text rendering (**pure**, no filesystem access) plus the drift decision |
+| `src/spec-store.ts` | Spec/document path resolution, SHA-1 (memoized on path+mtime+size), upload read/write |
+| `src/spec.ts` | Domain schema: the project record, global settings, the three state values |
+| `src/client/index.ts` | Browser entry: the grouping injection, the settings card, the dialogs |
+| `src/client/spec-picker.tsx` | The spec choose / upload / delete dialog |
+| `src/vendored/` | Copy of the official client source + **60 registered patches** (see its [README](src/vendored/README.md)) |
 | `scripts/` | Probes and verification; `DESIGN.md` explains what each proves |
-| `DESIGN.md` | Architecture, verified harness facts, the layer plan and the extra-feature list (Chinese) |
+| `DESIGN.md` | Architecture, verified harness facts, the layer plan and the decision record (Chinese) |
+
+**`pnpm check` runs all 10 verification scripts and the probes (609 assertions).**
+`pnpm probe:doc-spec` (131 browser end-to-end assertions) additionally needs a **real DSH and a free
+port**, so it is not on the default chain — run it by hand when touching the injection or the settings
+surface.
 
 ## Maintaining the fork
 
 `src/vendored/` **started** as a byte-identical copy of upstream
 `packages/client/ui-workspace/src/` at `dsh-v0.1.7-rc.2`, but is **no longer byte-identical**:
-project grouping needed a grouping seam, and there are now **41 structural patches across 10 files**.
+project grouping needed a grouping seam, and there are now **60 structural patches across 11 files**.
 The current source version is **0.2.0-rc.2**.
 
 Every one satisfies the same invariant — **omitted means upstream behaviour** — and all are listed

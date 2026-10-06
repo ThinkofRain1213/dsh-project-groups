@@ -5,14 +5,18 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![DSH](https://img.shields.io/badge/DSH-0.2.0--rc.2-5965d8)](https://github.com/deepseek-ai/deepseek-harness)
 
-一个为 [DSH](https://github.com/deepseek-ai/deepseek-harness)（DeepSeek Harness）打造的插件：
-**接管侧栏的「工作区」浏览区**，把分组从**目录**上摘下来，变成**纯前端的项目归属**。
+一个为 [DSH](https://github.com/deepseek-ai/deepseek-harness)（DeepSeek Harness）打造的插件，做两件事：
 
-> **基础功能 = 完全不动官方 + 只按项目分组。** 插件关掉即完全恢复官方行为。
+1. **接管侧栏的「工作区」浏览区**，把分组从**目录**上摘下来，变成**纯前端的项目归属**；
+2. **给每个项目一份工作文档**，并把它的**格式规范**注入会话——规范一变就提醒模型先问再迁移。
+
+> **插件关掉即完全恢复官方行为**：注入与监听器随插件 fiber 销毁，零残留。
 
 ---
 
 ## 为什么需要它
+
+### 一、分组不该绑在目录上
 
 DSH 官方的工作区是**目录所有权**记录：一个会话属于某工作区，是因为它 Header 里**不可变**的
 `cwd` 恰好等于该工作区的 `path`。成员关系**每次读取时现算**，从来没作为关系存下来。
@@ -24,8 +28,15 @@ DSH 官方的工作区是**目录所有权**记录：一个会话属于某工作
 - 新建工作区强制弹目录选择器，初始标题只能是文件夹名；
 - 于是工作区永远回答不了"这个对话属于我哪个项目"。
 
-**所以插件把分组摘下来**：项目**没有目录**，只是给会话贴的一个标签，
-用来在侧栏里把不同项目的会话分开管理。
+**所以插件把分组摘下来**：项目**没有目录**，只是给会话贴的一个标签。
+
+### 二、文档该有一份"怎么写"的规范
+
+项目文档记的是**在做什么、做到哪、下一步**，因此需要一套结构（现状 / 关联资产 / 台账…）——
+而**结构会演进**。规范一变，旧文档就与新的对不上，**但模型自己不知道**。
+
+所以插件把**当前规范**注入运行时上下文；一旦发现文档是按**旧规范**写的，就要求模型
+**先问用户**，再决定是否重写。
 
 ## 它做什么
 
@@ -40,16 +51,36 @@ DSH 官方的工作区是**目录所有权**记录：一个会话属于某工作
 官方的 `@deepseek-ai/dsh-client-ui-workspace` 行由 `cordis.patch.yml` **禁用**——
 单槽位双占用、服务双提供是硬启动错误，不是合并。也因此界面 1:1 才成立。
 
-## 额外功能（默认不做）
+## 工作文档与规范
 
-以下**超出**"完全不动官方"的范围，**默认不实现**，要做需明确确认：
+每个项目一份 md 文档，统一放在 `$DSH_HOME/project-groups/`；上传的规范放在
+同目录的 `specs/` 下。**路径不可自定义**，所以换机器自动正确。
 
-| 功能 | 为什么是额外功能 |
+**规范的三种来源**（设置页「文档规范」）：
+
+| 卡片 | 含义 |
 |---|---|
-| **会话 hover 卡显示所属项目** | 官方 `SessionHoverContent` 本来就没有这个概念；分组视图里项目标题已在行上方可见 |
-| **工作文档**（`docPath` 绑定 + `agent/pre-step` 注入） | 官方没有这个概念，且它是唯一"往会话里注入内容"的动作 |
+| **无** | 不更新格式：无既定格式则自由书写，有既定格式则在其基础上书写 |
+| **默认** | 使用插件内置的规范（随包分发，插件升级即自动生效） |
+| **自定义** | 用你自己上传的 md 规范，可逐个上传 / 切换 / 删除 |
 
-详见 [`DESIGN.md` §24](DESIGN.md)。
+另有「为每项目单独调整文档规范」开关：开启后，新建与编辑项目对话框会多出一行下拉栏
+（`跟随全局 / 无 / 默认 / 各已上传规范`），让单个项目偏离全局选择。
+
+**规范的身份是内容哈希，不是文件名**——所以覆盖同名规范、或插件升级改动内置规范，
+**都会**被检出为"规范变了"。发现文档按旧规范写时，注入会要求模型用 `ask_user_question` 问一句：
+
+```
+① 按新规范重写   ② 本次忽略   ③ 在规范再次变更前忽略
+```
+
+选 ① 则模型按 [`spec/REWRITE-FLOW.md`](spec/REWRITE-FLOW.md) 执行，
+**唯一不可违背的约束是"不得因格式迁移而丢失信息"**。
+
+注入**不是每步都做**（官方对未变化的文本不重复提交）：会话首轮、压缩后、以及影响渲染的值
+真正变化时。因此「本次忽略」**不记任何状态**即可——不会循环。
+
+详见 [`DESIGN.md` §26](DESIGN.md)。内置规范见 [`spec/PROJECT-SPEC.md`](spec/PROJECT-SPEC.md)。
 
 ## 安装
 
@@ -109,7 +140,7 @@ bundle 的构建满足与上游相同的模块边界规则：
 pnpm install
 pnpm typecheck        # tsc --noEmit，覆盖 src（含 vendored 树）
 pnpm build            # tsdown -> lib/index.js + lib/client.js
-pnpm check            # typecheck + build + bundle/patch/分组/项目校验 + 探针（362 条断言）
+pnpm check            # typecheck + build + 10 个校验脚本 + 探针（609 条断言）
 ```
 
 > **⚠️ 本地开发（`dsh plugin add .` / `link:` 安装）时，改完 `src/` 必须
@@ -125,17 +156,25 @@ pnpm check            # typecheck + build + bundle/patch/分组/项目校验 + �
 
 | 路径 | 职责 |
 |---|---|
-| `src/index.ts` | Host 半：项目领域、Remote、底层工作区重建 |
+| `src/index.ts` | Host 半：项目领域、Remote、文档与规范解析、注入装配、底层工作区重建 |
+| `src/injection.ts` | 注入文本渲染（**纯函数**，不碰文件系统）+ 漂移判定 |
+| `src/spec-store.ts` | 规范与文档的路径解析、SHA-1（按 path+mtime+size 记忆化）、上传读写 |
+| `src/spec.ts` | 领域 schema：项目记录、全局设置、三个状态值 |
 | `src/client/index.ts` | 浏览器入口：注入分组、设置卡片、选择弹窗 |
-| `src/vendored/` | 官方 client 源码副本 + **41 条登记的 patch**（见其 [README](src/vendored/README.md)） |
+| `src/client/spec-picker.tsx` | 规范选择 / 上传 / 删除对话框 |
+| `src/vendored/` | 官方 client 源码副本 + **60 条登记的 patch**（见其 [README](src/vendored/README.md)） |
 | `scripts/` | 探针与校验；`DESIGN.md` 说明每个脚本证明了什么 |
-| `DESIGN.md` | 架构、已核实的 harness 事实、分层计划与额外功能清单 |
+| `DESIGN.md` | 架构、已核实的 harness 事实、分层计划与决策记录 |
+
+**`pnpm check` 会跑全部 10 个校验脚本与探针（609 条断言）。**
+另有 `pnpm probe:doc-spec`（131 条浏览器端到端断言）需要**真实 DSH 与可用端口**，
+故不在默认链上——改动注入或设置界面时应手动跑一次。
 
 ## 维护这份 fork
 
 `src/vendored/` **起点**是上游 `packages/client/ui-workspace/src/`（`dsh-v0.1.7-rc.2`）
 的逐字节副本，**但现在已不再逐字节一致**：项目分组需要分组缝，
-现有 **41 条结构性 patch、涉及 10 个文件**。当前来源版本是 **0.2.0-rc.2**。
+现有 **60 条结构性 patch、涉及 11 个文件**。当前来源版本是 **0.2.0-rc.2**。
 
 每一处都满足同一条不变量——**不传即等官方行为**——并且全部登记在
 [`src/vendored/README.md`](src/vendored/README.md) 的 patch 表里。
