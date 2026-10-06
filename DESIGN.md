@@ -3197,30 +3197,66 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
       `AnimatedRows` 的判定能看到"该行是被移除后重新出现"还是"用户搬动"，
       或让删除路径换一个不改变行键的中转。
       **需先定：是要"两个行为都对"，还是接受其中一边与官方不同。**
-  - [ ] **Z-5 「默认工作区」卡片在默认工作区不存在时，应改为橙色警告**（2026-10-06 用户提出）
-        **用户原话（要做的）**：无默认工作区时，卡片描述变橙色警告。
-        **⚠️ 用户给的理由「会自动创建默认工作区」与本机核实的实际行为不符**，
-        而卡片文案正要从这个理由写出来，所以先记准：
+  - [ ] **Z-5 默认工作区缺失时的三处界面改动**（2026-10-06 用户定案，待实施）
+        **背景（已核实，决定了文案怎么写）**：
         - `workspace/workspace/src/index.ts:256` `initializeDefault()`：
           **只在 `defaultWorkspaceId === undefined` 且注册表与会话历史皆空时**才创建。
         - 该字段**一经写入就不再清空**：`deleteKnown()`（同文件 `:583`）
           只从 `workspaceIds` 里过滤，**不动 `defaultWorkspaceId`**；
-          本机注册表实测 `defaultWorkspaceId = c22b8419…` 已持久存在。
-        - ⇒ **删掉默认工作区之后**，`initializeDefault` 走
-          `entities.get(defaultWorkspaceId)` → `undefined` → **返回 undefined，
-          不创建** ⇒ 触发的是**「底层工作区缺失」对话框**，用户须点
-          「重建该工作区」→ 再确认一次，`mkdir -p` + `registry.create` 才发生。
-        - **⇒ 准确的措辞不是"会自动创建"，而是"会在你新建会话时提示重建"。**
-          两者对用户的**行动指引不同**（一个说"不用管"，一个说"点一下就好"）。
-        **要定的**：
-        - **怎么判定"默认工作区不存在"**——卡片注释
-          （`settings-card.tsx:510-513`）已说明该目录由 Host 派生、不在注册表快照里，
-          故现在画不出路径。已有 Remote `projectGroups/defaultWorkspacePath`
-          可拿路径，但**还需要"是否存在"**（再加一个 Remote 返回布尔值？）。
-        - 文案（按上面纠正后的语义写）
-        - 是否复用 `.cubeWarn`（现有警告色类，与「指定工作区已不存在」同款）
-        **注意**：与「指定工作区」**不同款是有意的**——那边是"记忆里的工作区没了、
-        不会自动重建"，这边是"点击重建即可恢复"，两句的行动指引相反。
+          本机注册表实测 `defaultWorkspaceId = c22b8419…` 持久存在。
+        - ⇒ 删掉默认工作区后，`initializeDefault` 拿到 `undefined` ⇒ **不创建**，
+          走的是**「底层工作区缺失」对话框**。
+        **⇒ 所以文案不能说"会自动创建"，只能说"会弹窗确认是否重建"**（用户已采纳）。
+
+        **① 卡片描述文案（`settings-card.tsx` 的「默认工作区」卡片）**
+        缺失时第二行改文案 + **橙色警告**（复用现有的
+        `${css.cubePath} ${css.cubeNotice}` 写法，与「自定义规范未选」同款；
+        `.cubeWarn` 与它颜色相同，见下方"共同待定"）。
+        文案大意：**默认工作区缺失，新建会话时会弹窗确认是否重建**。
+
+        **② 卡片上加一个小按钮「重建默认工作区」**（与「更换…」同款 `css.cubeAction` 的
+        `role="button"` span）；**点击走二次确认弹窗**（即复用
+        `BaseWorkspaceMissing` 的两段式 `stage: 'report' | 'confirm'`，或直接调
+        `rebuildBaseWorkspace` 前先确认）。
+        可用的现成件：
+        - Host Remote `rebuildBaseWorkspace`（`src/index.ts:1568`）已做
+          `mkdir -p` + `registry.create`，并把 `'default'` 模式改写为
+          `'specified'` + 新路径（`:1601-1605`）。
+        - 客户端的 `rebuildBaseWorkspace` 已接线（`src/client/index.ts:220`）。
+        - ⚠️ **注意**：它会**把模式从 `默认` 改成 `指定`**（因为
+          `defaultWorkspaceId` 指针不改写、无法让官方重新接管，见 `:1560-1565`）。
+          ⇒ 卡片高亮会**移到「指定工作区」**。用户需确认这是否可接受。
+
+        **③ 新建会话时底层工作区缺失的对话框加一个选项**
+        目标：**直接选一个工作区**，而不是只能"重建 / 重新指定"。
+        **⚠️ 第三个选项已存在**：现有对话框的「重新指定底层工作区」
+        （`baseMissing.respecify`）**做的就是这件事** —— 关掉弹窗 →
+        `pluginNavigation.openBundle` 跳到本插件详情页 → 自动弹出选择工作区列表
+        （`BaseWorkspacePicker`）。有探针钉住整条链：
+        `probe-base-workspace-respecify.mjs`（**12 项断言**，含"弹窗关闭/跳转成功/
+        选择器自动打开/取消后可再次打开"）。
+        **⇒ 要定的**：用户想要的是
+        (a) **改标签措辞**让它更像"选择一个工作区"，
+        (b) **在同一弹窗内直接列工作区**（不跳页），
+        还是 (c) 上述之一但**保留跳页**？
+        (b) 与现有设计冲突（选择器服务挂在 Plugins 页的 slot 里，见
+        `src/client/index.ts:226-247` 的注释），需另开实现路径。
+
+        **三处共同的待定**：
+        - **怎么判定"默认工作区不存在"**——卡片的 `workspaceSnapshot` 读的是
+          **注册表快照**，而默认工作区的目录是 **Host 派生的、不在注册表里**
+          （卡片注释 `settings-card.tsx:510-513`）。已有 Remote
+          `projectGroups/defaultWorkspacePath` 能拿**路径**，
+          但**没有"是否存在"**的查询 ⇒ 可能要新增一个 Remote（返回布尔值）。
+          这是①②的前置。
+        - **`.cubeNotice` 还是 `.cubeWarn`**——两者**颜色完全相同**
+          （都是 `var(--dsw-alias-state-warn-primary)`，`settings-card.module.css:237` 与 `:252`），
+          只是用在两处：`.cubeNotice` 给「自定义规范未选」，`.cubeWarn` 给
+          「指定工作区已不存在」。**⇒ 视觉上无区别，任选其一即可**，
+          但建议明确保留两个名字的语义，或合并成一个。
+        - **默认工作区缺失时是否也把卡片高亮留在「默认工作区」**：
+          重建会把模式改成 `'specified'`（见②的警告）⇒ 高亮会移走。
+
   - [ ] **Z-6 新建/编辑项目支持关联链接（上游仓库）**（2026-10-06 用户提出）
         **目标**：给项目登记**关联链接**，用于把项目联系到**上游仓库**（GitHub 等）。
         **要定的**：
