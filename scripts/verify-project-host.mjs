@@ -154,31 +154,42 @@ function bench() {
   check('create refuses a blank title', message.includes('title is required'), message)
 }
 
-// 4. Rename updates in place and rejects an unknown id.
+// 4. Update replaces the title and directories in place, and rejects an unknown id.
 {
   const { controller } = bench()
-  const { project } = await controller.create({ title: 'before' })
-  const renamed = await controller.rename({ projectId: project.projectId, title: 'after' })
-  check('rename returns the new title', renamed.project.title === 'after')
-  check('rename keeps the id', renamed.project.projectId === project.projectId)
-  check('rename keeps the creation instant', renamed.project.createdAt === project.createdAt)
-  check('rename advances updatedAt', renamed.project.updatedAt >= project.updatedAt)
-  check('the baseline reflects the rename',
-    (await controller.baseline()).projects[0].title === 'after')
+  const { project } = await controller.create({ title: 'before', directories: ['C:\\old'] })
+  const updated = await controller.update({
+    projectId: project.projectId,
+    title: 'after',
+    directories: ['D:\\new', 'E:\\also'],
+  })
+  check('update returns the new title', updated.project.title === 'after')
+  check('update returns the new directories',
+    updated.project.directories.join('|') === 'D:\\new|E:\\also',
+    updated.project.directories.join('|'))
+  check('update keeps the id', updated.project.projectId === project.projectId)
+  check('update keeps the creation instant', updated.project.createdAt === project.createdAt)
+  check('update advances updatedAt', updated.project.updatedAt >= project.updatedAt)
+  const afterUpdate = await controller.baseline()
+  check('the baseline reflects the update', afterUpdate.projects[0].title === 'after')
+  check('and the old directory is gone from it',
+    !afterUpdate.projects[0].directories.includes('C:\\old'))
 
   let message = ''
   try {
-    await controller.rename({ projectId: 'nope', title: 'x' })
+    await controller.update({ projectId: 'nope', title: 'x', directories: [] })
     message = '(no throw)'
   } catch (error) {
     message = error instanceof Error ? error.message : String(error)
   }
-  check('rename refuses an unknown project', message.includes('unknown project'), message)
+  check('update refuses an unknown project', message.includes('unknown project'), message)
 }
 
 // 4b. Titles are unique — the rule `dsh-client-ui-workspace` applies to a Workspace rename
 //     (`workspaces.some(w => w.workspaceId !== renameTarget.workspaceId && w.title ===
 //     renameTrimmed)`), enforced here too because the Remote is reachable without its dialog.
+//     `update` is the only title-writing verb a project has, so it carries the same rule the
+//     former `rename` did.
 {
   const { controller } = bench()
   const { project: first } = await controller.create({ title: 'shared' })
@@ -198,20 +209,23 @@ function bench() {
   const { project: other } = await controller.create({ title: 'other' })
   message = ''
   try {
-    await controller.rename({ projectId: other.projectId, title: 'shared' })
+    await controller.update({ projectId: other.projectId, title: 'shared', directories: [] })
     message = '(no throw)'
   } catch (error) {
     message = error instanceof Error ? error.message : String(error)
   }
-  check('rename refuses a title another project holds', message.includes('already exists'), message)
-  check('the refused rename kept the old title',
+  check('update refuses a title another project holds', message.includes('already exists'), message)
+  check('the refused update kept the old title',
     (await controller.baseline()).projects.find(p => p.projectId === other.projectId).title === 'other')
 
-  // Self-exclusion. Renaming a project to the name it already has must not count as a conflict —
-  // it is a no-op the dialog disables on its own, and matching on the title rather than the id
-  // would refuse it and leave the row unable to keep its own name.
-  const kept = await controller.rename({ projectId: first.projectId, title: 'shared' })
-  check('rename to its own current title is allowed', kept.project.title === 'shared')
+  // Self-exclusion. Re-submitting a project's own name must not count as a conflict — matching on
+  // the title rather than the id would refuse it and leave the row unable to keep its own name.
+  const kept = await controller.update({
+    projectId: first.projectId,
+    title: 'shared',
+    directories: [],
+  })
+  check('update to its own current title is allowed', kept.project.title === 'shared')
 
   // Whitespace is trimmed before storage, so these two are the same name.
   message = ''
@@ -650,6 +664,174 @@ function bench() {
   check('the durable unit holds the choice',
     backend.units.get(PROJECT_DOMAIN_NAME).global.createOpensSession === false,
     JSON.stringify(backend.units.get(PROJECT_DOMAIN_NAME).global))
+}
+
+// Concurrent global writes must not lose one another.
+//
+// Every global write is a read-modify-write (`get()`, spread, `set()`), so two
+// that overlap in flight both read the pre-write snapshot and the later one drops
+// the earlier one's field. This was measured in the browser: firing
+// `setDocSpecFileName` and `setDocSpecMode` in the same turn lost the file name in
+// 12 of 12 runs and left `mode: 'custom'` with an empty name — the "empty custom"
+// state the setting must never hold. Reproduced here without a browser, because
+// the hazard is in the Host's write path.
+{
+  const { controller } = bench()
+  await controller.uploadSpec({ name: '甲.md', content: '# 1\n' })
+
+  let lost = 0
+  for (let round = 0; round < 12; round += 1) {
+    // A known-empty starting point, so a surviving value proves the write landed.
+    await controller.setDocSpecFileName({ name: '' })
+    await controller.setDocSpecMode({ mode: 'none' })
+
+    // Fire together, awaiting neither first — the shape the settings card produces.
+    await Promise.all([
+      controller.setDocSpecFileName({ name: '甲.md' }),
+      controller.setDocSpecMode({ mode: 'custom' }),
+    ])
+
+    const value = await controller.baseline()
+    if (value.docSpecMode !== 'custom' || value.docSpecFileName !== '甲.md') lost += 1
+  }
+  check('12 concurrent name+mode writes all land (no lost update)', lost === 0,
+    `${lost}/12 rounds lost a field`)
+
+  // The general claim: the queue is on `setGlobal`, so every field pair is
+  // covered, not just the one that exposed it.
+  const before = await controller.baseline()
+  await Promise.all([
+    controller.setNewSessionTarget({ target: before.newSessionTarget === 'project' ? 'ungrouped' : 'project' }),
+    controller.setCreateOpensSession({ value: !before.createOpensSession }),
+    controller.setInjectProjectInfo({ value: true }),
+    controller.setInjectProjectDoc({ value: !before.injectProjectDoc }),
+    controller.setPerProjectDocSpec({ value: true }),
+    controller.setDocSpecFileName({ name: '甲.md' }),
+    controller.setDocSpecMode({ mode: 'custom' }),
+  ])
+  const after = await controller.baseline()
+  check('six concurrent settings writes all land', [
+    after.newSessionTarget !== before.newSessionTarget,
+    after.createOpensSession !== before.createOpensSession,
+    after.injectProjectInfo === true,
+    after.injectProjectDoc !== before.injectProjectDoc,
+    after.perProjectDocSpec === true,
+    after.docSpecFileName === '甲.md',
+    after.docSpecMode === 'custom',
+  ].every(Boolean), JSON.stringify({
+    target: after.newSessionTarget,
+    create: after.createOpensSession,
+    info: after.injectProjectInfo,
+    doc: after.injectProjectDoc,
+    per: after.perProjectDocSpec,
+    name: after.docSpecFileName,
+    mode: after.docSpecMode,
+  }))
+
+  // A compound mutation shares the queue, so it must still land whole: the marker
+  // and the id list are two writes, and a lost one would leave an orphaned marker
+  // or an id list without its record.
+  const created = await controller.create({ title: '并发创建' })
+  const final = await controller.baseline()
+  check('a compound create still lands whole',
+    final.projectIds.includes(created.project.projectId)
+    && final.projects.some(project => project.projectId === created.project.projectId)
+    && final.projectIds.length === final.projects.length,
+    `ids=${final.projectIds.length} projects=${final.projects.length}`)
+}
+
+// The base-workspace write replaces the MEMORY without moving the MODE.
+//
+// The 更换… chooser sends the current mode plus the newly picked path: it is a
+// real replacement, so the write must land, and it must not switch the mode to
+// 'specified'. Getting this wrong in either direction is a shipped bug, so both
+// halves are asserted here rather than only in the browser probe.
+{
+  const { controller } = bench()
+  const FIRST = 'C:\\ws-one'
+  const SECOND = 'C:\\ws-two'
+
+  // Nothing stored yet, in default mode.
+  check('a fresh install is default with no memory',
+    (await controller.baseline()).baseWorkspace.mode === 'default')
+
+  // Replace the memory while the mode stays default: the write must land.
+  await controller.setBaseWorkspace({ mode: 'default', path: FIRST, name: 'one' })
+  let ws = (await controller.baseline()).baseWorkspace
+  check('replacing the memory in default mode stores the new path',
+    ws.path === FIRST && ws.name === 'one', JSON.stringify(ws))
+  check('...and leaves the mode alone', ws.mode === 'default', String(ws.mode))
+
+  // Replace it again, so this is provably a change rather than a no-op.
+  await controller.setBaseWorkspace({ mode: 'default', path: SECOND, name: 'two' })
+  ws = (await controller.baseline()).baseWorkspace
+  check('a second replacement overwrites the memory',
+    ws.path === SECOND && ws.name === 'two', JSON.stringify(ws))
+
+  // A plain switch to default must KEEP the memory — the behaviour the helper
+  // exists for, and the one this signature change could have broken.
+  await controller.setBaseWorkspace({ mode: 'specified', path: SECOND, name: 'two' })
+  check('switching to specified uses the memory',
+    (await controller.baseline()).baseWorkspace.mode === 'specified')
+  await controller.setBaseWorkspace({ mode: 'default' })
+  ws = (await controller.baseline()).baseWorkspace
+  check('switching back to default KEEPS the memory',
+    ws.mode === 'default' && ws.path === SECOND && ws.name === 'two', JSON.stringify(ws))
+}
+
+// Both docSpec write paths must accept and refuse the SAME values.
+//
+// They disagreed once: `setProjectDocSpec` refused `'default'` (the file-name
+// guard) while `create` accepted anything at all. So the same value was storable or
+// not depending on which dialog the user opened, and the create dialog's choice
+// was additionally dropped by the client. Asserted as a table over both paths,
+// because "each verb works" does not catch "the two disagree".
+{
+  const { controller } = bench()
+  const project = (await controller.create({ title: 'both-paths' })).project.projectId
+
+  /** Run the same value through both write paths; report acceptance for each. */
+  const accepted = async (spec) => {
+    const viaCreate = await (async () => {
+      try {
+        await controller.create({ title: `c-${String(spec)}`, docSpec: spec })
+        return true
+      } catch { return false }
+    })()
+    const viaSet = await (async () => {
+      try {
+        await controller.setProjectDocSpec({ projectId: project, spec })
+        return true
+      } catch { return false }
+    })()
+    return { viaCreate, viaSet }
+  }
+
+  // All four storable values, through both paths.
+  for (const spec of [null, 'none', 'default', 'some-file.md']) {
+    const { viaCreate, viaSet } = await accepted(spec)
+    check(`both paths accept ${JSON.stringify(spec)}`,
+      viaCreate === true && viaSet === true,
+      `create=${viaCreate} setProjectDocSpec=${viaSet}`)
+  }
+
+  // Both must refuse a name that is not a bare `.md` — the traversal guard.
+  for (const spec of ['../evil', 'C:\\abs.md', 'no-extension', '.hidden.md']) {
+    const { viaCreate, viaSet } = await accepted(spec)
+    check(`both paths refuse ${JSON.stringify(spec)}`,
+      viaCreate === false && viaSet === false,
+      `create=${viaCreate} setProjectDocSpec=${viaSet}`)
+  }
+
+  // And the values that DO land must be readable back unchanged, so the guard is
+  // not silently coercing a semantic value into a file name.
+  for (const spec of ['none', 'default']) {
+    const created = await controller.create({ title: `readback-${spec}`, docSpec: spec })
+    const id = created.project.projectId
+    const stored = (await controller.baseline()).projects.find(p => p.projectId === id)
+    check(`create stores ${JSON.stringify(spec)} verbatim`,
+      stored?.docSpec === spec, JSON.stringify(stored?.docSpec))
+  }
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)

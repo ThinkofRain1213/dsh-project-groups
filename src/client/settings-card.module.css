@@ -119,8 +119,96 @@
   display: flex;
 }
 
-.cube:hover:not(.selected) {
+/*
+ * Hover lightens an unselected, enabled card only.
+ *
+ * `:disabled` is excluded here rather than overridden below, which is what the
+ * first version did: a later `.cube:disabled:hover { background: none }` had the
+ * same specificity as this rule and therefore also stripped the fill from the
+ * *selected* card, so sweeping the pointer across a gated group made the
+ * selected card flash. Excluding the state is the fix; resetting the property
+ * was the bug.
+ */
+.cube:hover:not(.selected):not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/*
+ * A gated card, dimmed by COLOUR — deliberately not by `opacity`.
+ *
+ * The first version used `opacity: .4`, matching the official `Button`. That
+ * makes the card its own compositing layer, and clicking ANY switch on the page
+ * (the `Switch` animates, which promotes/demotes layers) made the card
+ * re-composite against a different base for one frame — measured as a one-unit
+ * brightness dip, visible only while the card was gated, which is exactly the
+ * flicker that was reported. A colour cannot create a layer.
+ *
+ * ## The rule, so this stays faithful
+ *
+ * `opacity: .4` multiplies *every* painted colour by 0.4 — text, borders and
+ * fill alike. The equivalent is to pre-multiply each element's own token by 40%
+ * over the page base, which is what the declarations below do. Replacing the
+ * text with a single dimmed token instead is what the second version did, and it
+ * darkened the title from (106,113,114) to (59,69,74) and flattened the amber
+ * warning to grey — both visible in a pixel diff against the original.
+ *
+ * For a token that is already semi-transparent (the border), mixing 40% with
+ * `transparent` scales its alpha, which lands the same place.
+ */
+.cube:disabled {
+  cursor: not-allowed;
+  /* The card's own colour is `label-primary`; the spans below override it. */
+  color: color-mix(in srgb, var(--dsw-alias-label-primary) 40%, var(--dsw-alias-bg-base));
+  border-color: color-mix(in srgb, var(--dsw-alias-border-l4) 40%, transparent);
+}
+
+/*
+ * The selected card: the module surface dimmed to 40%, mixed against the page
+ * base so the result is OPAQUE. Mixing with `transparent` would leave an alpha
+ * value to be composited a second time, and that second rounding pass landed a
+ * unit off (measured 33,34,35 where the original painted 34,34,36):
+ *   0.4*53 + 0.6*21 = 33.8 → 34
+ *   0.4*54 + 0.6*21 = 34.2 → 34
+ *   0.4*56 + 0.6*23 = 36.2 → 36
+ */
+.cube.selected:disabled {
+  background: color-mix(in srgb, var(--dsw-alias-bg-module-platform) 40%, var(--dsw-alias-bg-base));
+  border-color: color-mix(in srgb, var(--dsw-static-neutral-bluish-400) 40%, var(--dsw-alias-bg-base));
+}
+
+/*
+ * `.cubePath` and `.cubeWarn` set their own colours, so each is dimmed from its
+ * own token rather than inheriting — the amber warning must stay amber, just
+ * faded, the way `opacity` left it.
+ */
+.cube:disabled .cubePath {
+  color: color-mix(in srgb, var(--dsw-alias-label-tertiary) 40%, var(--dsw-alias-bg-base));
+}
+
+.cube:disabled .cubeWarn {
+  color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, var(--dsw-alias-bg-base));
+}
+
+.cube:disabled .cubeNotice {
+  color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, var(--dsw-alias-bg-base));
+}
+
+/* The in-card chooser is a span, so it needs the same treatment explicitly. */
+.cube:disabled .cubeAction {
+  color: color-mix(in srgb, var(--dsw-alias-label-primary) 40%, var(--dsw-alias-bg-base));
+  border-color: color-mix(in srgb, var(--dsw-alias-border-l3) 40%, transparent);
+}
+
+/*
+ * A label whose setting is gated.
+ *
+ * The rows that own a `Switch` get their dimming from the primitive itself
+ * (`Button`/`Switch` both fade when disabled), but the text beside them is plain
+ * markup and would otherwise stay at full contrast — which is exactly how the
+ * per-project row read on screen, with a greyed switch and black text.
+ */
+.gated {
+  color: var(--dsw-alias-label-dimmed);
 }
 
 /* The official selected pair: a filled module surface and the bluish border. */
@@ -147,6 +235,36 @@
 
 /* A chosen Workspace that is no longer registered: stated, not acted on. */
 .cubeWarn {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+/*
+ * The card's value line when no usable spec is chosen, which resolves to "no
+ * format required".
+ *
+ * Amber like `.cubeWarn`, and for the same reason: both say "the thing this card
+ * remembers is not in effect". The card itself stays on 自定义 — deleting a file
+ * must not move the highlight — so the line is what reports that the effective
+ * spec fell back.
+ *
+ * `.cubePath`'s own colour is `label-tertiary`; this overrides it.
+ */
+.cubeNotice {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+/*
+ * The selection dialog's "nothing selected" line.
+ *
+ * A line rather than a second dialog: it states the outcome of confirming, and
+ * blocking nothing is the point (the removed dialog had to be escaped through).
+ * Amber, not the error red: nothing has failed — 确认 is a legitimate choice
+ * here, and the user is being told where it lands.
+ */
+.specNotice {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 18px;
   color: var(--dsw-alias-state-warn-primary);
 }
 
@@ -233,4 +351,85 @@
   font-size: 13px;
   line-height: 20px;
   color: var(--dsw-alias-label-tertiary);
+}
+
+/*
+ * Rejection messages (a taken file name, a non-markdown pick). The error colour
+ * rather than the label colours: this line is the only feedback the upload
+ * attempt gets, and it must not read as ordinary help text.
+ */
+.specError {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-error-primary);
+}
+
+/*
+ * A spec row is a listbox option with a trailing delete control, so it lays out
+ * as a row rather than the stacked column the Workspace picker uses — that one
+ * needs a second line for the path, this one does not.
+ */
+.specRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 8px;
+  border-radius: var(--dsw-radius-md);
+  cursor: pointer;
+}
+
+.specRow:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.specRow .pickerName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * A bare icon control, used by the spec list's delete button.
+ *
+ * It was referenced (`css.iconButton`) but never defined, so the button rendered
+ * with `undefined` as its class — that is, as a default browser `<button>`, grey
+ * fill and inset border, which is what read as ugly. Copied from this file's
+ * sibling rule in `WorkspaceBrowser.module.css` (`:17`) so the two icon controls
+ * in the same product match.
+ */
+.iconButton {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  cursor: pointer;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.iconButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* The ring is drawn inside, because the row's own radius would clip it. */
+.iconButton:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+/*
+ * The footer's upload action. `margin-right: auto` is what pins it to the left
+ * while the dismiss/confirm pair stays right-aligned, without touching the
+ * shared footer's own layout.
+ */
+.footerLeading {
+  margin-right: auto;
 }

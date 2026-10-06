@@ -107,26 +107,27 @@ function fakeRemote({ failOn, holdAssign = [], refuseAssignFor } = {}) {
     /** Let every held `assign`/`unassign` proceed. */
     releasePlace: () => { const held = releasePlace; releasePlace = []; for (const resolve of held) resolve() },
     async baseline() { return { ok: true, value: structuredClone(state) } },
-    async create({ title }) {
+    async create({ title, directories = [] }) {
       calls.push(['create', title])
       const refused = guard('create')
       if (refused !== undefined) return refused
       const project = {
         projectId: `p${state.projects.length + 1}`,
-        title, docPath: '',
+        title, directories: [...directories], docPath: '',
         createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
       }
       state.projects.push(project)
       landed()
       return ok({ project })
     },
-    async rename({ projectId, title }) {
-      calls.push(['rename', projectId, title])
-      const refused = guard('rename')
+    async update({ projectId, title, directories }) {
+      calls.push(['update', projectId, title])
+      const refused = guard('update')
       if (refused !== undefined) return refused
       const project = state.projects.find(p => p.projectId === projectId)
       if (project === undefined) return { ok: false, error: { message: 'unknown project' } }
       project.title = title
+      project.directories = [...directories]
       landed()
       return ok({ project })
     },
@@ -408,18 +409,18 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
 
 // 9. A refusal reaches the caller, and does not change the local view.
 {
-  const { model, stop } = await started({ failOn: 'rename' })
+  const { model, stop } = await started({ failOn: 'update' })
   await model.create('a')
   await model.start()
   const projectId = model.list()[0].projectId
   let message = ''
   try {
-    await model.rename(projectId, 'b')
+    await model.update(projectId, 'b', [])
     message = '(no throw)'
   } catch (error) {
     message = error instanceof Error ? error.message : String(error)
   }
-  check('a refused verb throws with the Host message', message === 'rename refused by host', message)
+  check('a refused verb throws with the Host message', message === 'update refused by host', message)
   check('a refused verb leaves the local view unchanged', model.list()[0].title === 'a',
     model.list()[0].title)
   stop()
@@ -695,7 +696,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   const legacy = new ProjectModel({
     baseline: async () => ({ ok: true, value: { projects: [], projectIds: [], assignments: {}, expansions: {} } }),
     create: async () => ({ ok: true, value: {} }),
-    rename: async () => ({ ok: true, value: {} }),
+    update: async () => ({ ok: true, value: {} }),
     delete: async () => ({ ok: true, value: {} }),
     reorder: async () => ({ ok: true, value: {} }),
     assign: async () => ({ ok: true, value: {} }),

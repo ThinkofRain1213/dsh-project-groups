@@ -54,10 +54,68 @@ type SessionId = string
  * document (L5); an empty string means "no document bound yet" and is stored
  * rather than omitted so the field's absence never has to be distinguished
  * from its emptiness.
+ *
+ * ## Why `directories` carries a default
+ *
+ * The domain parses every stored record through this schema when it opens
+ * (`storage-domain/src/index.ts`), and a record that fails validation makes the
+ * **whole open reject** — `invalidRecords` defaults to the rejecting policy, and
+ * only `'backup-and-skip'` would move a bad record aside. A missing field would
+ * therefore make an install written before this change unreadable, taking every
+ * project with it. `.default([])` reads such a record back as "no associated
+ * directories", which is exactly what it was.
+ *
+ * No version bump accompanies it, for the reason stated on
+ * `projectDomainSpec`: a `single`-layout unit rejects a stored version that
+ * differs from the spec's, so bumping would make every existing file fail the
+ * version check instead.
  */
 export const projectRecord = z.object({
   title: z.string(),
+  /**
+   * Directories associated with this project, in display order.
+   *
+   * Any number, including none. Deliberately a plain `string[]` rather than a
+   * record with a primary/major flag: primary-vs-secondary was considered and
+   * dropped, and the shape must not reserve room for it.
+   */
+  directories: z.array(z.string()).default([]),
   docPath: z.string(),
+  /**
+   * Spec override for this project's document. Absent inherits the global
+   * setting — a real state, not an empty one, which is why this is `.optional()`
+   * rather than defaulted: `'none'` is a deliberate "no spec" and must stay
+   * distinguishable from "follow the global choice".
+   *
+   * A string is an uploaded spec's **file name**, never a path: uploaded specs
+   * live only under this plugin's own directory, so the name is the whole
+   * identity and `$DSH_HOME` is resolved at read time.
+   */
+  docSpec: z.union([z.literal('none'), z.string()]).optional(),
+  /**
+   * The spec the document was last written against, as the SHA-1 of that spec
+   * file's content.
+   *
+   * **Absent means the document has never been written**, so there is nothing to
+   * migrate and the drift check never fires. That is what keeps a project whose
+   * document does not exist yet from being asked about a rewrite it cannot need.
+   *
+   * A content hash rather than a file name on purpose: overwriting an uploaded
+   * spec under the same name, or a plugin upgrade changing the built-in spec,
+   * both change the hash and are therefore detected. A name comparison would
+   * miss both.
+   */
+  docSpecUsed: z.string().optional(),
+  /**
+   * A spec content hash the user asked to stop being asked about.
+   *
+   * Recorded by the third drift choice ("ignore until the spec changes again").
+   * Storing the hash rather than a boolean is what scopes the dismissal to one
+   * spec: the next spec has a different hash and is therefore asked about
+   * normally, which is exactly the difference between this choice and a
+   * permanent off switch.
+   */
+  docSpecIgnored: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })
@@ -170,6 +228,49 @@ export const baseWorkspaceSetting = z.object({
  */
 export const createOpensSession = z.boolean().default(true)
 
+/**
+ * Whether a Session's project info is injected into its requests.
+ *
+ * Defaults to **on**. Registered as a `systemPrompt.context()` contribution, so
+ * the model receives the project's title and associated directories as part of
+ * the runtime-context snapshot; this is the base feature, and it is the reason
+ * the plugin touches the model's context at all.
+ *
+ * Off restores the untouched official chain — no plugin-attributed context
+ * whatsoever. Disabling the plugin achieves the same thing structurally, because
+ * the contribution is a Cordis effect that dies with its fiber.
+ *
+ * Carries a default for the compatibility reason stated on
+ * `createOpensSession`: a global written before the field existed reads back as
+ * `true`, which is the behaviour such an install is about to get.
+ */
+export const injectProjectInfo = z.boolean().default(true)
+
+/**
+ * Whether the project's work-document line is injected alongside the base info.
+ *
+ * Defaults to **off**, and is deliberately a *separate* switch rather than part
+ * of {@link injectProjectInfo}: the document is the extra feature (see DESIGN.md
+ * §25.4 / §25.9). The base injection is a project name and its directories;
+ * naming the document is an addition on top of it, so it must be opt-in even
+ * though the base is on by default.
+ *
+ * Carries a default for the same compatibility reason.
+ */
+export const injectProjectDoc = z.boolean().default(false)
+
+/**
+ * Which spec source a project document follows, before any per-project override.
+ *
+ * `'default'` and `'custom'` are both real specs and differ only in where the
+ * file lives (inside this package, or under the plugin's own home directory);
+ * `'none'` says no format is required at all.
+ */
+export const docSpecMode = z.enum(['none', 'default', 'custom'])
+
+/** One stored spec-source choice. */
+export type DocSpecMode = z.infer<typeof docSpecMode>
+
 /** The stored base-workspace setting. */
 export type BaseWorkspaceSetting = z.infer<typeof baseWorkspaceSetting>
 
@@ -219,6 +320,36 @@ export const globalRecord = z.object({
   baseWorkspace: baseWorkspaceSetting.default({ mode: 'default' }),
   /** Whether creating a project also opens a Session inside it. */
   createOpensSession: createOpensSession.default(true),
+  /** Whether a Session's project name and directories are injected. */
+  injectProjectInfo: injectProjectInfo.default(true),
+  /** Whether the project's work-document line is injected too. */
+  injectProjectDoc: injectProjectDoc.default(false),
+  /**
+   * Which spec a project document follows when the project names no override.
+   *
+   * `'default'` is the spec shipped inside this package; `'custom'` names one
+   * the user uploaded; `'none'` says no format is required. Defaulting to
+   * `'default'` means a fresh install injects the shipped spec's path rather
+   * than nothing, which is the behaviour an install is about to get.
+   */
+  docSpecMode: docSpecMode.default('default'),
+  /**
+   * The uploaded spec's file name when {@link docSpecMode} is `'custom'`.
+   *
+   * Empty means the mode names a file the user has not chosen yet. The pair is
+   * deliberately two fields rather than one nullable name: `'custom'` with no
+   * name is a state the settings surface must show as "selected but unset", and
+   * folding it into `null` would erase the difference between that and `'none'`.
+   */
+  docSpecFileName: z.string().default(''),
+  /**
+   * Whether the project dialogs expose a per-project spec row.
+   *
+   * Off by default: the document feature's common case is one spec for every
+   * project, and a fourth row in the create dialog costs more than the override
+   * is worth until a user asks for it.
+   */
+  perProjectDocSpec: z.boolean().default(false),
   /** The mutation a previous process left unfinished, if any. */
   pendingMutation: pendingMutation.optional(),
 })
@@ -240,6 +371,11 @@ export const initialGlobal: GlobalRecord = {
   // The same value the schema's default supplies; stated here because this literal
   // is typed, so a field with a default still has to appear.
   createOpensSession: true,
+  injectProjectInfo: true,
+  injectProjectDoc: false,
+  docSpecMode: 'default',
+  docSpecFileName: '',
+  perProjectDocSpec: false,
 }
 
 /**

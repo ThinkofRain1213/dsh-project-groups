@@ -608,7 +608,9 @@ import { z } from 'zod'
 
 const projectRecord = z.object({
   title: z.string().min(1),
-  /** 工作文档路径；空串表示未绑定 */
+  /** 关联目录，任意多个；顺序即展示顺序。基础阶段不区分主次（见 §25.5） */
+  directories: z.array(z.string()).default([]),
+  /** 工作文档路径；空串表示未绑定（额外功能，默认不消费，见 §25.4） */
   docPath: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -664,7 +666,7 @@ const projectGroupsSpec = defineDomain({
 > 基础功能里 `docPath` 字段存在但恒为空串、不消费；这里定义的是**若实施**时的规范。
 
 ### 8.1 位置
-**默认**：`$DSH_HOME/projects/<projectId>.md`
+**默认**：`$DSH_HOME/project-groups/<projectId>.md`（2026-10-04 修订；原 `$DSH_HOME/projects/`）
 
 ```
 $DSH_HOME = $DSH_HOME 环境变量 → ~/.dsh
@@ -780,7 +782,8 @@ profileContext.home  →  $DSH_HOME  →  ~/.dsh
 | 3 | 一个会话能否属多项目 | **否** | 语义清晰；用独立 assignments 表天然保证 |
 | 4 | 数据存哪 | **`ctx.storageDomain`** | 标准规范；可移植；schema 校验 + 原子写 |
 | 5 | 界面获取方式 | **vendor 官方源码**（v2.0 改） | 所有"只换数据源"的接缝都被不变式封死（§0、§3.10） |
-| 6 | 项目文档位置 | **`$DSH_HOME/projects/<id>.md`** | 标准位置；用户可覆盖 docPath |
+| 6 | 项目文档位置 | **`$DSH_HOME/project-groups/<projectId>.md`** | 2026-10-04 修订（原 `$DSH_HOME/projects/`）；用户可覆盖 docPath |
+| 9 | 项目信息注入 | **`systemPrompt.context()`**（user 消息），见 §25 | section 会被 `complete: true` 的 preset 整个丢弃 |
 | 7 | 交付方式 | **基础功能分 6 层（L0–L4.5）**，额外功能单独列出 | 每层可独立交付、可回退；先验证"替换官方行"能干净启动 |
 | 8 | 与官方如何共存 | **禁用官方行**（非共存） | `single` 槽位双占用、服务双提供都是硬错误 |
 
@@ -3224,14 +3227,15 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
 ## 24. 额外功能（默认不做）
 
 **基础功能 = 完全不动官方 + 只按项目分组。** 这里列的东西**超出**这个范围：
-官方没有对应行为，做了就**削弱"插件关了就是官方原样"这个保证**。
+官方没有对应行为。**但注意：这不削弱"插件关了就是官方原样"的保证**——插件的注入/监听器随插件 fiber 销毁，
+关掉即零残留（**2026-10-04 更正**，原表述已由 §25.1 推翻）。
 
 **⇒ 默认不做。** 要做需要明确点头，且必须在本节登记，而不是混进待办清单。
 
 | # | 功能 | 状态 | 为什么是额外功能 |
 |---|---|---|---|
 | **X-1** | **会话 hover 卡显示所属项目** | 未做 | 官方 `SessionHoverContent` 只有标题/时间/槽位/状态/归档。分组视图里项目标题就在行上方**肉眼可见** ⇒ 加了是冗余；只在扁平模式/搜索下有信息量 |
-| **X-2** | **工作文档**（`docPath` 绑定 + `agent/pre-step` 注入 + 模板/大小上限） | 未做 | 官方没有这个概念。它引入 **host 侧注入逻辑**，是基础功能里唯一的"改会话内容"动作 |
+| **X-2** | **工作文档**（`docPath` 绑定 + 注入开关 + 模板/大小上限） | **部分实施**（2026-10-04：路径 + 开关已定，见 §25；**文档格式规范与正文注入仍未做**） | 官方没有这个概念。文档**格式规范**是额外功能；「注入项目信息」本身已升为基础功能（§25） |
 
 ### X-2 详细设计（保留原 L5 内容）
 
@@ -3264,5 +3268,822 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
 5. 文档过大时被截断且有提示
 
 **⇒ 实施前必须确认**：这会往会话里注入内容，与"完全不动官方"的边界需要明确。
+
+---
+
+## 25. 项目信息注入（已定案 2026-10-04）
+
+> 定位：**既有基础功能的一部分（开关 + 关联目录），也有额外功能（文档）**。
+> 本轮只实现 **基础部分**：开关 + 关联目录 + 文档路径。**不规定文档内容格式，不注入文档正文。**
+
+### 25.1 边界原则：与官方完全分离（用户 2026-10-04 明确）
+
+| 状态 | 行为 |
+|---|---|
+| **插件开** + 会话在某项目下 | 注入（见 §25.3 文案） |
+| **插件开** + 会话未分组 | **同样注入**，各字段填「无」。**不区分是否分组——统一形式注入。** |
+| **插件关** | **完全不注入**，会话回到官方底层工作区，官方链条零残留 |
+
+**"插件关就不注入"为什么天然成立**：注入逻辑注册为 Cordis effect，随插件 fiber 销毁；置 `disabled: true` 后监听器随之消失。
+因此**不需要**"清除已注入内容"的逻辑，**也不与官方 AGENTS.md 机制交叉**：两者是各自独立的消息、各自的来源 kind。
+
+> ⚠️ 早期 §24 曾写"这会削弱『插件关了就是官方原样』的保证"——**该表述不成立**，已由本节更正。
+
+**实测：provider 求值 ≠ 消息落盘（2026-10-04）**
+
+| 层 | 频率 |
+|---|---|
+| `systemPrompt.assemble()` 调用 `text()` | **每个 prepared request** |
+| 提交 `user/message` | **仅当合成文本与"当前生效的那条"不同** |
+
+依据：`agent-loop/src/runtime-context.ts` 的 `project()`：
+```ts
+if (this.retained?.text === snapshot) return   // ← 不变则什么都不提交
+```
+本机实测佐证（会话日志统计）：`session-0dab5503` **315 个 step，`runtime-context` 只落盘 1 条**；
+`session-712904f9` 359 step / 2 条。⇒ 真实节奏是「**首轮 + 压缩后 + 内容变化时**」，不是每步注入。
+
+> **对插件的影响**：无需自己实现"首轮/压缩后/变化"这套调度——官方框架自动完成。
+> 插件只需保证 `text()` 每次求值返回正确文本。**这也是改动下一步即生效的原因。**
+
+### 25.2 注入通路：`systemPrompt.context()`（user 消息），不是 section
+
+**实测依据**（`packages/core/system-prompt/src/index.ts`）：
+
+```ts
+// assemble() 末尾：complete section 会把 sections 整个替换成只剩它一个
+if (completeSection === undefined && !runtimeContextSuppressed) return transformed
+return {
+  sections: completeSection === undefined ? transformed.sections : [completeSection],  // ← 只剩它
+  contexts: runtimeContextSuppressed ? [] : transformed.contexts,                       // ← 只看 suppressor
+}
+```
+
+| 通路 | 载体 | 官方 preset 启用了 `complete` 时 |
+|---|---|---|
+| `systemPrompt.section()` | system prompt | ❌ **被整个丢弃**（只剩 persona 那一个） |
+| `systemPrompt.context()` | user 消息（runtime-context 快照） | ⚠️ 仅当该 preset 另设 `includeRuntimeContext: false` 时被清空 |
+
+**官方 preset 实测**（`packages/bundle/web-app/presets/`）：
+
+- `standard` / `ptc`：persona **未设** `complete` → 两条通路都通；
+- `minimal`：`complete: true` **且** `includeRuntimeContext: false` → **两条通路都不通**。
+
+**⇒ 采用 `systemPrompt.context()`**：多数 preset 下可用，且是官方"动态运行时事实"的既定形态（sandbox / approval 政策同层）。
+⇒ **已知限制**：`minimal` preset 下不注入。记入 §25.6。
+
+**接缝写法（2026-10-04 实测，两个陷阱方向相反）**
+
+| 服务 | 裸属性 `ctx.X` | 原因 | 正确写法 |
+|---|---|---|---|
+| `systemPrompt` | ❌ **编译错误** TS2339 | `@deepseek-ai/dsh-system-prompt` **不是本包依赖**，augmentation 不在作用域 | 结构类型 + `scope.get('systemPrompt')` |
+| `sessions` | ❌ **运行时抛错** | 包是依赖（类型没问题），但**裸属性读受 `inject` 门禁**：`cannot get property "sessions" without inject` | `ctx.get('sessions')` |
+| `storageDomain` | ✅ 可用 | 已在顶层 `inject` | 保持 |
+
+**⇒ 两者都必须走 `ctx.get(...)`，但失败时机不同**（一个在编译期，一个在运行期）——
+这正是"看起来一样的两种写法"最容易踩空的地方。
+
+**顶层 `inject` 保持 `['storageDomain']` 不变**：顶层是**门**，写进去的服务不出现则整个插件不激活。
+`systemPrompt` 用**嵌套** `ctx.inject(['systemPrompt'], cb)` 只阻塞子 fiber。
+
+**CONTEXT_ORDERS 实测**（同文件）：官方只登记三个名字（`SANDBOX_POLICY: 110` / `APPROVAL_POLICY: 115` / `SUBAGENT_DELEGATION: 120`），
+`getContextOrder()` **只接受这三个名字**；但 `context()` 本身接受**任意有限数字** order。
+⇒ 插件用自己的字面量 `200`（排在 120 之后，成为该快照的末段）。**不调用 `getContextOrder`。**
+
+**实测验证（2026-10-04，真实构建产物）**
+
+方法：从已安装 `app.asar` 提取**真实的** `@deepseek-ai/dsh-system-prompt@0.2.0-rc.2` 构建产物
+（`/dsh/node_modules/@deepseek-ai/dsh-system-prompt/lib/index.js`，连同 `dsh-scope`、`schemastery`），
+配项目自身的真实 `cordis@4.0.1`，在真 `Context` 上运行。**非 mock、非推理。**
+
+| # | 问题 | 结果 |
+|---|---|---|
+| Q1a | 裸属性访问（无 `inject`） | **抛错** `cannot get property "systemPrompt" without inject` |
+| Q1b | `ctx.get('systemPrompt')` | ✅ **解析成功** |
+| Q1c | `ctx.inject(['systemPrompt'], cb)` | ✅ **触发且属性可读** |
+| Q2 | `ctx.get` 注册 与 `ctx.inject` 的 scope 注册，谁能进 `assemble()` | ✅ **两者都能**，均出现在 `assembly.contexts` |
+| Q2 | order 200/201 的位置 | ✅ 排在官方 110/115/120 **之后** |
+| Q3 | `text()` 是否每次 `assemble()` 重新求值 | ✅ **是**——两次 assemble 之间改底层数据，第二次立即反映 |
+
+**⇒ 三条结论**：
+
+1. **`system-prompt` 是 base 平面的长驻服务，不是 `pluginNavigation` 那种瞬时服务**（§14 的坑不适用）。
+   `ctx.get` 与 `ctx.inject` 都能解析；**无需**为"服务晚到"做额外处理。
+2. **采用 `ctx.inject(['systemPrompt'], scope => scope.systemPrompt.context(…))`**：两种写法都能进
+   assembly，选它是因为**与官方 `user-approval` / `sandbox-policy` 同形**，且注册随子 fiber 自动重注册。
+3. **`text()` 每次 assemble 重算 ⇒ 改归属/目录后「下一步」即生效，不需要新会话。**（§25.6 原"待验证"项已由 Q3 关闭。）
+
+> 探针脚本为一次性验证，跑完即删；结论以本表为准。
+
+### 25.3 注入文案（定案）
+
+所有 context 会被 `joinContextSections` 合并成**同一条** user 消息，前缀为：
+`Current runtime context. This snapshot supersedes earlier runtime-context snapshots.`
+**因此不存在独立的 `<project-context>` 消息**——这是 B 路线的既定形态，已确认接受。
+
+**无「其他信息」段。** 字段缺失写「无」而**不省略行**——**唯一例外是未分组**：它没有记录，
+故只报状态（见下 D 与格式规则）。
+
+> ### ⏸ 文档行当前**不实现**（2026-10-04）
+>
+> 下面的 A/B/C 示例中的「工作文档」行是**目标形态**，**当前实现不产出它**——
+> `src/injection.ts` 的 `renderProjectInjection` 只渲染项目行与关联目录行，
+> `injectProjectDoc` 开关在前端**灰显禁点**。
+> 因此现在实际注入的是 D/E 那种两行块；「工作文档」行待文档功能（§25.9 / §8）实施时再加。
+
+**A. 项目下，2 个关联目录**（文档行待实施）
+```
+Current project: dsh-project-groups
+Related folders:
+- C:\Users\Think\Desktop\项目\dsh-project-groups
+- C:\Users\Think\Documents\deepseek-harness\default-workspace
+```
+
+**B. 项目下，1 个关联目录**
+```
+Current project: dsh-project-groups
+Related folders:
+- C:\Users\Think\Desktop\项目\dsh-project-groups
+```
+
+**C. 项目下，0 个关联目录**
+```
+Current project: dsh-project-groups
+Related folders: none
+```
+
+**D. 未分组**（**单行**）
+```
+Current project: none (ungrouped)
+```
+
+**E. `injectProjectInfo` 关**（非默认）：**整块不注入**，模型侧零残留。见 §25.4 的 master-gate 规则。
+
+**未分组单行的理由（2026-10-04 定案）**：`directories` 是 **`projectRecord` 的字段**，
+未分组**没有记录**，也就**没有编辑入口**（未分组行没有可设目录的按钮）。
+若在那里输出 `Related folders:`，等于**指向一个不存在的设置**，会诱导模型报告"一个可以修好的缺失"。
+⇒ **未分组只报状态**；而**已归类但无目录**的项目**保留该行**——因为那个项目**确有编辑入口**，
+`none` 在那里是**可执行的**状态，不是缺失。这个不对称是有意的。
+
+**格式规则（2026-10-04 定案）**：已归类项目 ⇒ 目录 **≥1 一律用 `- ` 列表**（含单个，不留特例）；
+**0 条写 `none`**。**未分组 ⇒ 只有 `Current project: none (ungrouped)` 一行**（理由见上）。
+**无 XML 包裹**。
+
+> **措辞与包裹形态的定案（2026-10-05）**：改用英文陈述句、不加任何标签。
+> 依据是官方自己的两条通路分工（实测源码）：
+>
+> | 通路 | 形态 | 官方先例 |
+> |---|---|---|
+> | `systemPrompt.context()` | **纯文本 `Label: value`**，无标签 | `sandbox-policy:42`、`user-approval:73`、`subagent/child-agent:206` |
+> | 自建 `createUserMessage()` | `<system-reminder>` 包裹 | `skill-catalog:259`、`agent-instructions:242` |
+>
+> `context()` 的文本会被 `joinContextSections` 合进**同一条**官方快照消息
+> （`system-prompt/src/index.ts:303-307`），而那条消息里的既有内容
+> （`Current DSH file policy: …` / `Approval prompts are disabled …`）**全是英文陈述句、全无标签**。
+> 走 `context()` 却自己加标签，会在一段无标签正文末尾出现孤立的一对标签，风格是混的。
+>
+> 标签在官方是给**不可信/无界的长内容**做边界用的（`agent-instructions` 包用户的 `AGENTS.md`，
+> 还要 `escapeInstructionFrameBody` 转义闭合标签）；本项目注入的是**我们自己生成的标题与路径**，
+> 没有这个风险。且官方 24 处 `context()` **无一处**用 XML 标签。
+>
+> 代价对比：改用 `<system-reminder>` 需放弃 `context()`、自建消息并**自己实现变更检测**
+> （官方 `tool-skill/src/index.ts:248` 就是这么做的），而 `context()` 的通路已由
+> `RuntimeContextProjection.project()` 提供去重。故取纯文本形态。
+>
+> 英文而非中文：与同一条消息内官方那两行**同语言**，避免一条消息内中英混排。
+
+> 早先本节曾写"1 条直接跟在冒号后"，与情形 A/B/C 的示例不符，已废止。
+> 单目录也走列表，是为了让**信息块的形状只取决于目录数量**，不产生单条特例规则。
+
+### 25.4 两个开关
+
+| 开关 | 默认 | 控制 | 性质 | 实现状态 |
+|---|---|---|---|---|
+| `注入项目信息` | **开** | 项目行 + 关联目录行 | 基础功能 | ✅ **已实现** |
+| `注入项目文档` | **关** | 「工作文档」那一行 | **额外功能** | ⏸ **后端未实现**；前端灰显禁点 |
+存储：`globalRecord` 增加两个带 default 的布尔（同 `createOpensSession` 的兼容机制，**不需要 bump version**）：
+
+```ts
+injectProjectInfo: z.boolean().default(true),
+injectProjectDoc: z.boolean().default(false),
+```
+
+**`injectProjectInfo` 是 master gate**（已实现）：为 `false` 时插件**整块不注入**，`injectProjectDoc` 无法"单独开启"一个信息块。
+
+**UI 联动规则**（定案）：
+
+```
+injectProjectInfo === false
+  ⇒ injectProjectDoc 的 Switch：disabled，无法点击
+  ⇒ 显示说明文案：「由「注入项目信息」控制，现已关闭」
+  ⇒ 存储值保留，不联动改写（重开 info 时恢复用户原选择）
+```
+
+**已实现（2026-10-04）**：`src/client/settings-card.tsx` 两个 `Switch`；
+master 关闭时 `disabled` + `title` + 描述行改用 `injectDocGated` 文案。
+灰显的开关**仍显示其存储的 `checked`**（不强制为 `false`）——这正是"保留选择"的可视形态。
+`probe-settings-injection-switches.mjs` 用真实浏览器断言了全部 6 条。
+
+**文档功能当前状态**：`docPath` 字段与 `injectProjectDoc` 开关**仅存储**，后端不读文件、不注入文档行
+（`src/injection.ts` 的 `renderProjectInjection` 不渲染该行）。因此前端该开关**灰显**。
+这与 §25.7 的范围一致：文档格式规范与正文注入属额外功能，本轮不做。
+
+### 25.5 关联目录
+
+- **类型**：`directories: string[]`（**可多个**）。顺序即展示顺序。
+- **主次目录**：**不做，且不预留任何字段/参数**（用户 2026-10-04 明确："不要主次不要主次"）。
+  即 `directories` 就是 `string[]`，**不写 `{ path, primary }`、不加 `primary` 布尔、不加排序权重**。
+- **人工可改**：**能**。入口是**「编辑项目」**——即现有行菜单的「重命名」扩展为"改名 + 改目录"
+  （`WorkspaceBrowser.tsx` 的 rename 对话框扩展，菜单项文案由「重命名」改为「编辑项目」）。
+- **模型改**：**本轮不做，也不加开关**，**仅记入设计**（见 §25.9）。默认**只由人工修改**。
+
+#### 25.5.1 目录选择的交互（2026-10-04 暂定）
+
+**决定：用 `remote.directoryPicker.pick()`——操作系统原生选择器。**
+
+**关键区分（探查后修正）**：官方「添加工作区」用的**不是**这个：
+
+| | 路径 A：`directoryFlow` 槽位 | **路径 B：`remote.directoryPicker.pick()`** |
+|---|---|---|
+| 形态 | **内置浏览面板**（面包屑 + **新建文件夹**） | **OS 原生对话框**（Windows 资源管理器） |
+| 提供者 | `dsh-client-ui-directory-picker-browse`（占 slot） | `dsh-host-directory-picker-native` |
+| 本插件依赖 | ❌ 未依赖 | ✅ 已在 vendored inject 列表（`remote.directoryPicker`） |
+
+`dsh-host-directory-picker-auto` 会在启动时二选一挂载。官方 `WorkspacePicker.tsx` 的注释明确说
+"the occupant's own create-folder affordance already covers creating one"——**那个创建文件夹的能力属于路径 A**。
+
+**⇒ 暂定走 B（原生对话框）**，代价是**观感与官方「添加工作区」不一致**。理由：
+
+1. **零成本**：接缝现成，不抢 `single` 槽位、不新增依赖；
+2. 关联目录多为**已存在**的目录，"新建文件夹"需求弱；
+3. OS 原生对话框在 Windows 上是**用户更熟悉**的交互。
+
+**后续可选改动（保留）**：
+
+| 方案 | 观感 | 代价 |
+|---|---|---|
+| **(b)** 复用 `directoryFlow` slot + `DirectoryFlowOwnerProps` 状态机 | ✅ 与官方一致（含新建文件夹） | ⚠️ 该槽是 `kind: 'single'`，**与官方「添加工作区」冲突**；须处理 priority 或自声明子槽位 |
+| **(c)** 自调 `list()` / `createDirectory()` 渲染自己的面板 | ✅ 一致，且不抢槽 | 需自行实现目录浏览器 UI，工作量最大 |
+
+> **改到 (b)/(c) 时**：只需替换 `ProjectActions.pickDirectory` 的实现与对话框里的调用点，
+> 对话框其余部分（草稿状态、去重、移除、提交）**不用动**——这是把选择交互收敛到一个动词的原因。
+
+### 25.6 已知限制
+
+| 限制 | 说明 |
+|---|---|
+| `minimal` preset 下不注入 | 该 preset 设了 `complete: true` + `includeRuntimeContext: false`，两条通路都被关。**这是官方 preset 的能力边界，不是插件缺陷。** |
+| 与 sandbox/approval 合并成一条消息 | `joinContextSections` 的既定行为，无法拆成独立消息 |
+| ~~会话初始化只读一次？~~ | ✅ **已实测关闭（2026-10-04）**：`text()` 每次 `assemble()` 重新求值 ⇒ **改归属/目录后下一步即生效**。见 §25.2。 |
+| 跨了"已关闭且未归类"的祖先会断链 | 见 §25.6.1 的遍历规则：父会话关闭后，其**项目**仍可读，但**再往上爬**需要父的 header，读不到就停。 |
+
+#### 25.6.1 子代理血缘（2026-10-04 实测 + 实现）
+
+**问题**：子代理会话**不在 `assignments` 里**——只有 `session.create` 带 `workspaceId` 才挂账，
+而委派子代理走 Agent 注册表。若不处理，**每个子代理都会把自己报成「未分组」**。
+
+**官方立场（三层证据）**：
+
+| 层 | 事实 | 出处 |
+|---|---|---|
+| 候选账 | 子代理**不挂账** | 本机实测：18 会话 / `workspace.json` 仅 17 条，缺的正是 `origin: "subagent"` 那条 |
+| UI | 子代理**不进树**：`if (session.origin === 'subagent') return false` | `packages/client/ui-workspace/src/client/tree.ts` |
+| **归属** | **靠祖先回溯**：直接未命中且是 subagent ⇒ `traceSession` 找最近已挂账祖先 | `packages/api/session-controller/src/commands.ts` 的 `forkWorkspace` |
+| **归档** | **同步逐级回溯**：`ctx.sessions.get()` + visited 集合 | `packages/api/session-controller/src/archived-session-gate.ts` 的 `underArchivedSession` |
+
+**⇒ 采用与 `underArchivedSession` 同构的同步遍历**（`src/index.ts` 的 `projectOfSession`）：
+
+```
+1. assignments.get(sessionId) 命中 → 用它（普通会话的唯一路径）
+2. 未命中：读 session header；origin !== 'subagent' → 停止（fork 是独立会话）
+3. 循环：parentSession → visited 防环 → assignments 命中即返回
+        → 未命中则 ctx.sessions.get(parent) 取 header 继续
+        → 父不在活跃集合 → 停止（无法读它自己的 parentSession）
+```
+
+**关键实测结论（推翻早期判断）**：**祖先不需要是活跃会话。**
+
+```
+父已关闭，但父在账上        → 仍能读到父的项目 ✅
+父已关闭且未归类，祖父在账上 → 停止，报未分组（无法读父的 header）
+环形血缘                    → 终止，报未分组 ✅
+```
+
+原因：`assignments` 是本插件**自己的持久表**，按 session id 键；而父的 id 就带在
+`header.parentSession` 上。**只有"继续往上爬"才需要活的父会话。**
+官方 `underArchivedSession` 同样如此（父不活跃时仍用 id 查归档集）。
+
+**为什么不用 `forkWorkspace` 那套**：它用异步 `sessionQuery.traceSession()`，而 `text()` **必须同步**
+（实测 `PromptContext.text` 的签名是 `(context) => string`，不能 await）。合并成的调用点又**每个请求都跑**。
+
+### 25.7 本轮范围（用户 2026-10-04 最终指定）
+
+**做**：
+1. `directories` 字段（`string[]`，**无主次**）+ 两个开关（存储层）✅ 已完成
+2. `systemPrompt.context()` 注入（**项目名 + 关联目录**）✅ 已完成
+3. **新建项目界面**加"关联文件夹"（可加多个）——对齐 Codex 的「创建项目」对话框 ✅ 已完成
+4. **「重命名」扩展为「编辑项目」**（改名 + 改目录）✅ 已完成
+5. 设置卡两个 `Switch`（doc 开关灰显）✅ 已完成
+
+**不做**：文档内容格式规范（§8 暂缓）、**文档正文注入（后端不实现）**、
+**主次目录（连字段都不预留）**、**任何模型工具**（§25.9）。
+
+**实现落点**（全部已完成）：
+
+| 文件 | 内容 |
+|---|---|
+| `src/injection.ts` | **新增**：纯渲染器 `renderProjectInjection`（项目名 + 关联目录，无文档行） |
+| `src/index.ts` | 接缝类型 + `ctx.inject(['systemPrompt'])` 注册 + `injectionText` + `projectOfSession` 血缘遍历 + **原子 `update`**（`rename` 已删） |
+| `src/vendored/client/tree.ts` | `GroupSource.directories` + 导出 `sameStringList` |
+| `src/vendored/client/rows/WorkspaceBrowser.tsx` | 新建/编辑对话框的关联文件夹；`DirectoryRows` / `DirectoryHeader` |
+| `src/vendored/client/rows/Rows.tsx` | 项目行菜单文案 →「编辑项目」 |
+| `src/client/settings-card.tsx` | 两个 `Switch`；`injectProjectInfo` 为 master，关时 `injectProjectDoc` 灰显 |
+| `src/client/grouping.ts` | `clientInjectProjectInfo` / `clientInjectProjectDoc` 两个 observable |
+
+**验证脚本**：
+
+| 脚本 | 覆盖 |
+|---|---|
+| `verify-project-directories.mjs` | 存储层：`directories` 存量兼容、`update` 原子性、开关往返 |
+| `verify-project-injection.mjs` | 渲染器 9 项 + 漂移谓词 8 项 + 血缘遍历 11 项 |
+| `probe-project-directories-dialog.mjs` | **真实浏览器**：预填/删除/重开不残留/空占位（17 项） |
+| `probe-project-duplicate-name.mjs` | **真实浏览器**：重名拦截（含编辑对话框） |
+| `probe-settings-injection-switches.mjs` | **真实浏览器**：两开关、灰显联动、独立写入（15 项） |
+
+> **原生目录选择器无法自动化**：`pickDirectory` 打开的是 OS 系统对话框，Playwright 驱不动。
+> 探针覆盖的是它**周围**的一切（渲染、删除、预填、去重、重置、原子提交）；
+> "点添加文件夹能选到目录"这一步只能人工验。已写入该探针的模块注释。
+
+### 25.8 社区先例（文档格式规范的参考，本轮不实施）
+
+四种成熟手法，供 §8 将来定案时取用：
+
+| 项目 | 手法 | 可借鉴点 |
+|---|---|---|
+| **Cline Memory Bank** | 固定文件名 + 每个文件的**职责清单**（bullet 列"装什么"） | §8 每个 `##` 区块补"装什么" |
+| **Agent Skills** | YAML frontmatter **必填字段**，机器可校验 | §8.3 要"程序读文档"，**格式必须可校验** |
+| **GitHub Spec Kit** | 模板即仓库文件 + `[占位符]` + `[NEEDS CLARIFICATION: …]` | 未决项强制显式标记 |
+| **Kiro / EARS** | 受限文法 `WHEN … THE SYSTEM SHALL …` | 消除歧义（表达僵硬，谨慎采用） |
+
+**注入分法共识**（Cline 与 ZCode 各自独立验证）：**格式规范放 system，内容/索引放 user。**
+
+### 25.9 额外功能：模型自主更改项目信息（**仅记入设计，本轮不做**）
+
+> 用户 2026-10-04 定案：**当作额外功能，本轮不做，也不加开关。** 默认只由人工修改。
+> 本节只记录设计，供将来取用。**不预留任何代码、字段或开关。**
+
+**设想功能**：让模型能够修改项目的**名称 / 关联目录**，对应一个开关（如 `模型自主更改关联项目信息`）。
+
+**为什么是额外功能**：官方没有"项目"概念，更遑论"模型改项目元数据"。它会让模型能够
+改变**注入给它的那份上下文自身的来源**，是比注入更强的介入。
+
+**两条候选实现路线（均未采用，仅记录）**：
+
+| 路线 | 机制 | 评价 |
+|---|---|---|
+| **A. 工具** | 插件注册一个 tool，模型调用它改 domain | 需要工具注册、参数校验、审批路径；介入面最大 |
+| **B. 改文档文件** | 模型编辑项目文档，插件读文件并同步回 domain | 插件**只读文件**，但引入"文档字段 ↔ domain 字段"的双向同步与权威性冲突 |
+
+**未决问题（将来若做必须先回答）**：
+
+1. **权威性**：domain 的 `directories` 与文档里的字段，谁是权威？两者不一致时怎么办？
+2. **审批**：改项目归属类信息是否需要用户确认？（参照官方"不可逆操作两阶段确认"）
+3. **可见性**：模型改了之后，侧栏如何即时反映（走现有 `follow` 流即可，但需验证）。
+4. **与注入的关系**：模型能改注入源，等于能改自己的上下文——是否需要防自指约束。
+
+---
+
+## 26. 工作文档功能（**已实现** 2026-10-05）
+
+§8 的那份规范设计**已废弃**，由本节取代。实现落在 `src/spec-store.ts`、`src/injection.ts`、`src/index.ts`，
+规范正文在 `spec/PROJECT-SPEC.md` 与 `spec/REWRITE-FLOW.md`（随包发布）。
+
+### 26.1 为什么规范随包、文档存 `$DSH_HOME`
+
+| 文件 | 位置 | 理由 |
+|---|---|---|
+| 项目文档 | `$DSH_HOME/project-groups/<projectId>.md` | 用户要能读到；**不可自定义路径**（2026-10-05 定案） |
+| 上传的规范 | `$DSH_HOME/project-groups/specs/<name>.md` | 只存**文件名**，路径由插件拼 ⇒ 换机器自动正确 |
+| 内置规范 | `<插件包>/spec/*.md` | **随包**：插件升级自动生效、无"用户编辑 vs 出厂默认"冲突 |
+
+**两条路径都在运行时解析**，源码里没有任何绝对路径字面量：
+
+```ts
+// 官方解析顺序：profileContext.home → $DSH_HOME → ~/.dsh
+harnessHome(ctx) = ctx.get('profileContext')?.home ?? process.env.DSH_HOME?.trim() ?? join(homedir(), '.dsh')
+
+// 内置规范相对本模块解析（实测 `lib/` 产物中 import.meta.url 存活）
+BUILT_IN_SPEC_PATH = fileURLToPath(new URL('../spec/PROJECT-SPEC.md', import.meta.url))
+```
+
+> **`spec/` 必须留在 `package.json` 的 `files`**，否则分发时不打包，模型读不到规范。
+
+### 26.2 规范的身份 = **内容哈希**，不是文件名
+
+用 SHA-1（与官方 `agent-instructions/src/digest.ts` 的 `instructionContentSha1` 同算法同用途）。
+
+**为什么不是文件名**：
+
+| 情况 | 比文件名 | **比哈希** |
+|---|---|---|
+| 覆盖同名上传 | ❌ 检测不到 | ✅ 检测到 |
+| **插件升级改动内置规范** | ❌ 名字恒定 | ✅ 自动检测到，重新询问 |
+| 内容相同的两个文件 | 误报变化 | ✅ 视为相同 |
+
+哈希**同步**计算并**按 `path+mtime+size` 记忆化**——因为 `PromptContext.text` 是同步的
+（`system-prompt/src/index.ts:66`），且每个 prepared request 都会求值。稳态下每次注入只有一次 `statSync`。
+
+**渲染器保持纯函数**：哈希由 `src/index.ts` 算好作为参数传入，`injection.ts` 不碰文件系统。
+
+### 26.3 三个状态值
+
+| 字段 | 位置 | 含义 |
+|---|---|---|
+| `project.docSpecUsed` | 项目记录 | 文档**当前依据**的规范哈希。**absent = 文档从未创建** ⇒ 永不触发漂移询问 |
+| `project.docSpecIgnored` | 项目记录 | 用户选「长期忽略」时的哈希 ⇒ 直到规范**再变**才重新询问 |
+| 当前设置 | **实时解析** | 项目覆盖（`docSpec`）?? 全局（`docSpecMode` + `docSpecFileName`） |
+
+**判定**（每次注入）—— 实现在 `shouldAskSpecDrift`（**纯函数，可直测**）：
+
+```
+current = 当前设置解析出的规范哈希
+if (current === undefined)              → 不询问（没有迁移目标：无 / 自定义但文件已删）
+else if (docSpecUsed === undefined)     → 不询问（没有文档可迁移）
+else if (docSpecUsed === current)       → 不询问（已对齐）
+else if (docSpecIgnored === current)    → 不询问（已忽略到下次变更）
+else                                    → 注入询问指令
+```
+
+> #### 第一条前提是 2026-10-06 补上的（真 bug）
+>
+> 早先**没有** `current === undefined` 这一条。于是「无」下 —— 当前根本没有规范 ——
+> **只要文档存在就触发询问**，而那份询问把模型指向规范文件与 `REWRITE-FLOW.md`，
+> 后者的第一步是"**读取本次注入给出的规范文件全文**"。**那个文件不存在。**
+>
+> **症状**：一条注入里同时出现「no format is required」和"去按新规范重构文档"。
+> 打印全部 10 个状态时发现。
+>
+> **根因**：迁移需要一个**目标**，而「无」没有目标 —— 它的含义是**不更新格式**。
+> 作者在写入侧（`applyDriftChoice`）**已经**防住了（`spec.sha1 === undefined` 时不记任何选择），
+> **计算侧漏了同一道判断**。修法是把判断抽成 `shouldAskSpecDrift` 并补上第一条前提。
+>
+> **抽成纯函数的理由**：这个 bug 的**表现是"什么都没出现"**，而渲染文本的断言
+> **看不出区别**（"没有漂移"和"该有漂移却没有"渲染结果相同）。只有直测谓词才能锁住它。
+>
+> **`docSpecUsed` 保留旧值不动**，这正是往返正确的原因：
+>
+> | 场景 | 结果 |
+> |---|---|
+> | 有规范 → `无` | 不询问，文档不动 ✅ |
+> | `无` → **回到同一个**规范 | 哈希相等 ⇒ 不询问（本来就没变）✅ |
+> | `无` → **换成新**规范 | 哈希不等 ⇒ 询问（这时确实要迁移）✅ |
+
+### 26.4 注入时机（**已实测**，不是每步）
+
+| 触发 | 说明 |
+|---|---|
+| 会话首轮 | 首次注入 |
+| **压缩后** | 快照重建 |
+| **文本变化时** | 项目名/目录/规范/开关等任何影响渲染的值变了 |
+
+**实测依据**：`RuntimeContextProjection.project()` 在文本与保留值相同时不提交
+（`agent-loop/src/runtime-context.ts:155`）；session-0dab5503 **315 steps 只落 1 条** runtime-context，
+54 轮共 5 条。
+
+**⇒ 「本次忽略」不记任何状态即可**：文本未变 ⇒ 不重新提交 ⇒ 不循环。这是官方去重机制给的，不是我们加的。
+
+### 26.5 询问闭环：**模型问，插件旁听**
+
+**模型是提问主体**（用户 2026-10-05 定案），插件**不加工具、不伪造消息**。
+
+```
+① 注入（漂移时）：给出问题 id / 选项 / 描述，要求**严格逐字**使用，并禁止翻译；
+                  同时指明「若选第一项，完整阅读 REWRITE-FLOW.md」
+② 模型调用 ask_user_question → 用户选择
+③ 模型从自己的工具结果得知答案 ⇒ 知道该重写
+④ 插件订阅 session/event 旁听到答案 ⇒ 自动改状态
+```
+
+**为什么不用官方投影**：`sessionProjections.stateOf(session, 'userQuestions')` 只在会话头部记录的是
+**timed** schema 时才收录问题（`projection.ts:248` `if (!fold.timed …) return fold`），
+而 profile 三处 `tool-ask-user` 都是默认 `legacy` 模式 ⇒ **投影恒空**。故自己订阅两个事件：
+
+| 事件 | 取什么 |
+|---|---|
+| `tool/call` | `name === 'ask_user_question'` 且参数含我们的问题 id ⇒ 记下 `callId` |
+| `tool/result` | 匹配 `callId` ⇒ 读答案 JSON ⇒ 精确匹配标签 |
+
+**匹配靠标签原文**（协议只回传 `selected: string[]`，无序号、无选项 id——`types.ts:60`）。
+中英标签**都**在匹配表里，所以切换语言不会让历史答案失配。**失配 ⇒ 不记任何状态**（等价「本次忽略」，唯一安全行为）。
+
+> 官方自己的 `AskUserQuestionIntent` 注释也说明选项身份「**Named rather than positional**」——
+> 用标签名而非序号，是这个协议的既定做法。
+
+### 26.6 三个选项的语义
+
+| 选项 | 标签（zh / en） | 记录 |
+|---|---|---|
+| 1 | 按新规范重写 / Rewrite for the new spec | `docSpecUsed = current` |
+| 2 | 本次忽略 / Skip this time | **什么都不记** ⇒ 下一次注入点再问 |
+| 3 | 在规范再次变更前忽略 / Ignore until the spec changes again | `docSpecIgnored = current` |
+
+**选项 2 的"本次"= 本次注入点**（用户 2026-10-05 明确）。不引入会话级抑制——注入去重已保证不循环。
+
+### 26.7 本地化：**只本地化问题与选项**
+
+| 部分 | 语言 | 读者 |
+|---|---|---|
+| 框架句（`Current project:` / `The spec … differs …` / `strictly verbatim` …） | **恒英文** | **模型** |
+| `question` / `options[].label` / `options[].description` | **按 Host 语言** | **用户** |
+
+**Host 语言来源**：`settings` 服务的 `locale` 条目 `preference`；
+**未设置时兜底中文**——因为系统语言由 Desktop preload 直接交给客户端，**Host 拿不到**，
+而本部署的界面是中文（实测 `settings.yaml` 不存在 ⇒ `preference` 为 `undefined`）。
+
+**⇒ 一条注入里中英混排是有意的：两个读者，两种语言。**
+
+### 26.8 上传：**读内容，不取路径**
+
+用 `<input type="file">` + `File.text()`，**不读 `window.__DSH_HOST_PATHS__`**。
+
+**理由**：那个 preload 桥只在 DSH 桌面上存在（`ui-conversation/src/client/apply.ts:96-109` 的注释：
+*a served Web page has none*），而**读内容两端都可行** ⇒ 桌面与远程行为一致。
+
+**同名不覆盖**：拒绝并提示「已存在同名规范，请换一个文件名」。理由：文件可能已被手工编辑，
+静默覆盖比让用户改名更糟。**删除前**弹确认框，并显示「有 N 个项目正在使用它」
+——判据是**遍历项目解析有效规范的文件名**（不是哈希），因为此刻文件还在。
+
+### 26.9 项目级覆盖
+
+```
+globalRecord.docSpecMode:      'none' | 'default' | 'custom'   default('default')
+globalRecord.docSpecFileName:  string                          default('')
+globalRecord.perProjectDocSpec: boolean                         default(false)  ← 开关，默认关
+
+projectRecord.docSpec:         'none' | 'default' | <文件名> | absent   optional()
+```
+
+**absent 表示「跟随全局」**，不是 `'none'`——两者语义不同（跟随 vs 钉死无规范）。
+**`'default'` 是第四个合法值**，与 `'none'` 一样是语义值而非文件名（见 26.11 三·补之二）。
+**只有开关开启时**，新建/编辑对话框才多出一行下拉栏，列表**固定**为
+`跟随全局 / 无 / 默认 / 各已上传规范…`，**不随全局选择变化**（同 26.11 三·补）。
+
+### 26.10 沙箱与写入路径
+
+**文档与规范都由 Host 侧写**（`uploadSpec` / `deleteUploadedSpec`），不由模型或工具写。
+**模型只读**。
+
+> 附带说明（转录自实测）：`fs-sandbox` 只 override `writeText`/`editText`
+> （`fs-sandbox/src/index.ts:80,101,122`），**`readText` 不受限** ⇒ 模型能读 `$DSH_HOME` 下的文档与规范。
+> 写则受沙箱限制（`sandbox/src/roots.ts:52` 的可写根 = 会话工作区 + 临时目录，不含 `$DSH_HOME`），
+> 故**写入必须经 Host**。本项目的设计前提是**完全权限工作流**（§1），此处仍然遵循它。
+
+### 26.11 卡片的显示与选择器的落点（2026-10-06 定案）
+
+#### 一、卡片显示：说明后果，用警告色
+
+| 存储状态 | 卡片显示 | 颜色 | 高亮 |
+|---|---|---|---|
+| `custom` + 文件名**存在** | 文件名 | 普通 | **自定义** |
+| `custom` + 文件名**不存在/空**，且高亮在**自定义** | 「当前未选择规范，将自动解析为无规范」 | **警告色** | **自定义** |
+| `custom` + 文件名**不存在/空**，且高亮在**无/默认** | 「未选择」 | 普通 | 无/默认 |
+| `none` | 「不更新格式：无既定格式则自由书写，有既定格式则在其基础上书写」 | 普通 | 无 |
+| `default` | 「使用插件内置的规范」 | 普通 | 默认 |
+
+**四条规则**：
+
+1. **悬空文件的旧名不显示**——`title`（悬停提示）也一并去掉。显示一个未生效的名字会
+   暗示"这个规范正在用"，而实际生效的是 `none`。
+2. **高亮跟随「存储的 mode」，不跟随解析结果**。
+3. **高亮只在用户点卡片时移动。**
+4. **第二行说明"后果"，且颜色随高亮变化**——只有你**正在依赖**这一格时，它的空才值得警告。
+   高亮在无/默认时，同样的空格子只是普通的「未选择」；在那里报警是在为一个**没人依赖**的格子报警。
+
+> **「无」说的是 POLICY，不是"没有要求"**（2026-10-06 定案）。
+>
+> ```
+> 无 = 不更新格式
+>      ├─ 文档没有格式 → 自由书写
+>      └─ 文档已有格式 → 在其基础上书写（不重组）
+> ```
+>
+> 早先的文案是「不要求任何格式」，**可以被读成"想怎么写就怎么写"**，那就等于**授权重组**
+> 一份已有结构的文档 —— 与「无」的真实含义相反。现在两句都把两种文档情况点明。
+>
+> **三张卡各答一个问题**：`无` 说策略（不管格式）、`默认` 说来源（内置规范）、
+> `自定义` 说具体文件 —— 并列时语义整齐。
+
+> **第 2 条是改正，不是设计。** 早先一版让高亮跟随 resolver 的返回值，于是
+> **删掉一个文件就让高亮自己跳到「无」**——看起来像"删除改了设置"，而实际**一个字段都没写**。
+> 用户报为「删除只是删除，怎么自动跳到无规范了」。
+>
+> **参照物是同一页的「底层工作区」**：选过「指定工作区」后，即使那个工作区没了，
+> 高亮也**一直停在「指定工作区」**，只是把路径标成警告色——它**从不自动跳回「默认工作区」**。
+> 规范卡现在与之同构。
+>
+> **高亮只在用户点卡片时移动。** 断言成对锁住：`3e-d`/`3e-b2` 断言"删除或空确认都不移动高亮"，
+> `3e-a`/`G` 断言"点卡片才移动"。
+
+> **第 3 条改过两次。** 最初是「尚未选择」**普通三级色**，理由是"状态不该看起来像故障"；
+> 然后改成**无条件警告色**。用户最终定的是**按高亮分色**：高亮在自定义时警告，
+> 否则普通「未选择」。**理由**：那一行描述的是**自定义格子的状态**，只有你**正在用这一格**
+> 时它的空才值得警告；在无/默认下报警是在为一个没人依赖的格子报警。
+
+**名字仍保留在存储里**——同名文件回来（重新上传）即自动恢复生效，只是不显示而已。
+
+#### 二、选择器：未选中时**只给一行提示**，不再弹第二层（2026-10-06 定案）
+
+```
+未选中（列表为空 或 列表非空但没选中任何行）
+   → 在对话框内显示一行警告色提示
+   → 不拦截任何出口
+```
+
+**「列表为空」和「没选中任何行」是同一个语义**，但**文案分两句**（原因不同、用户能采取的行动
+不同）：空列表可用「上传」解决，非空未选只需点一行。两条都说明同一个后果。
+
+| 列表 | 提示 | `确认` |
+|---|---|---|
+| 空 | 「当前列表为空，使用自定义规范时将自动解析为无规范」 | 可点 |
+| 非空、未选中 | 「当前未选中任何规范，使用自定义规范时将自动解析为无规范」 | 可点 |
+| 非空、已选中 | 无提示 | 可点 → 用该文件 |
+
+> **措辞是"将自动解析为无规范"，不是"确认将回退到无"。** 早先那句已经**不成立**：
+> 确认**不再改变模式**（见「二·补」），空的自定义格是靠 `resolveSpec` **自己**解析成
+> `none` 的。旧文案把回退归因于那次点击，是错的。
+
+**`确认` 永不禁用**——无可用选择是**一个选择**（等于选了「无」），不是死路。
+
+**空选择不写 `mode`**——只有点卡片才写。详见下一节。
+
+**`确认` 永不禁用**——无可用选择是**一个选择**（等于选了「无」），不是死路。
+
+#### 二·补：「落成无」是**解析结果**，不是**高亮移动**
+
+**这是本节最容易看错的一处，单独写清楚。**
+
+```
+高亮     = docSpecMode 的值 = 用户点的是哪张卡。只有点卡片能改。
+自定义格  = 一个文件名，或空。
+```
+
+`自定义` + 空格子在语义上**就等于「无」**——`resolveSpec` 对 `custom` + 无可读文件
+**本来就返回 `none`**（`spec-store.ts:195-198`），卡片第二行那句
+「当前未选择规范，将自动解析为无规范」就是在说这件事。
+
+⇒ **所以"落成无"指的是生效的规范解析成无，不是高亮跳到「无」卡片。**
+
+**选择器只写「自定义」格的值**（文件名或空），**它不写 `docSpecMode`**：
+
+| 高亮 | 选择器里确认（含空选择） | 结果 |
+|---|---|---|
+| 无 | 写值 | 高亮仍在**无** |
+| 默认 | 写值 | 高亮仍在**默认** |
+| 自定义 | 写值 | 高亮仍在**自定义**（值空 ⇒ 生效解析为无） |
+
+> **唯一的例外**是点「自定义」卡片：那张卡没有可用值时**先开选择器**，
+> 确认就等于**完成这次点击** ⇒ 此时才写 `custom`。这是用户点的意图，不是选择器替他决定。
+
+> **早先错在哪**：空选择时无条件写 `none`。于是高亮在「默认」时进 `更换…`、
+> 什么都没选、按确认，**模式被改成「无」**——用户只是编辑了自定义格的值，
+> 却被换了高亮。这就是"替用户做选择"。修法：`mode` 的写入点从"无条件"**
+> 收紧为"仅当自定义卡片是被点击的那张"**，而不是保留一个会自行移动的分支。
+
+> **顺带否掉的一个说法**：注释里曾写"写 `none` 才能让存储与生效一致"。**不需要**——
+> `resolveSpec` 本来就会解析成 `none`。落无是**解析的自然结果**，不是靠写一个 mode 换来的。
+
+> #### 为什么删掉了原来的二次弹窗
+>
+> 旧版在**两个出口**都弹一层 `Modal`。两个毛病：
+> 1. **那个弹窗里的「取消」会把整叠拆掉**，而不是退回列表——用户报为
+>    「这个界面点取消就真的什么都不干了……应该返回上级菜单」。
+> 2. **结构性错误**：嵌套 `Modal` 共用同一套 Escape / 焦点栈，所以那一层**没法单独关掉**，
+>    必然连带拆掉外层。
+>
+> 改用**行内提示**后两个问题一起消失：只陈述后果，不拦截；`取消` 也不需要先"穿过"一层。
+
+**`取消` = 只关闭，不写任何设置。** 现在这句是**字面事实**：改选、模式都没落盘，删除也**不由
+它撤销**（删除在自己的确认框上承诺，那张框的文案写着「此操作不可撤销」）。准确说法：
+**`取消` 放弃的是"这次规范选择"，不是"我刚才做的所有操作"。**
+
+#### 三、删除：即时 + 一次确认，**不延后**（2026-10-06 定案）
+
+点垃圾桶 → 弹一次确认 → **立即落盘**。
+
+> **考虑过"前端标记待删、确认时才真删"**，并配"若删到了正在用的那个，取消时问是否恢复"。
+> **放弃了**，理由是那个方案有一个说不通的状态：被标成待删的行**还在列表里**——
+> 它还能被点选吗？能选就是"既删又用"，不能选就是列表里的一个洞，键盘导航还得跳过它。
+> 再加上红色横幅已经警告过一次、保存时还要再警告一次，同一件事说两遍。
+>
+> **一次确认一次**更干净：确认那一刻就是承诺点，之后无论怎么退出都不反悔。
+
+#### 三、`更换…` 才是打开选择器的入口
+
+**卡片点击 = 选择模式**（与「底层工作区」同一分工）；**只有 `更换…` 打开选择器**。
+例外：没有可用文件时点卡片会**只弹选择器、不写状态**（照抄底层工作区的规则）。
+
+#### 三·补、每项目下拉栏：**跟随全局是独立的一行**（2026-10-06 定案）
+
+列表**固定**，与全局选择**无关**：
+
+```
+跟随全局          ← 第 1 行，固定
+无                ← 第 2 行，固定
+默认              ← 第 3 行，固定
+各已上传规范…      ← 第 4 行起，空列表就是没有，真空
+```
+
+**无分隔线**（平铺）· **无「（继承全局）」后缀** · 「自定义（无）」**不出现**
+
+| 存储 `docSpec` | 选中的行 |
+|---|---|
+| absent (`null`) | **跟随全局** |
+| `'none'` | 无 |
+| `'default'` | 默认 |
+| 文件名（文件在） | 该文件 |
+| 文件名（**文件已删**） | **跟随全局** ← 显示"实际生效的" |
+
+> #### 为什么从「继承标记」改成「独立的一行」
+>
+> 标记版必须判断**哪一项才是"全局那一项"**。全局选择是「自定义但为空」时，
+> 这个问题**没有好答案**：实际生效的是**无**，可选的是**自定义** —— 标记要么**说谎**
+> （标在「无」上但全局其实是自定义），要么**把「自定义」并进「无」那一行**（用户反对的正是这个）。
+>
+> **独立一行把这个问题取消了**：下拉栏**不再需要知道**全局选择是什么，
+> 所以 `docSpecMode` / `docSpecFileName` 两个注入 hook **一并删掉**。
+>
+> **代价**（已确认接受）：「跟随全局」不再显示"当前跟的是哪个"，要看就回设置页。
+
+> **顺带消掉一个既存混淆**：早先"项目显式选「无」"与"继承全局而全局解析为无"
+> **共用同一行标签**（结果相同、来源不明）。现在前者选中「无」，后者选中「跟随全局」——
+> **来源与效果都清楚**。
+
+#### 三·补之二、`'default'` 曾经存不进去（2026-10-06 修复）
+
+**新下拉栏把「默认」做成独立一行后，这个既存缺陷变得更容易踩到**，所以在同轮修掉。
+
+```
+实测回包: setProjectDocSpec("default")
+          → {"ok":false,"error":{"message":"not a usable spec file name: \"default\""}}
+```
+
+**两处缺一半**：
+
+| 位置 | 缺陷 |
+|---|---|
+| `index.ts` 写入守卫 | 只放行 `'none'`，`'default'` 被 `isSafeSpecName` 按"文件必须以 `.md` 结尾"拒掉 |
+| `spec-store.ts` `resolveSpec` | **没有 `override === 'default'` 分支** ⇒ 落到全局选择，而不是内置规范 |
+
+**后果**：选「默认」保存后**静默保持原值**；即使写进去，项目也会**跟随全局**——
+与它自己对话框显示的**正好相反**。
+
+**修法**：守卫放行 `'default'`；resolver 补一分支返回 `BUILT_IN_SPEC_PATH`。
+`protocol.ts` 的请求注释也补成**四态表**（`null` / `'none'` / `'default'` / 文件名）。
+
+**回归断言**（两侧都锁）：
+- `verify-doc-spec.mjs`：`resolveSpec` 对 `'default'` 覆盖返回内置路径，
+  且**能压过全局的 `'custom'`**（用非 default 的全局值断言，避免两者混淆）。
+- `probe-doc-spec.mjs` `3c-3`：五态写入**都被接受**，且各自选中正确的行。
+
+#### 四、`更换…` = 换记忆，**不动模式**（2026-10-06 定案）
+
+同一个对话框有两个入口，**意图不同**，所以确认的写入也不同：
+
+| 入口 | 用户意图 | 确认写入 |
+|---|---|---|
+| **卡片**（无可用值时） | "我要用这个模式" | 值 **+ mode** |
+| **`更换…`** | "换掉记住的那个文件" | **只有值**，mode 不动 |
+
+> **三件事都必须保留**：**预选**（打开时停在记忆上，替换只需一次点击）、**记忆**（切模式时不丢，
+> 切回来能恢复）、**写入**（真的替换，不是丢弃请求）。**唯一不能做的是移动卡片**——卡片是切模式的。
+>
+> **为什么**：`docSpecFileName` / `base.path` 是**记忆**，按设计**跨模式保留**。早先确认一律写
+> `mode='custom'`/`'specified'`，于是「默认」下点 `更换…` 选完文件，卡片也跟着跳到「自定义」——
+> 用户报为「点更换然后点确定就跳到自定义了」。
+
+**工作区的实现要点**：`setBaseWorkspace` 必须带 mode，而 `withDefaultMode` 在 `default` 分支
+原本会用**已存的** path 覆盖请求里的 path ⇒ **替换被静默丢弃**。修法是让 `withDefaultMode`
+接受可选的新记忆（`requested`），Host 与 Client **共用同一个助手**——那份文件的注释专门警告过
+两边各写一遍会漂移。
+
+**两个方向都锁死了断言**：写入**落地**（新路径/新文件名确实存进去了）+ 模式**不动**。
+只测其中一个都不够——只测"不动"，丢弃请求也会通过；只测"落地"，跳模式也会通过。
+
+### 26.12 验证
+
+| 脚本 | 覆盖 | 断言数 |
+|---|---|---|
+| `verify-doc-spec.mjs` | 文件名安全、`$DSH_HOME` 解析、规范解析（含陈旧覆盖与 **`'default'` 覆盖**）、哈希、漂移渲染、标签匹配、**schema 兼容** | 79 |
+| `verify-project-host.mjs` | 注册表行为 + **并发写不丢失**（12 轮两字段、七字段、复合写入完整性） | 100 |
+| `verify-project-injection.mjs` | 六种注入形态 + **漂移谓词 8 项**（含「无」不询问的回归）+ 血缘遍历 | 52 |
+| `probe-doc-spec.mjs` | **真实浏览器**：卡片渲染（含「无」的策略文案）、三重门控、卡片第二行的按高亮分色、未选中的行内提示、"高亮只跟点卡片"三模式矩阵、**下拉栏固定四项 + 覆盖五态各自选中哪一行（含 `'default'` 回归）**、悬空名显示、上传/拒绝/删除、色彩令牌、帧级无闪烁 | 127 |
+
+**`verify-doc-spec.mjs` 里最关键的一条是 schema 兼容**：真实的存量 global 与 project 记录
+（缺新字段）**必须仍能解析**——否则整个 domain open 被拒，用户所有项目一起读不出来。
+
+**`probe-doc-spec.mjs` 里最该保住的是帧级闪烁断言**：它在深色主题下用 CDP 录屏测
+"点无关开关时禁用卡不得跳变"，且**自带两条防空转护栏**（必须命中选中的禁用卡、必须与
+页面底色可分辨）。没有那两条护栏时它会"测着一张白色卡片"稳定通过——那是假通过。
+
 
 

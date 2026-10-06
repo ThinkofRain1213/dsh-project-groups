@@ -53,7 +53,7 @@ import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { GroupSource } from '../vendored/client/tree.ts'
 import type {
-  BaseWorkspaceSetting, NewSessionTarget, ProjectBaseline, ProjectFollowFrame,
+  BaseWorkspaceSetting, DocSpecMode, NewSessionTarget, ProjectBaseline, ProjectFollowFrame,
   ProjectRebuildBaseWorkspaceValue, ProjectValue,
 } from '../protocol.ts'
 import { withDefaultMode } from '../protocol.ts'
@@ -61,8 +61,12 @@ import { withDefaultMode } from '../protocol.ts'
 /** The Remote face this model drives; structurally the mounted namespace. */
 export interface ProjectRemote {
   baseline(): Promise<{ ok: boolean; value?: unknown; error?: { message: string } }>
-  create(request: { title: string }): Promise<RemoteOutcome<unknown>>
-  rename(request: { projectId: string; title: string }): Promise<RemoteOutcome<unknown>>
+  create(request: {
+    title: string
+    directories?: readonly string[]
+    docSpec?: string | null
+  }): Promise<RemoteOutcome<unknown>>
+  update(request: { projectId: string; title: string; directories: readonly string[] }): Promise<RemoteOutcome<unknown>>
   delete(request: { projectId: string }): Promise<RemoteOutcome<unknown>>
   reorder(request: { projectId: string; beforeId?: string }): Promise<RemoteOutcome<unknown>>
   assign(request: { sessionId: string; projectId: string }): Promise<RemoteOutcome<unknown>>
@@ -71,6 +75,17 @@ export interface ProjectRemote {
   setOrders(request: { orders: Readonly<Record<string, readonly string[]>> }): Promise<RemoteOutcome<unknown>>
   setNewSessionTarget(request: { target: NewSessionTarget }): Promise<RemoteOutcome<unknown>>
   setCreateOpensSession(request: { value: boolean }): Promise<RemoteOutcome<unknown>>
+  setDirectories(request: { projectId: string; directories: readonly string[] }): Promise<RemoteOutcome<unknown>>
+  setInjectProjectInfo(request: { value: boolean }): Promise<RemoteOutcome<unknown>>
+  setInjectProjectDoc(request: { value: boolean }): Promise<RemoteOutcome<unknown>>
+  setDocSpecMode(request: { mode: DocSpecMode }): Promise<RemoteOutcome<unknown>>
+  setDocSpecFileName(request: { name: string }): Promise<RemoteOutcome<unknown>>
+  setPerProjectDocSpec(request: { value: boolean }): Promise<RemoteOutcome<unknown>>
+  setProjectDocSpec(request: { projectId: string; spec: DocSpecMode | string | null }): Promise<RemoteOutcome<unknown>>
+  uploadSpec(request: { name: string; content: string }): Promise<RemoteOutcome<unknown>>
+  deleteSpec(request: { name: string }): Promise<RemoteOutcome<unknown>>
+  specsUsedBy(request: { name: string }): Promise<RemoteOutcome<unknown>>
+  readSpec(request: { name: string }): Promise<RemoteOutcome<unknown>>
   setBaseWorkspace(request: BaseWorkspaceSetting): Promise<RemoteOutcome<unknown>>
   defaultWorkspacePath(): Promise<RemoteOutcome<{ path: string | null }>>
   rebuildBaseWorkspace(): Promise<RemoteOutcome<unknown>>
@@ -124,6 +139,18 @@ interface ProjectState {
    * between following the official add-workspace flow and only adding the row.
    */
   readonly createOpensSession: boolean
+  /** Whether a Session's project info is injected (base feature). */
+  readonly injectProjectInfo: boolean
+  /** Whether the project's work-document line is injected (extra feature). */
+  readonly injectProjectDoc: boolean
+  /** Which spec source applies before any project override. */
+  readonly docSpecMode: DocSpecMode
+  /** The uploaded spec `'custom'` mode names; `''` when not chosen yet. */
+  readonly docSpecFileName: string
+  /** Whether the project dialogs expose a per-project spec row. */
+  readonly perProjectDocSpec: boolean
+  /** Every uploaded spec's file name, sorted. */
+  readonly specs: readonly string[]
 }
 
 const EMPTY_STATE: ProjectState = Object.freeze({
@@ -134,6 +161,15 @@ const EMPTY_STATE: ProjectState = Object.freeze({
   newSessionTarget: 'ungrouped',
   baseWorkspace: Object.freeze({ mode: 'default' as const }),
   createOpensSession: true,
+  // Matches both the spec's defaults and the schema on the Host: the base
+  // injection is on, the document line is off. Stated rather than derived so a
+  // frame-less start renders what a fresh install would behave as.
+  injectProjectInfo: true,
+  injectProjectDoc: false,
+  docSpecMode: 'default',
+  docSpecFileName: '',
+  perProjectDocSpec: false,
+  specs: Object.freeze([]),
 })
 
 /**
@@ -299,9 +335,115 @@ export class ProjectModel {
     },
   }
 
+  /**
+   * Whether a Session's project info is injected into its requests.
+   *
+   * Read by the settings card only — the injection itself happens on the Host, in
+   * `src/index.ts`, which reads the flag from the domain. This observable exists so
+   * the switch reflects the stored value rather than the click.
+   */
+  readonly injectProjectInfo$: HostObservable<boolean> = {
+    getSnapshot: () => this.state.injectProjectInfo,
+    subscribe: (listener) => {
+      this.listeners.add(listener)
+      return () => { this.listeners.delete(listener) }
+    },
+  }
+
+  /**
+   * Whether the project's work-document line is injected too.
+   *
+   * Its own observable rather than a derived value: the document switch is
+   * independent of {@link injectProjectInfo}, and the card renders it as its own
+   * row, so folding the two would make the card unable to show them separately.
+   */
+  readonly injectProjectDoc$: HostObservable<boolean> = {
+    getSnapshot: () => this.state.injectProjectDoc,
+    subscribe: (listener) => {
+      this.listeners.add(listener)
+      return () => { this.listeners.delete(listener) }
+    },
+  }
+
+  /**
+   * Which spec source applies before any project override.
+   *
+   * Its own observable because the settings card's three-option control and its
+   * dependent rows (the custom-name line, the per-project switch) all read it.
+   */
+  readonly docSpecMode$: HostObservable<DocSpecMode> = {
+    getSnapshot: () => this.state.docSpecMode,
+    subscribe: (listener) => {
+      this.listeners.add(listener)
+      return () => { this.listeners.delete(listener) }
+    },
+  }
+
+  /** The uploaded spec `'custom'` mode names; `''` when not chosen yet. */
+  readonly docSpecFileName$: HostObservable<string> = {
+    getSnapshot: () => this.state.docSpecFileName,
+    subscribe: (listener) => {
+      this.listeners.add(listener)
+      return () => { this.listeners.delete(listener) }
+    },
+  }
+
+  /** Whether the project dialogs expose a per-project spec row. */
+  readonly perProjectDocSpec$: HostObservable<boolean> = {
+    getSnapshot: () => this.state.perProjectDocSpec,
+    subscribe: (listener) => {
+      this.listeners.add(listener)
+      return () => { this.listeners.delete(listener) }
+    },
+  }
+
+  /**
+   * Every uploaded spec's file name, sorted.
+   *
+   * A new frozen array per snapshot rather than the stored one, so a React
+   * selector comparing by identity can memoize on it safely.
+   */
+  readonly specs$: HostObservable<readonly string[]> = {
+    getSnapshot: () => this.state.specs,
+    subscribe: (listener) => {
+      this.listeners.add(listener)
+      return () => { this.listeners.delete(listener) }
+    },
+  }
+
+  /** @returns the spec source currently configured globally. */
+  docSpecModeValue(): DocSpecMode {
+    return this.state.docSpecMode
+  }
+
+  /** @returns the uploaded spec name `'custom'` mode names, or `''`. */
+  docSpecFileNameValue(): string {
+    return this.state.docSpecFileName
+  }
+
+  /** @returns whether the project dialogs expose a per-project spec row. */
+  perProjectDocSpecValue(): boolean {
+    return this.state.perProjectDocSpec
+  }
+
+  /** @returns the uploaded spec names, sorted. */
+  specsValue(): readonly string[] {
+    return this.state.specs
+  }
+
   /** @returns whether creating a project also opens a Session inside it. */
   createOpensSessionValue(): boolean {
     return this.state.createOpensSession
+  }
+
+  /** @returns whether a Session's project info is injected (base feature). */
+  injectProjectInfoValue(): boolean {
+    return this.state.injectProjectInfo
+  }
+
+  /** @returns whether the work-document line is injected (extra feature). */
+  injectProjectDocValue(): boolean {
+    return this.state.injectProjectDoc
   }
 
   /** @returns projects in display order. */
@@ -372,17 +514,44 @@ export class ProjectModel {
    * add-workspace flow opens a Session as part of creating the row, and filing that
    * Session under the new project requires its id. It cannot be read back from state,
    * because the Host's `follow` frame has not necessarily landed when this resolves.
+   *
+   * `docSpec` rides along rather than being a follow-up `setProjectDocSpec` call,
+   * for the same reason `directories` does: the create dialog collects everything
+   * in one dialog, so committing it in one write avoids a project that briefly
+   * existed with the wrong spec. `null` inherits the global choice, matching the
+   * protocol's four-state table.
    * @param title - display title; surrounding whitespace is trimmed.
+   * @param directories - directories to associate at creation time.
+   * @param docSpec - spec override to store; `null` inherits the global choice.
    * @returns the created project's id.
    */
-  async create(title: string): Promise<string> {
-    const value = unwrap(await this.remote.create({ title: title.trim() }), 'create project')
+  async create(
+    title: string,
+    directories: readonly string[] = [],
+    docSpec: string | null = null,
+  ): Promise<string> {
+    const value = unwrap(
+      await this.remote.create({ title: title.trim(), directories: [...directories], docSpec }),
+      'create project',
+    )
     return (value as { project: { projectId: string } }).project.projectId
   }
 
-  /** Retitle a project. */
-  async rename(projectId: string, title: string): Promise<void> {
-    unwrap(await this.remote.rename({ projectId, title: title.trim() }), 'rename project')
+  /**
+   * Replace a project's title and directories in one commit.
+   *
+   * Not optimistic, unlike the switches: this is edited in a dialog that stays
+   * open until the Host answers, so the dialog's own busy state is the feedback —
+   * painting an unconfirmed list would make a refused write look applied.
+   * @param projectId - the project being edited.
+   * @param title - the new title; surrounding whitespace is trimmed.
+   * @param directories - the complete list, in display order.
+   */
+  async update(projectId: string, title: string, directories: readonly string[]): Promise<void> {
+    unwrap(
+      await this.remote.update({ projectId, title: title.trim(), directories: [...directories] }),
+      'update project',
+    )
   }
 
   /** Delete a project; its Sessions return to Ungrouped on the Host. */
@@ -608,6 +777,201 @@ export class ProjectModel {
   }
 
   /**
+   * Persist whether a Session's project info is injected.
+   *
+   * Optimistic like {@link setCreateOpensSession}, and for the same reason: a
+   * switch that only flips after a round trip springs back before the frame
+   * arrives. The injection itself is applied on the Host at request time, so this
+   * writes only the flag; nothing local needs to re-render beyond the switch.
+   * @param value - the chosen behaviour.
+   */
+  async setInjectProjectInfo(value: boolean): Promise<void> {
+    const previous = this.state.injectProjectInfo
+    if (previous === value) return
+    this.state = Object.freeze({ ...this.state, injectProjectInfo: value })
+    for (const listener of [...this.listeners]) listener()
+    try {
+      unwrap(await this.remote.setInjectProjectInfo({ value }), 'set inject-project-info')
+    } catch (error: unknown) {
+      if (this.state.injectProjectInfo === value) {
+        this.state = Object.freeze({ ...this.state, injectProjectInfo: previous })
+        for (const listener of [...this.listeners]) listener()
+      }
+      throw error
+    }
+  }
+
+  /**
+   * Persist whether the project's work-document line is injected.
+   *
+   * Independent of {@link setInjectProjectInfo}: turning this on does not turn the
+   * base block on, and the Host emits the document line only when this flag is
+   * set. The card renders the two as separate rows for exactly that reason.
+   * @param value - the chosen behaviour.
+   */
+  async setInjectProjectDoc(value: boolean): Promise<void> {
+    const previous = this.state.injectProjectDoc
+    if (previous === value) return
+    this.state = Object.freeze({ ...this.state, injectProjectDoc: value })
+    for (const listener of [...this.listeners]) listener()
+    try {
+      unwrap(await this.remote.setInjectProjectDoc({ value }), 'set inject-project-doc')
+    } catch (error: unknown) {
+      if (this.state.injectProjectDoc === value) {
+        this.state = Object.freeze({ ...this.state, injectProjectDoc: previous })
+        for (const listener of [...this.listeners]) listener()
+      }
+      throw error
+    }
+  }
+
+  /**
+   * Persist which spec source applies before any project override.
+   *
+   * Optimistic like the other switches: the three-option control should show the
+   * chosen card selected in the frame it was confirmed in, and the Host's
+   * `follow` frame replaces this state wholesale if it disagrees.
+   * @param mode - the chosen source.
+   */
+  async setDocSpecMode(mode: DocSpecMode): Promise<void> {
+    const previous = this.state.docSpecMode
+    if (previous === mode) return
+    this.state = Object.freeze({ ...this.state, docSpecMode: mode })
+    for (const listener of [...this.listeners]) listener()
+    try {
+      unwrap(await this.remote.setDocSpecMode({ mode }), 'set doc spec mode')
+    } catch (error: unknown) {
+      if (this.state.docSpecMode === mode) {
+        this.state = Object.freeze({ ...this.state, docSpecMode: previous })
+        for (const listener of [...this.listeners]) listener()
+      }
+      throw error
+    }
+  }
+
+  /**
+   * Persist the uploaded spec that `'custom'` mode names.
+   *
+   * **Not** optimistic: the name is normally set by a dialog that just uploaded a
+   * file, and that dialog stays open until the Host answers — painting an
+   * unconfirmed name would make a refused write look applied.
+   * @param name - the bare `*.md` file name, or `''` to clear it.
+   */
+  async setDocSpecFileName(name: string): Promise<void> {
+    unwrap(await this.remote.setDocSpecFileName({ name }), 'set doc spec file name')
+  }
+
+  /**
+   * Persist whether the project dialogs expose a per-project spec row.
+   *
+   * Optimistic for the same reason as the other switches.
+   * @param value - the chosen behaviour.
+   */
+  async setPerProjectDocSpec(value: boolean): Promise<void> {
+    const previous = this.state.perProjectDocSpec
+    if (previous === value) return
+    this.state = Object.freeze({ ...this.state, perProjectDocSpec: value })
+    for (const listener of [...this.listeners]) listener()
+    try {
+      unwrap(await this.remote.setPerProjectDocSpec({ value }), 'set per-project doc spec')
+    } catch (error: unknown) {
+      if (this.state.perProjectDocSpec === value) {
+        this.state = Object.freeze({ ...this.state, perProjectDocSpec: previous })
+        for (const listener of [...this.listeners]) listener()
+      }
+      throw error
+    }
+  }
+
+  /**
+   * Set or clear one project's spec override.
+   *
+   * Not optimistic: like {@link setDirectories}, this is committed from a dialog
+   * that stays open until the Host answers.
+   * @param projectId - the project being edited.
+   * @param spec - `'none'`, an uploaded file name, or `null` to inherit.
+   */
+  async setProjectDocSpec(projectId: string, spec: DocSpecMode | string | null): Promise<void> {
+    unwrap(await this.remote.setProjectDocSpec({ projectId, spec }), 'set project doc spec')
+  }
+
+  /**
+   * Upload one spec, returning whether it was stored.
+   *
+   * A refusal is the normal "name already exists" answer rather than an error,
+   * so it travels as a boolean: the dialog reports it beside the name field, and
+   * an exception would surface as an infrastructure message instead.
+   * @param name - the bare `*.md` file name.
+   * @param content - the file's text.
+   * @returns whether the Host stored it.
+   */
+  async uploadSpec(name: string, content: string): Promise<boolean> {
+    const value = unwrap(
+      await this.remote.uploadSpec({ name, content }),
+      'upload spec',
+    ) as { written: boolean; specs: readonly string[] }
+    this.adoptSpecs(value.specs)
+    return value.written
+  }
+
+  /**
+   * Delete one uploaded spec.
+   * @param name - the bare `*.md` file name.
+   * @returns whether a file was removed.
+   */
+  async deleteSpec(name: string): Promise<boolean> {
+    const value = unwrap(await this.remote.deleteSpec({ name }), 'delete spec') as {
+      removed: boolean
+      specs: readonly string[]
+    }
+    this.adoptSpecs(value.specs)
+    return value.removed
+  }
+
+  /** @returns the titles of projects that would fall back if this spec were deleted. */
+  async specsUsedBy(name: string): Promise<readonly string[]> {
+    const value = unwrap(await this.remote.specsUsedBy({ name }), 'specs used by') as { titles: readonly string[] }
+    return value.titles
+  }
+
+  /** @returns one uploaded spec's text, or undefined when it is absent. */
+  async readSpec(name: string): Promise<string | undefined> {
+    const value = unwrap(await this.remote.readSpec({ name }), 'read spec') as { content: string | null }
+    return value.content ?? undefined
+  }
+
+  /**
+   * Adopt a spec list the Host just returned.
+   *
+   * The upload and delete replies carry the current list, so the card and every
+   * dropdown refresh from the same round trip rather than each issuing their own
+   * read afterwards. The Host's `follow` frame would deliver the same change a
+   * moment later; adopting here only removes the flicker.
+   * @param specs - the names the Host reports.
+   */
+  private adoptSpecs(specs: readonly string[]): void {
+    this.state = Object.freeze({ ...this.state, specs: Object.freeze([...specs]) })
+    for (const listener of [...this.listeners]) listener()
+  }
+
+  /**
+   * Replace one project's associated directories.
+   *
+   * **Not** optimistic, unlike the switches above. This one is edited in a dialog
+   * that stays open until the Host answers: the project rows render from `follow`,
+   * and painting an unconfirmed list would make a refused write look applied. The
+   * dialog's own busy state is what gives the feedback instead.
+   * @param projectId - the project whose list is being replaced.
+   * @param directories - the complete list, in display order.
+   */
+  async setDirectories(projectId: string, directories: readonly string[]): Promise<void> {
+    unwrap(
+      await this.remote.setDirectories({ projectId, directories: [...directories] }),
+      'set project directories',
+    )
+  }
+
+  /**
    * Store the base workspace: the Workspace every New Session lands in.
    *
    * Optimistic like {@link setNewSessionTarget}, and for the same reason: the card
@@ -626,7 +990,11 @@ export class ProjectModel {
     // It also repairs the no-op guard for free: `{ mode: 'default' }` could never equal a
     // stored `{ mode: 'default', path, name }`, so re-clicking the already-selected 默认
     // card issued a redundant write (measured: one round trip per click).
-    const next = setting.mode === 'default' ? withDefaultMode(previous) : setting
+    //
+    // `setting` rides along as the requested memory: the 更换… chooser sends the current
+    // mode plus the newly picked Workspace, so this must store that new path while keeping
+    // the mode. Passing nothing would silently keep the OLD path and drop the replacement.
+    const next = setting.mode === 'default' ? withDefaultMode(previous, setting) : setting
     if (sameBaseWorkspace(previous, next)) return
     this.state = Object.freeze({ ...this.state, baseWorkspace: Object.freeze({ ...next }) })
     for (const listener of [...this.listeners]) listener()
@@ -691,7 +1059,16 @@ export class ProjectModel {
   }
 
   private accept(baseline: ProjectBaseline): void {
-    const projects = Object.freeze(baseline.projects.map(project => Object.freeze({ ...project })))
+    // Normalise every project's directory list through a default, the same way the
+    // global fields below are read. A Host predating the field sends no
+    // `directories`, and this is the sidebar's render path: reading it through a
+    // default degrades to "no associated directories" instead of throwing where no
+    // caller can recover. Frozen copy, so a frame's array is never aliased into
+    // state and later mutated by the transport.
+    const projects = Object.freeze(baseline.projects.map(project => Object.freeze({
+      ...project,
+      directories: Object.freeze([...(project.directories ?? [])]),
+    })))
     // Retire every placement the Host has now echoed: this frame carries our
     // value, so the local guess and the authoritative one agree and the overlay
     // has done its job.
@@ -735,6 +1112,19 @@ export class ProjectModel {
     // behaviour — on. Reading through a default keeps the switch honest against an
     // older Host instead of showing "off" for behaviour that is on.
     const createOpensSession = baseline.createOpensSession ?? true
+    // Same guard for the two injection switches. An older Host injected nothing, so
+    // "off" is the honest reading — unlike `createOpensSession`, where the older
+    // behaviour was on. Showing the spec's `true` default against a Host that does
+    // not inject would render a switch that claims behaviour nobody implements.
+    const injectProjectInfo = baseline.injectProjectInfo ?? false
+    const injectProjectDoc = baseline.injectProjectDoc ?? false
+    // The spec settings are new with the document feature. An older Host has no
+    // opinion, and the schema defaults are what this Client should show for one:
+    // the built-in spec applies and no per-project row is offered.
+    const docSpecMode = baseline.docSpecMode ?? 'default'
+    const docSpecFileName = baseline.docSpecFileName ?? ''
+    const perProjectDocSpec = baseline.perProjectDocSpec ?? false
+    const specs = Object.freeze([...(baseline.specs ?? [])])
     if (
       sameProjects(this.state.projects, projects)
       && sameAssignments(this.state.assignments, assignments)
@@ -742,12 +1132,20 @@ export class ProjectModel {
       && sameOrders(this.state.orders, orders)
       && this.state.newSessionTarget === newSessionTarget
       && this.state.createOpensSession === createOpensSession
+      && this.state.injectProjectInfo === injectProjectInfo
+      && this.state.injectProjectDoc === injectProjectDoc
+      && this.state.docSpecMode === docSpecMode
+      && this.state.docSpecFileName === docSpecFileName
+      && this.state.perProjectDocSpec === perProjectDocSpec
+      && sameStringList(this.state.specs, specs)
       && sameBaseWorkspace(this.state.baseWorkspace, baseWorkspace)
     ) {
       return
     }
     this.state = Object.freeze({
-      projects, assignments, expansions, orders, newSessionTarget, createOpensSession, baseWorkspace,
+      projects, assignments, expansions, orders, newSessionTarget, createOpensSession,
+      injectProjectInfo, injectProjectDoc,
+      docSpecMode, docSpecFileName, perProjectDocSpec, specs, baseWorkspace,
     })
     this.derived = undefined
     for (const listener of [...this.listeners]) listener()
@@ -765,6 +1163,14 @@ export class ProjectModel {
           .filter(([, projectId]) => projectId === project.projectId)
           .map(([sessionId]) => sessionId as SessionId),
       ),
+      // Copied into a fresh frozen array: the observable is compared by snapshot
+      // identity, and handing out the state's own array would let a consumer's
+      // later mutation be visible as a change to state it does not own.
+      directories: Object.freeze([...project.directories]),
+      // Spread rather than assigned as `undefined`: the browser distinguishes
+      // "no override" from `'none'`, and an explicit undefined key would erase
+      // that at the boundary.
+      ...project.docSpec !== undefined ? { docSpec: project.docSpec } : {},
       // Marks the row as ours: the region gives it a rename/delete menu and a
       // reorder drag target, driven through this model rather than the registry.
       kind: 'project',
@@ -781,9 +1187,22 @@ function sameProjects(left: readonly ProjectValue[], right: readonly ProjectValu
     return other !== undefined
       && project.projectId === other.projectId
       && project.title === other.title
+      // Positional, like `sameOrders`: the list's order is part of its meaning.
+      // Element-wise rather than by identity — the Host re-projects on every
+      // change, so each frame carries a fresh array and `===` would report a
+      // change on every frame. Omitting this comparison entirely is the real
+      // hazard: a directory edit that touches nothing else would be judged
+      // unchanged and the sidebar would not re-render.
+      && sameStringList(project.directories, other.directories)
       && project.docPath === other.docPath
       && project.updatedAt === other.updatedAt
   })
+}
+
+/** Positional equality over two string lists. */
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false
+  return left.every((value, index) => value === right[index])
 }
 
 /** Value equality over the assignment map. */

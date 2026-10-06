@@ -13,14 +13,19 @@
  * ignores `form` in favour of its `configure` Remote.
  */
 import { useEffect, useState } from 'react'
-import { IconChevronDownOutlineRegular, Menu, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconChevronDownOutlineRegular, Menu, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { WorkspaceSource } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { HostObservable, InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { BaseWorkspaceSetting, NewSessionTarget } from '../protocol.ts'
+import type { BaseWorkspaceSetting, DocSpecMode, NewSessionTarget } from '../protocol.ts'
 import type { BaseWorkspaceChooserRequest } from './index.ts'
-import type { clientBaseWorkspace, clientCreateOpensSession, clientNewSessionTarget } from './grouping.ts'
+import type {
+  clientBaseWorkspace, clientCreateOpensSession, clientDocSpecFileName, clientDocSpecMode,
+  clientInjectProjectDoc, clientInjectProjectInfo, clientNewSessionTarget, clientPerProjectDocSpec,
+  clientSpecs,
+} from './grouping.ts'
 import type { SETTINGS_NS } from './settings-locales.ts'
 import { BaseWorkspacePicker } from './base-workspace-picker.tsx'
+import { SpecPicker } from './spec-picker.tsx'
 import css from './settings-card.module.css'
 
 /**
@@ -48,6 +53,29 @@ export interface ProjectGroupsCardInjected {
      */
     createOpensSession: typeof clientCreateOpensSession
     /**
+     * Whether a Session's project info is injected into its requests.
+     *
+     * Host-side state: the injection happens at request time in `src/index.ts`,
+     * so this seat exists only so the switch reflects the stored value.
+     */
+    injectProjectInfo: typeof clientInjectProjectInfo
+    /**
+     * Whether the work-document line is injected too.
+     *
+     * Rendered disabled while {@link injectProjectInfo} is off: the base switch
+     * is the master, and a control that cannot take effect must not look like it
+     * can.
+     */
+    injectProjectDoc: typeof clientInjectProjectDoc
+    /** Which spec source applies before any per-project override. */
+    docSpecMode: typeof clientDocSpecMode
+    /** The uploaded spec `'custom'` names; `''` when none is chosen yet. */
+    docSpecFileName: typeof clientDocSpecFileName
+    /** Whether the project dialogs expose a per-project spec row. */
+    perProjectDocSpec: typeof clientPerProjectDocSpec
+    /** Every uploaded spec, sorted; feeds the picker and the per-project dropdown. */
+    specs: typeof clientSpecs
+    /**
      * The Workspace registry, for the chooser. Absent when the controller is not
      * composed, in which case the chooser reports "暂无工作区" rather than throwing.
      */
@@ -67,6 +95,22 @@ export interface ProjectGroupsCardInjected {
   setBaseWorkspace: (setting: BaseWorkspaceSetting) => void
   /** Persist whether creating a project opens a Session. */
   setCreateOpensSession: (value: boolean) => void
+  /** Persist whether a Session's project info is injected. */
+  setInjectProjectInfo: (value: boolean) => void
+  /** Persist whether the work-document line is injected too. */
+  setInjectProjectDoc: (value: boolean) => void
+  /** Persist which spec source applies before any per-project override. */
+  setDocSpecMode: (mode: DocSpecMode) => void
+  /** Persist the uploaded spec `'custom'` names. */
+  setDocSpecFileName: (name: string) => void
+  /** Persist whether the project dialogs expose a per-project spec row. */
+  setPerProjectDocSpec: (value: boolean) => void
+  /** Store one uploaded spec; resolves false when the name is taken. */
+  uploadSpec: (name: string, content: string) => Promise<boolean>
+  /** Delete one uploaded spec; resolves false when nothing was removed. */
+  deleteSpec: (name: string) => Promise<boolean>
+  /** The titles of projects that would fall back if the named spec were deleted. */
+  specsUsedBy: (name: string) => Promise<readonly string[]>
 }
 
 /** Full component props assembled by the Plugin manager renderer. */
@@ -83,7 +127,13 @@ export type ProjectGroupsCardProps =
 export function ProjectGroupsCard({
   useTarget, setTarget, useBaseWorkspace, setBaseWorkspace, useWorkspaces,
   useChooserRequest, settleBaseWorkspaceChooser,
-  useCreateOpensSession, setCreateOpensSession, t,
+  useCreateOpensSession, setCreateOpensSession,
+  useInjectProjectInfo, setInjectProjectInfo,
+  useInjectProjectDoc, setInjectProjectDoc,
+  useDocSpecMode, setDocSpecMode,
+  useDocSpecFileName, setDocSpecFileName,
+  usePerProjectDocSpec, setPerProjectDocSpec,
+  useSpecs, uploadSpec, deleteSpec, specsUsedBy, t,
 }: ProjectGroupsCardProps) {
   const target = useTarget(value => value)
   const [open, setOpen] = useState(false)
@@ -94,7 +144,33 @@ export function ProjectGroupsCard({
 
   const base = useBaseWorkspace(value => value)
   const openOnCreate = useCreateOpensSession(value => value)
-  // The hook is optional in the face, so the call is guarded rather than assumed.
+  const injectInfo = useInjectProjectInfo(value => value)
+  const injectDoc = useInjectProjectDoc(value => value)
+  const docSpecMode = useDocSpecMode(value => value)
+  const docSpecFileName = useDocSpecFileName(value => value)
+  const perProjectSpec = usePerProjectDocSpec(value => value)
+  const specs = useSpecs(value => value)
+  /**
+   * Whether `'custom'` currently names a spec that exists on disk.
+   *
+   * Both the card's click handler and the picker's empty case read this, so it is
+   * derived once. `specs` is the Host's own listing, so a file deleted outside the
+   * plugin is reflected without another round trip.
+   */
+  const hasUsableSpec = docSpecFileName !== '' && specs.includes(docSpecFileName)
+  const [pickingSpec, setPickingSpec] = useState(false)
+  /**
+   * Whether confirming the spec chooser should also switch the mode to `'custom'`.
+   *
+   * The chooser has two entry points and they mean different things:
+   *   - the 自定义 CARD (when it has no usable file) — "I want custom mode";
+   *   - the 更换… action — "replace the remembered file".
+   *
+   * Only the first switches the mode. Confirming a replacement used to write
+   * `'custom'` unconditionally, so replacing the file while 默认 was selected also
+   * jumped the card to 自定义.
+   */
+  const [specPickerSwitchesMode, setSpecPickerSwitchesMode] = useState(true)  // The hook is optional in the face, so the call is guarded rather than assumed.
   const workspaceSnapshot = useWorkspaces === undefined ? undefined : useWorkspaces(value => value)
   const workspaces = workspaceSnapshot?.items ?? []
   const [picking, setPicking] = useState(false)
@@ -190,6 +266,232 @@ export function ProjectGroupsCard({
       </div>
 
       {/*
+        Project-context injection. The first switch is the master: with it off the
+        plugin contributes no runtime context at all, so the second is disabled
+        rather than left clickable-but-ineffective. Its stored value is kept as it
+        is — reopening the master restores whatever the user had chosen — which is
+        why the disabled control still shows its `checked` state rather than a
+        forced `false`.
+      */}
+      <div className={css.row}>
+        <div className={css.rowText}>
+          <div className={css.title}>{t('injectInfoTitle')}</div>
+          <div className={css.desc}>{t('injectInfoDesc')}</div>
+        </div>
+        <Switch
+          checked={injectInfo}
+          onChange={setInjectProjectInfo}
+          label={t('injectInfoTitle')}
+        />
+      </div>
+
+      <div className={css.row}>
+        <div className={css.rowText}>
+          <div className={injectInfo ? css.title : `${css.title} ${css.gated}`}>{t('injectDocTitle')}</div>
+          <div className={injectInfo ? css.desc : `${css.desc} ${css.gated}`}>
+            {injectInfo ? t('injectDocDesc') : t('injectDocGated')}
+          </div>
+        </div>
+        <Switch
+          checked={injectDoc}
+          onChange={setInjectProjectDoc}
+          label={t('injectDocTitle')}
+          disabled={!injectInfo}
+          // Hover text states why the control is locked, which is what the
+          // primitive's own contract asks for; the description line carries the
+          // same fact for readers who do not hover.
+          {...injectInfo ? {} : { title: t('injectDocGated') }}
+        />
+      </div>
+
+      {/*
+        The document spec group. Everything here is gated on the document switch:
+        with no document line injected, a spec has nothing to describe, so the
+        whole group is disabled rather than left settable-but-inert — the same
+        reasoning that gates the document switch on the master one above.
+      */}
+      <div className={css.group}>
+        <div className={injectDoc && injectInfo ? css.groupTitle : `${css.groupTitle} ${css.gated}`}>
+          {t('specTitle')}
+        </div>
+        <div className={css.cubeRow}>
+          {/*
+            The three cards mirror the base-workspace row, **including its
+            chooser**: the 自定义 card carries the 更换… action itself rather than
+            a separate row below it. The earlier version had a read-only path
+            field under the row, which is the rejected "point at a path" shape —
+            a spec is an uploaded file, so the only meaningful action is opening
+            the picker.
+          */}
+          {/*
+            The highlight follows the STORED mode, never the resolved spec.
+            
+            Highlighting what the resolver would return made deleting a file look
+            like it had changed the setting: the highlight moved to 无 on its own,
+            with nothing written ("删除只是删除，怎么自动跳到无规范了"). The
+            base-workspace card beside this one behaves the stored way too — the
+            chosen Workspace is flagged when it is missing rather than unselected.
+
+            The movement to 无 happens only through the 「未选中任何规范」
+            confirmation, because that is what writes `'none'`.
+          */}
+          {([
+            ['none', 'specModeNone', 'specModeNoneHint'],
+            ['default', 'specModeDefault', 'specModeDefaultHint'],
+          ] as const).map(([mode, name, hint]) => (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={docSpecMode === mode}
+              disabled={!injectDoc || !injectInfo}
+              className={docSpecMode === mode ? `${css.cube} ${css.selected}` : css.cube}
+              onClick={() => { setDocSpecMode(mode) }}
+            >
+              <span className={css.cubeName}>{t(name)}</span>
+              <span className={css.cubePath}>{t(hint)}</span>
+            </button>
+          ))}
+
+          <button
+            type="button"
+            aria-pressed={docSpecMode === 'custom'}
+            disabled={!injectDoc || !injectInfo}
+            className={docSpecMode === 'custom' ? `${css.cube} ${css.selected}` : css.cube}
+            onClick={() => {
+              // The mode is written only when it names a file that EXISTS. Writing
+              // `'custom'` with nothing chosen stores a mode whose resolved spec is
+              // "none", so the card would sit highlighted on 自定义 while the
+              // injection says no format is required — the illegal state the user
+              // reported. A stored name whose file has since been deleted is the
+              // same case, which is why this checks membership rather than an empty
+              // string.
+              //
+              // The base-workspace card uses the identical rule: no usable value
+              // means open the chooser and write nothing.
+              if (!hasUsableSpec) {
+                // Opened from the card: the user is choosing this mode, so
+                // confirming must switch to it.
+                setSpecPickerSwitchesMode(true)
+                setPickingSpec(true)
+                return
+              }
+              setDocSpecMode('custom')
+            }}
+          >
+            <span className={css.cubeName}>{t('specModeCustom')}</span>
+            {/*
+              The value line, which is DYNAMIC when the slot holds no usable spec.
+              
+              An empty slot only matters to someone relying on it, so the amber
+              warning shows only while 自定义 is the highlighted card. With 无/默认
+              selected the same empty slot reads as an ordinary 「未选择」 — flagging
+              it there would warn about a slot nothing depends on.
+              
+              A stored name whose file is gone takes the same two states: it is not
+              in effect, so it is not displayed either way, and `title` carries only
+              a name that is actually usable — leaving the stale name there would
+              keep leaking it on hover after the visible text stopped showing it.
+            */}
+            <span
+              className={
+                hasUsableSpec
+                  ? css.cubePath
+                  : docSpecMode === 'custom'
+                    ? `${css.cubePath} ${css.cubeNotice}`
+                    : css.cubePath
+              }
+              {...hasUsableSpec ? { title: docSpecFileName } : {}}
+            >
+              {hasUsableSpec
+                ? docSpecFileName
+                : docSpecMode === 'custom' ? t('specFilePlaceholder') : t('specFileUnset')}
+            </span>
+            {/* A span, not a button: nesting a button inside a button makes React
+              * log validateDOMNesting, and the browser probes fail on console
+              * errors. `stopPropagation` keeps this click from also re-selecting
+              * the mode. */}
+            <span
+              role="button"
+              tabIndex={0}
+              className={css.cubeAction}
+              aria-label={t('specChoose')}
+              onClick={(event) => {
+                event.stopPropagation()
+                // Opened from 更换…: replace the remembered file only. The mode
+                // is whatever the cards say it is.
+                setSpecPickerSwitchesMode(false)
+                setPickingSpec(true)
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return
+                event.preventDefault()
+                event.stopPropagation()
+                setSpecPickerSwitchesMode(false)
+                setPickingSpec(true)
+              }}
+            >
+              {t('specChoose')}
+            </span>
+          </button>
+        </div>
+
+        <div className={css.row}>
+          <div className={css.rowText}>
+            <div className={injectDoc && injectInfo ? css.title : `${css.title} ${css.gated}`}>
+              {t('perProjectSpecTitle')}
+            </div>
+            <div className={injectDoc && injectInfo ? css.desc : `${css.desc} ${css.gated}`}>
+              {injectDoc && injectInfo ? t('perProjectSpecDesc') : t('perProjectSpecGated')}
+            </div>
+          </div>
+          <Switch
+            checked={perProjectSpec}
+            onChange={setPerProjectDocSpec}
+            label={t('perProjectSpecTitle')}
+            disabled={!injectDoc || !injectInfo}
+            {...injectDoc && injectInfo ? {} : { title: t('perProjectSpecGated') }}
+          />
+        </div>
+      </div>
+
+      {pickingSpec && (
+        <SpecPicker
+          specs={specs}
+          // Preselected on the stored name, so the dialog opens on the current
+          // state and a replacement is one click. The name is a memory that
+          // outlives a mode switch, and showing it here is the point: this dialog
+          // REPLACES the remembered spec.
+          //
+          // Guarded on existence only: a name whose file was deleted must not
+          // stage a dead row that 确认 would then write straight back.
+          selected={hasUsableSpec ? docSpecFileName : undefined}
+          onUpload={uploadSpec}
+          onDelete={deleteSpec}
+          onUsedBy={specsUsedBy}
+          onConfirm={(name) => {
+            setPickingSpec(false)
+            // The chooser edits the 自定义 slot's VALUE, and nothing else.
+            //
+            // `undefined` is the slot being emptied, which is a legitimate state
+            // rather than an error: the card has no spec, so it RESOLVES to "no
+            // format required" through `resolveSpec`. The amber line on the card
+            // already says exactly that ("未选择规范，将会回退到无规范"), and it
+            // keeps saying it after this write. What must NOT happen is moving the
+            // highlight to 「无」 — that would be this dialog choosing a mode for
+            // the user. The highlight moves only when the user clicks a card.
+            setDocSpecFileName(name ?? '')
+            // The one exception is the flag: confirming a chooser that was opened
+            // by clicking the 自定义 card completes that click, so it switches the
+            // mode. 更换… never sets this flag — it is the editor for the slot's
+            // value, and confirming there means "use this file", not "switch me".
+            if (specPickerSwitchesMode) setDocSpecMode('custom')
+          }}
+          onCancel={() => { setPickingSpec(false) }}
+          t={t}
+        />
+      )}
+
+      {/*
         The base workspace, laid out as the official appearance row is (three cards
         there, two here). Its stylesheet is copied rather than imported: the client
         bundle's purity gate rejects a value import from a package outside
@@ -269,12 +571,21 @@ export function ProjectGroupsCard({
       {picking && (
         <BaseWorkspacePicker
           workspaces={workspaces}
+          // Preselected on the stored path, so replacing the remembered Workspace
+          // is one click. The path is a memory that outlives a switch to 默认, and
+          // this dialog is what replaces it — so it belongs here even when the
+          // mode is 默认.
           selectedPath={base.path}
           onCancel={() => { setPicking(false) }}
           onConfirm={(workspace) => {
             setPicking(false)
             // Committed only here: a row click stages, the dialog's 确认 writes.
-            setBaseWorkspace({ mode: 'specified', path: workspace.path, name: workspace.title })
+            //
+            // The MODE is carried through unchanged — this dialog replaces the
+            // remembered Workspace, and picking one while 默认 is selected must
+            // not also switch the mode. Switching is what the cards are for.
+            // Sending `'specified'` here is what made 更换… jump the card.
+            setBaseWorkspace({ mode: base.mode, path: workspace.path, name: workspace.title })
           }}
           t={t}
         />

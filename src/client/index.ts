@@ -51,8 +51,10 @@ import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { WorkspaceSource } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import {
-  clientBaseWorkspace, clientCreateOpensSession, clientExpansions, clientGrouping,
-  clientNewSessionTarget, clientOrders,
+  clientBaseWorkspace, clientCreateOpensSession, clientDocSpecFileName, clientDocSpecMode,
+  clientExpansions, clientGrouping,
+  clientInjectProjectDoc, clientInjectProjectInfo,
+  clientNewSessionTarget, clientOrders, clientPerProjectDocSpec, clientSpecs,
   installProjectModel, projectModel,
 } from './grouping.ts'
 import { ProjectModel } from './projects.ts'
@@ -61,7 +63,7 @@ import { projectGroupsRemote } from './remote.ts'
 import { ProjectGroupsCard } from './settings-card.tsx'
 import { en, SETTINGS_NS, zh } from './settings-locales.ts'
 import { PROJECT_NAMESPACE } from '../protocol.ts'
-import type { BaseWorkspaceSetting, NewSessionTarget } from '../protocol.ts'
+import type { BaseWorkspaceSetting, DocSpecMode, NewSessionTarget } from '../protocol.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
 export { clientExpansions, clientGrouping, clientNewSessionTarget, clientOrders, projectModel } from './grouping.ts'
@@ -116,8 +118,52 @@ export interface BaseWorkspaceChooserRequest {
  * these calls.
  */
 const projectActions: ProjectActions = {
-  createProject: async ({ title }) => ({ projectId: await requireModel().create(title) }),
-  renameProject: async (id, title) => { await requireModel().rename(id, title) },
+  // Every field of the input is forwarded. `docSpec` was declared in
+  // `ProjectActions` and passed by the create dialog, but this action destructured
+  // only `{ title, directories }` — so the dropdown's choice was collected,
+  // displayed, and then silently discarded on save. The edit dialog was unaffected
+  // because it goes through `updateProject`. Forwarding the whole object rather
+  // than listing fields is what keeps the next added field from repeating this.
+  createProject: async ({ title, directories, docSpec }) => ({
+    projectId: await requireModel().create(title, directories, docSpec),
+  }),
+  updateProject: async (id, title, directories, docSpec) => {
+    const live = requireModel()
+    await live.update(id, title, directories)
+    // A separate write rather than part of `update`: the override is `optional`
+    // in the schema, and clearing it means removing the key — a distinction the
+    // whole-record `update` (which spreads the stored record) cannot express.
+    await live.setProjectDocSpec(id, docSpec)
+  },
+  uploadSpec: async (name, content) => {
+    const live = projectModel()
+    return live === undefined ? false : await live.uploadSpec(name, content)
+  },
+  deleteSpec: async (name) => {
+    const live = projectModel()
+    return live === undefined ? false : await live.deleteSpec(name)
+  },
+  specsUsedBy: async (name) => {
+    const live = projectModel()
+    return live === undefined ? [] : await live.specsUsedBy(name)
+  },
+  pickDirectory: async () => {
+    // `ctx.get`, not a property read: this fiber's inject list names the
+    // directory-picker namespace, and the ungated lookup is what the rest of this
+    // file uses for services it did not declare by name.
+    const picker = clientContext?.get('remote.directoryPicker') as
+      | { pick(signal?: AbortSignal): Promise<{ ok: boolean; value?: string | null; error?: { message: string } }> }
+      | undefined
+    // An unavailable picker is "nothing chosen", not an error: the dialog renders
+    // its add control disabled in that case, so this is the unreachable arm.
+    if (picker === undefined) return null
+    const result = await picker.pick()
+    // A cancelled pick answers null from the Host anyway, so the cancel and the
+    // failure arms land on the same "nothing added" outcome. Surfacing a Remote
+    // error would put an infrastructure message in a title field's error row,
+    // where the user is not looking for it.
+    return result.ok ? (result.value ?? null) : null
+  },
   deleteProject: async (id) => { await requireModel().remove(id) },
   reorderProject: async (id, beforeId) => { await requireModel().reorder(id, beforeId) },
   assignSession: async (sessionId, projectId) => { await requireModel().assign(sessionId, projectId) },
@@ -247,6 +293,15 @@ export function apply(ctx: Context): void {
   void mountProjects(ctx)
   applyVendored(
     ctx, clientGrouping, projectActions, clientExpansions, clientOrders, clientCreateOpensSession,
+    {
+      perProjectDocSpec: clientPerProjectDocSpec,
+      // The two outer gates. The dialog must apply the same three-way chain the
+      // settings card does, or a project dialog offers a spec row while the
+      // settings page shows the whole group as unavailable.
+      injectProjectInfo: clientInjectProjectInfo,
+      injectProjectDoc: clientInjectProjectDoc,
+      specs: clientSpecs,
+    },
   )
   registerSettingsCard(ctx)
 }
@@ -280,6 +335,12 @@ function registerSettingsCard(ctx: Context): void {
         target: clientNewSessionTarget,
         baseWorkspace: clientBaseWorkspace,
         createOpensSession: clientCreateOpensSession,
+        injectProjectInfo: clientInjectProjectInfo,
+        injectProjectDoc: clientInjectProjectDoc,
+        docSpecMode: clientDocSpecMode,
+        docSpecFileName: clientDocSpecFileName,
+        perProjectDocSpec: clientPerProjectDocSpec,
+        specs: clientSpecs,
         // Spread rather than assigned as `undefined`: the hooks compartment holds
         // observables, and a present-but-undefined key would break the renderer's
         // binding. Absent, the chooser reports "暂无工作区".
@@ -319,6 +380,61 @@ function registerSettingsCard(ctx: Context): void {
         void live.setCreateOpensSession(value).catch((reason: unknown) => {
           console.warn('set create-opens-session rejected:', reason)
         })
+      },
+      setInjectProjectInfo: (value: boolean) => {
+        // Same reasoning again: a click before the baseline lands must be a no-op
+        // rather than a thrown error out of a React event handler, and the
+        // optimistic write inside the model is what follows the click at once.
+        const live = projectModel()
+        if (live === undefined) return
+        void live.setInjectProjectInfo(value).catch((reason: unknown) => {
+          console.warn('set inject-project-info rejected:', reason)
+        })
+      },
+      setInjectProjectDoc: (value: boolean) => {
+        const live = projectModel()
+        if (live === undefined) return
+        void live.setInjectProjectDoc(value).catch((reason: unknown) => {
+          console.warn('set inject-project-doc rejected:', reason)
+        })
+      },
+      setDocSpecMode: (mode: DocSpecMode) => {
+        // Same reasoning again: a click before the baseline lands must be a no-op
+        // rather than a thrown error out of a React event handler.
+        const live = projectModel()
+        if (live === undefined) return
+        void live.setDocSpecMode(mode).catch((reason: unknown) => {
+          console.warn('set doc-spec-mode rejected:', reason)
+        })
+      },
+      setDocSpecFileName: (name: string) => {
+        const live = projectModel()
+        if (live === undefined) return
+        void live.setDocSpecFileName(name).catch((reason: unknown) => {
+          console.warn('set doc-spec-file-name rejected:', reason)
+        })
+      },
+      setPerProjectDocSpec: (value: boolean) => {
+        const live = projectModel()
+        if (live === undefined) return
+        void live.setPerProjectDocSpec(value).catch((reason: unknown) => {
+          console.warn('set per-project-doc-spec rejected:', reason)
+        })
+      },
+      // The three spec-file actions surface as values rather than exceptions: a
+      // taken name and an absent file are ordinary answers the dialog renders,
+      // and an exception would reach the user as an infrastructure message.
+      uploadSpec: async (name: string, content: string) => {
+        const live = projectModel()
+        return live === undefined ? false : await live.uploadSpec(name, content)
+      },
+      deleteSpec: async (name: string) => {
+        const live = projectModel()
+        return live === undefined ? false : await live.deleteSpec(name)
+      },
+      specsUsedBy: async (name: string) => {
+        const live = projectModel()
+        return live === undefined ? [] : await live.specsUsedBy(name)
       },
     }),
   }, ProjectGroupsCard))

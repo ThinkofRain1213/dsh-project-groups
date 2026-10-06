@@ -16,7 +16,7 @@
  * Checks:
  *   1. creating a project under an existing name disables 创建 and names the project;
  *   2. changing to a free name re-enables it and the create succeeds;
- *   3. renaming a project onto another project's name disables 重命名 and names the project;
+ *   3. renaming a project onto another project's name disables 编辑项目 and names the project;
  *   4. a free rename works;
  *   5. renaming a project to its **own** current title stays disabled (the shipped behaviour: the
  *      draft equals the stored title), so the self-exclusion cannot be mistaken for a conflict;
@@ -142,9 +142,9 @@ const openRenameDialog = async (title) => {
   if (await trigger.count() > 0) await trigger.click({ force: true })
   else await row.locator('button[aria-haspopup="menu"]').first().click({ force: true })
   await page.waitForTimeout(700)
-  await page.getByRole('menuitem', { name: /重命名/ }).first().click({ force: true })
+  await page.getByRole('menuitem', { name: /编辑项目/ }).first().click({ force: true })
   await page.waitForTimeout(900)
-  return dialogWith('重命名项目')
+  return dialogWith('编辑项目')
 }
 
 let running = child
@@ -190,14 +190,14 @@ try {
   check('2) gamma 已创建', projects().includes('gamma'), projects().join(','))
 
   console.log('')
-  console.log('=== 3. 重命名项目撞到别人的名字 ⇒ 禁用 + 提示 ===')
+  console.log('=== 3. 编辑项目撞到别人的名字 ⇒ 禁用 + 提示 ===')
   const renameDialog = await openRenameDialog('alpha')
-  check('重命名对话框打开', await renameDialog.count() > 0)
+  check('编辑项目对话框打开', await renameDialog.count() > 0)
   await typeTitle(renameDialog, 'beta')
   const renameText = (await renameDialog.innerText()).replace(/\s+/g, ' ')
   console.log(`  对话框文字: ${JSON.stringify(renameText.slice(0, 140))}`)
   check('3) 确认按钮被禁用', await primaryDisabled(renameDialog))
-  // Read the **alert alone**, not the dialog's whole text: the dialog's title is 重命名项目, so a
+  // Read the **alert alone**, not the dialog's whole text: the dialog's title is 编辑项目, so a
   // substring test for 项目 against the dialog would pass no matter what the message said — which
   // is exactly how the first version of this check missed that the message said 工作区.
   const renameAlert = (await renameDialog.locator('[role="alert"]').first().innerText().catch(() => ''))
@@ -211,7 +211,7 @@ try {
   console.log('=== 4. 改成没被占用的名字 ⇒ 可用 ===')
   await typeTitle(renameDialog, 'alpha-2')
   check('4) 确认按钮恢复可用', (await primaryDisabled(renameDialog)) === false)
-  await renameDialog.getByRole('button', { name: '重命名' }).first().click({ force: true })
+  await renameDialog.getByRole('button', { name: '保存' }).first().click({ force: true })
   await page.waitForTimeout(2500)
   console.log(`  当前: ${JSON.stringify(projects())}`)
   check('4) 已改名为 alpha-2', projects().includes('alpha-2'), projects().join(','))

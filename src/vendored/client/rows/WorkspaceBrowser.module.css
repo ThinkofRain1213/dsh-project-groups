@@ -595,6 +595,176 @@
   color: var(--dsw-alias-state-error-primary);
 }
 
+/*
+ * Source-folder rows, shared by the create and edit project dialogs.
+ *
+ * The add and remove controls are the shell's own `Button` / this file's
+ * `.iconButton`, so nothing here restyles a button. A bare `<button>` with only a
+ * colour set keeps the browser's native chrome — grey fill, inset border — which
+ * is what made the first version read as a foreign element.
+ */
+
+/*
+ * The project dialogs, widened past the shipped 380px card so a directory list
+ * fits without clipping. 480px is deliberately short of the official directory
+ * browser's 680px: this dialog holds a name field and a few paths, not a
+ * full Miller-column browser, and the extra width read as loose rather than
+ * roomy. Doubled class matches the specificity of `Modal.module.css`'s `.dialog`
+ * rule, which is how the official directory browser widens its own dialog
+ * (`.dialog.dialog { width: min(680px, …) }`).
+ */
+.directoryDialog.directoryDialog {
+  width: min(480px, 100%);
+}
+
+.directoryBlock {
+  margin-top: 16px;
+}
+
+.directoryHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.directoryLabel {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.directoryEmpty {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+/*
+ * The per-project document-spec row: one line, label left, selector right.
+ *
+ * Laid out as a row rather than the directory block's stacked header because it
+ * holds a single value plus its affordance, not a list — stacking made it read
+ * as two unrelated rows.
+ */
+.docSpecRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/*
+ * The `Menu` anchor wrapper. It is content-sized, so a `max-width: 60%` on the
+ * pill measured against the pill itself and truncated a label as short as
+ * `无（继承全局）`. The constraint belongs here, where the percentage resolves
+ * against the row.
+ */
+.docSpecMenu {
+  display: flex;
+  min-width: 0;
+  max-width: 65%;
+}
+
+/*
+ * The selector pill, matching the settings card's own `.selector` (the New
+ * Session destination and base-workspace controls): a module-surface fill rather
+ * than an outlined button, because a bordered rectangle beside a label reads as
+ * a text field — precisely the shape this control replaced.
+ */
+.docSpecSelector {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 8px 0 10px;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-module-platform);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+/*
+ * `:disabled` is excluded rather than reset in a later rule, for the reason the
+ * settings card's `.cube` documents: a `:disabled:hover` reset of equal
+ * specificity also strips the *selected* fill, which reads as a flash.
+ */
+.docSpecSelector:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/*
+ * A gated selector, dimmed by colour rather than by `opacity`.
+ *
+ * `opacity` made the pill its own compositing layer: re-compositing the sidebar
+ * for a frame (which any switch animation triggers) changed its background, so
+ * it appeared to flicker. See the settings card's `.cube:disabled` for the
+ * measurements.
+ */
+.docSpecSelector:disabled {
+  cursor: not-allowed;
+  color: var(--dsw-alias-label-dimmed);
+  background: color-mix(in srgb, var(--dsw-alias-bg-module-platform) 40%, transparent);
+}
+
+/* A long file name ellipsizes rather than widening the dialog; `title` carries it. */
+.docSpecValue {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  flex: none;
+}
+
+.directoryList {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/*
+ * Transparent until hover, like the official directory browser's own rows:
+ * a permanently filled row reads as a block and makes a list of them heavy.
+ */
+.directoryRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--dsw-radius-md);
+}
+
+.directoryRow:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.directoryPath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-primary);
+}
+
 .deleteAction:not(:disabled) {
   color: var(--dsw-alias-state-error-primary);
 }

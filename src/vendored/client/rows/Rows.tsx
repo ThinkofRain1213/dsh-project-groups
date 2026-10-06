@@ -296,8 +296,13 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
   // A project row's delete removes a caller-supplied record, not a registry
   // entry, so the copy names the project.
   const deleteLabel = group.kind === 'project' ? t('delete.project') : t('delete.workspace')
+  // A project row opens the *edit* dialog: it has a title and associated
+  // directories to change, where a Workspace row has only a title. The menu id
+  // stays `rename` because it is the dispatch key shared with the caller's
+  // `actions.rename`; only the visible label follows the row kind.
+  const renameLabel = group.kind === 'project' ? t('edit.project') : t('rename')
   const workspaceMenuItems = [
-    { id: 'rename', label: t('rename'), icon: <IconEditOutlineRegular /> },
+    { id: 'rename', label: renameLabel, icon: <IconEditOutlineRegular /> },
     { id: 'delete', label: deleteLabel, icon: <IconTrashOutlineRegular />, danger: true },
   ]
   const ownRow = (

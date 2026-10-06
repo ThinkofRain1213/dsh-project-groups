@@ -280,6 +280,34 @@ export type WorkspaceBrowserInjected = {
      * following the official flow and only adding the row.
      */
     createOpensSession: HostObservable<boolean>
+    /**
+     * Whether the project dialogs expose a per-project document-spec row.
+     *
+     * Mandatory as a hook like the others; a composition without one answers
+     * `false`, which is the schema default — no extra row.
+     *
+     * Innermost of three gates: the dialogs also require `injectProjectInfo` and
+     * `injectProjectDoc`, because a spec row is meaningless when no document line
+     * is injected — the settings card disables the whole spec group in that case.
+     */
+    perProjectDocSpec: HostObservable<boolean>
+    /**
+     * Whether the project-info line is injected (the master switch).
+     *
+     * Read by the dialogs to gate the spec row the same way the settings card
+     * does; answering `false` in a composition without the feature keeps the row
+     * hidden, which is the honest answer when nothing is injected.
+     */
+    injectProjectInfo: HostObservable<boolean>
+    /** Whether the project document line is injected. */
+    injectProjectDoc: HostObservable<boolean>
+    /**
+     * Every uploaded document spec.
+     *
+     * The dialogs' dropdown lists these, so the region needs them rather than
+     * asking the Host per open: the list is small and changes rarely.
+     */
+    specs: HostObservable<readonly string[]>
   }
   /** Open the browser search and focus its input. */
   requestSearch: () => void
@@ -292,9 +320,35 @@ export type WorkspaceBrowserInjected = {
    * caller-supplied group renders with no row menu or drag target, because there
    * is nothing behind it to drive.
    */
-  createProject?: ((input: { title: string }) => Promise<{ projectId: string }>) | undefined
-  /** Retitle one caller-supplied project. */
-  renameProject?: ((id: string, title: string) => Promise<void>) | undefined
+  createProject?: ((input: {
+    title: string
+    directories: readonly string[]
+    /** Spec override to store; `null` inherits the global choice. */
+    docSpec: string | null
+  }) => Promise<{ projectId: string }>) | undefined
+  /**
+   * Replace one caller-supplied project's title and directories in one commit.
+   *
+   * One verb rather than a retitle plus a directory write: the edit dialog
+   * commits both fields with one button, and splitting them would expose a
+   * retitled-but-stale state. Absent, a project row opens no edit dialog.
+   */
+  updateProject?: ((id: string, title: string, directories: readonly string[], docSpec: string | null) => Promise<void>) | undefined
+  /** Stores one uploaded document spec; resolves false when the name is taken. */
+  uploadSpec?: ((name: string, content: string) => Promise<boolean>) | undefined
+  /** Deletes one uploaded document spec; resolves false when nothing was removed. */
+  deleteSpec?: ((name: string) => Promise<boolean>) | undefined
+  /** Titles of projects that would fall back if the named spec were deleted. */
+  specsUsedBy?: ((name: string) => Promise<readonly string[]>) | undefined
+  /**
+   * Open the Host's directory picker and return the chosen path.
+   *
+   * The region cannot reach the picker itself — it is a Remote namespace, and an
+   * injected face carries verbs, not services. Absent, the create dialog's
+   * add-folder control renders disabled rather than failing on click.
+   * @returns the chosen absolute path, or null when cancelled or unavailable.
+   */
+  pickDirectory?: (() => Promise<string | null>) | undefined
   /** Remove one caller-supplied project; its Sessions are not touched. */
   deleteProject?: ((id: string) => Promise<void>) | undefined
   /** Move one caller-supplied project before another; absent anchor appends. */

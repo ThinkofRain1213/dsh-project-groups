@@ -59,6 +59,23 @@ const pendingTargets = new Set<() => void>()
 const pendingBase = new Set<() => void>()
 /** The same, for {@link clientCreateOpensSession}. */
 const pendingCreateOpens = new Set<() => void>()
+/** The same, for {@link clientInjectProjectInfo}. */
+const pendingInjectInfo = new Set<() => void>()
+/** The same, for {@link clientInjectProjectDoc}. */
+const pendingInjectDoc = new Set<() => void>()
+
+/** The empty spec list, shared so the pre-model snapshot is identity-stable. */
+const EMPTY_SPECS: readonly string[] = Object.freeze([])
+
+/**
+ * Seats built by {@link pendingSeat}, each of which knows how to re-register
+ * itself once the model exists.
+ *
+ * The named `pending*` sets above predate this and are kept as they are: they
+ * carry per-seat comments explaining their own lifecycle, and rewriting working
+ * code to use the new helper would be churn without a behaviour change.
+ */
+const installHooks: ((live: ProjectModel) => void)[] = []
 
 /** @returns the live model, once its baseline has landed. */
 export function projectModel(): ProjectModel | undefined {
@@ -76,6 +93,8 @@ export function projectModel(): ProjectModel | undefined {
  */
 export function installProjectModel(started: ProjectModel): void {
   model = started
+  // The helper-built seats first: each re-registers its own early subscribers.
+  for (const install of installHooks) install(started)
   const early = [...pending]
   pending.clear()
   for (const notify of early) started.grouping.subscribe(notify)
@@ -107,6 +126,16 @@ export function installProjectModel(started: ProjectModel): void {
   pendingCreateOpens.clear()
   for (const notify of earlyCreateOpens) started.createOpensSession$.subscribe(notify)
   for (const notify of earlyCreateOpens) notify()
+
+  const earlyInjectInfo = [...pendingInjectInfo]
+  pendingInjectInfo.clear()
+  for (const notify of earlyInjectInfo) started.injectProjectInfo$.subscribe(notify)
+  for (const notify of earlyInjectInfo) notify()
+
+  const earlyInjectDoc = [...pendingInjectDoc]
+  pendingInjectDoc.clear()
+  for (const notify of earlyInjectDoc) started.injectProjectDoc$.subscribe(notify)
+  for (const notify of earlyInjectDoc) notify()
 }
 
 /**
@@ -251,3 +280,121 @@ export const clientCreateOpensSession: HostObservable<boolean> = {
     return live.createOpensSession$.subscribe(listener)
   },
 }
+
+/**
+ * Whether a Session's project info is injected, read by the settings card.
+ *
+ * Not given to the vendor tree: the injection happens on the Host, at request
+ * time, and the sidebar renders groups rather than model context. This seat
+ * exists so the card's switch reflects the stored value rather than the click.
+ *
+ * Before the model exists the snapshot is `true`, matching `EMPTY_STATE` and the
+ * Host's schema default — a fresh install shows the behaviour it would get.
+ */
+export const clientInjectProjectInfo: HostObservable<boolean> = {
+  getSnapshot: () => model?.injectProjectInfoValue() ?? true,
+  subscribe: (listener) => {
+    const live = model
+    if (live === undefined) {
+      pendingInjectInfo.add(listener)
+      return () => { pendingInjectInfo.delete(listener) }
+    }
+    return live.injectProjectInfo$.subscribe(listener)
+  },
+}
+
+/**
+ * Whether the work-document line is injected too, read by the settings card.
+ *
+ * Its own seat rather than a derived value: the two switches are independent in
+ * the domain, and the card renders them as separate rows — folding them here
+ * would make the card unable to show one as the master and the other as gated.
+ *
+ * Before the model exists the snapshot is `false`, matching `EMPTY_STATE` and the
+ * Host's schema default: the document is the extra feature, so it starts off.
+ */
+export const clientInjectProjectDoc: HostObservable<boolean> = {
+  getSnapshot: () => model?.injectProjectDocValue() ?? false,
+  subscribe: (listener) => {
+    const live = model
+    if (live === undefined) {
+      pendingInjectDoc.add(listener)
+      return () => { pendingInjectDoc.delete(listener) }
+    }
+    return live.injectProjectDoc$.subscribe(listener)
+  },
+}
+
+/**
+ * Build a seat for one scalar the settings card reads.
+ *
+ * The five new document-spec values share a shape exactly: read through the
+ * module-level model, fall back to a stated snapshot before it exists, and
+ * re-seat subscribers once it does. Writing that out five times would be five
+ * copies of one rule, so it is built once — the per-seat differences are the
+ * three arguments.
+ * @param read - resolves the value from the live model.
+ * @param fallback - the snapshot served before the model exists.
+ * @param seat - picks that value's observable from the live model.
+ * @returns the observable handed to the settings card.
+ */
+function pendingSeat<T>(
+  read: (live: ProjectModel) => T,
+  fallback: T,
+  seat: (live: ProjectModel) => HostObservable<T>,
+): HostObservable<T> {
+  const early = new Set<() => void>()
+  // The listener set is registered against the live model on install; until
+  // then a subscriber waits here, which is what keeps a card that mounted
+  // before the baseline from reading a stale snapshot forever.
+  installHooks.push((live) => {
+    const waiting = [...early]
+    early.clear()
+    for (const notify of waiting) seat(live).subscribe(notify)
+    for (const notify of waiting) notify()
+  })
+  return {
+    getSnapshot: () => model === undefined ? fallback : read(model),
+    subscribe: (listener) => {
+      const live = model
+      if (live === undefined) {
+        early.add(listener)
+        return () => { early.delete(listener) }
+      }
+      return seat(live).subscribe(listener)
+    },
+  }
+}
+
+/**
+ * Which spec source applies before any project override.
+ *
+ * Before the model exists the snapshot is `'default'`, matching `EMPTY_STATE`
+ * and the Host's schema default: a fresh install follows the built-in spec.
+ */
+export const clientDocSpecMode: HostObservable<'none' | 'default' | 'custom'> = pendingSeat(
+  live => live.docSpecModeValue(),
+  'default',
+  live => live.docSpecMode$,
+)
+
+/** The uploaded spec `'custom'` names; `''` when the user has not chosen one. */
+export const clientDocSpecFileName: HostObservable<string> = pendingSeat(
+  live => live.docSpecFileNameValue(),
+  '',
+  live => live.docSpecFileName$,
+)
+
+/** Whether the project dialogs expose a per-project spec row. */
+export const clientPerProjectDocSpec: HostObservable<boolean> = pendingSeat(
+  live => live.perProjectDocSpecValue(),
+  false,
+  live => live.perProjectDocSpec$,
+)
+
+/** Every uploaded spec's file name, sorted. */
+export const clientSpecs: HostObservable<readonly string[]> = pendingSeat(
+  live => live.specsValue(),
+  EMPTY_SPECS,
+  live => live.specs$,
+)

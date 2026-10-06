@@ -12,9 +12,9 @@
  * carries the few runtime agreements the two halves must share — the namespace constants
  * below and `withDefaultMode` — because a rule stated twice is a rule that drifts.
  */
-import type { BaseWorkspaceSetting, NewSessionTarget } from './spec.ts'
+import type { BaseWorkspaceSetting, DocSpecMode, NewSessionTarget } from './spec.ts'
 
-export type { BaseWorkspaceMode, BaseWorkspaceSetting, NewSessionTarget } from './spec.ts'
+export type { BaseWorkspaceMode, BaseWorkspaceSetting, DocSpecMode, NewSessionTarget } from './spec.ts'
 
 /** The Cordis service key owning these methods, and the default wire namespace. */
 export const PROJECT_SERVICE_KEY = 'projectController'
@@ -44,19 +44,57 @@ export const PROJECT_NAMESPACE = 'projectGroups'
  * Note that the `'specified'` direction is deliberately **not** mirrored here: it is
  * genuinely asymmetric — a `name` that arrives absent is cleared, where `'default'` retains
  * one — and forcing the two through one shape would erase that difference.
+ *
+ * ## The optional new memory
+ *
+ * `requested` is the Workspace the caller is storing now. The 更换… chooser replaces
+ * the remembered Workspace **without touching the mode**, so it calls this with the
+ * current mode and the newly picked path; a plain click on the 默认 card passes nothing
+ * and keeps what was already there.
+ *
+ * Keeping that in one place is the whole point of this function: the alternative was a
+ * second expression at each call site, which is exactly the drift described above.
  * @param stored - the setting as it stands, or `undefined` before any write.
- * @returns the `'default'` setting, carrying the remembered Workspace through.
+ * @param requested - the memory being stored now; absent leaves the stored one alone.
+ * @returns the `'default'` setting, carrying whichever memory applies.
  */
-export function withDefaultMode(stored: BaseWorkspaceSetting | undefined): BaseWorkspaceSetting {
-  return { mode: 'default', path: stored?.path, name: stored?.name }
+export function withDefaultMode(
+  stored: BaseWorkspaceSetting | undefined,
+  requested?: { readonly path?: string | undefined; readonly name?: string | undefined },
+): BaseWorkspaceSetting {
+  return {
+    mode: 'default',
+    path: requested?.path ?? stored?.path,
+    name: requested?.name ?? stored?.name,
+  }
 }
 
 /** One project as the Client reads it. */
 export interface ProjectValue {
   readonly projectId: string
   readonly title: string
+  /**
+   * Directories associated with this project, in display order.
+   *
+   * Any number, including none. A plain list rather than objects with a
+   * primary/major flag: that distinction was designed and dropped, and the wire
+   * shape must not reserve room for it.
+   */
+  readonly directories: readonly string[]
   /** Bound work document, or `''` when none is bound yet (L5). */
   readonly docPath: string
+  /**
+   * This project's spec override: `'none'`, an uploaded file name, or absent to
+   * inherit the global choice. `null` on the wire is never used — absence is the
+   * inheritance signal, so an explicit `null` would be a second spelling of it.
+   */
+  readonly docSpec?: DocSpecMode | string
+  /**
+   * The spec content hash the document was last written against, or absent when
+   * the document has never been written. The settings surface shows it only as
+   * "aligned / needs attention", never as a hash.
+   */
+  readonly docSpecUsed?: string
   /** ISO-8601 creation instant. */
   readonly createdAt: string
   /** ISO-8601 last-mutation instant. */
@@ -114,6 +152,46 @@ export interface ProjectBaseline {
    * reach it through the inject face rather than staying in the settings card.
    */
   readonly createOpensSession: boolean
+  /**
+   * Whether a Session's project info is injected into its requests.
+   *
+   * The base injection: the project's title and associated directories, delivered
+   * as a `systemPrompt.context()` contribution. Reading through a default on the
+   * Client side is deliberate — an older Host did not inject, so a Client that
+   * assumes `true` would show a switch that lies.
+   */
+  readonly injectProjectInfo: boolean
+  /**
+   * Whether the project's work-document line is injected alongside the base info.
+   *
+   * The extra feature, and a separate switch on purpose: it is an addition on top
+   * of {@link injectProjectInfo}, not a variant of it.
+   */
+  readonly injectProjectDoc: boolean
+  /**
+   * Which spec source applies before any project override.
+   *
+   * Read by the settings card's three-option control and by the project dialogs'
+   * spec row, which labels the inherited entry with whatever this resolves to.
+   * Optional on the wire so a Client running against an older Host reads the
+   * schema default rather than `undefined`.
+   */
+  readonly docSpecMode?: DocSpecMode
+  /**
+   * The uploaded spec the `'custom'` mode names; `''` when the user picked
+   * `'custom'` but has not chosen a file yet.
+   */
+  readonly docSpecFileName?: string
+  /** Whether the project dialogs expose a per-project spec row. */
+  readonly perProjectDocSpec?: boolean
+  /**
+   * Every uploaded spec's file name, sorted.
+   *
+   * Carried on the baseline rather than fetched on demand because two surfaces
+   * need it at once — the settings dialog and every project dropdown — and a
+   * round trip per dialog would show an empty list for a frame.
+   */
+  readonly specs?: readonly string[]
 }
 
 /** One ordered change after a generation's baseline. */
@@ -132,19 +210,47 @@ export type ProjectFollowFrame =
 /** `create` request. */
 export interface ProjectCreateRequest {
   readonly title: string
+  /**
+   * Directories to associate at creation time; omitted means none.
+   *
+   * Carried on create rather than requiring a follow-up `setDirectories` call so
+   * the create dialog can collect a directory list and commit it in one write —
+   * a project that briefly existed with no directories would be a state the user
+   * never asked for.
+   */
+  readonly directories?: readonly string[]
+  /**
+   * Spec override to store at creation time; omitted means inherit the global
+   * choice.
+   *
+   * Carried on create for the same reason as `directories`: the create dialog
+   * collects everything it wants in one dialog, and a project that briefly
+   * existed with the wrong spec would be a state the user never asked for.
+   */
+  readonly docSpec?: string | null
 }
 /** `create` result. */
 export interface ProjectValueResult {
   readonly project: ProjectValue
 }
 
-/** `rename` request. */
-export interface ProjectRenameRequest {
+/**
+ * `update` request: replace one project's title and directory list together.
+ *
+ * One verb rather than a rename followed by a directory write, because the edit
+ * dialog commits both fields with one button. Two calls would leave a visible
+ * intermediate state — the row retitled while its directories are still the old
+ * ones — and a failure between them would leave exactly that state durably. The
+ * atomic form also matches `create`, which already takes both.
+ */
+export interface ProjectUpdateRequest {
   readonly projectId: string
   readonly title: string
+  /** The complete list, in display order. An empty list is a real value. */
+  readonly directories: readonly string[]
 }
-/** `rename` result. */
-export type ProjectRenameValue = ProjectValueResult
+/** `update` result. */
+export type ProjectUpdateValue = ProjectValueResult
 
 /** `delete` request: removes the project and every assignment onto it. */
 export interface ProjectDeleteRequest {
@@ -257,6 +363,176 @@ export interface ProjectSetCreateOpensSessionRequest {
 /** `setCreateOpensSession` result: the stored value. */
 export interface ProjectCreateOpensSessionValue {
   readonly value: boolean
+}
+
+/**
+ * `setDirectories` request: replace one project's associated directories.
+ *
+ * **Whole-list** rather than add/remove-one, for the reason `setOrders` is
+ * whole-map: every caller already holds the complete list it wants stored (the
+ * edit dialog's rows), so sending the list is the honest request, and the Host
+ * never has to infer intent from a partial edit.
+ */
+export interface ProjectSetDirectoriesRequest {
+  readonly projectId: string
+  /** The complete list, in display order. An empty list is a real value: no directories. */
+  readonly directories: readonly string[]
+}
+
+/** `setDirectories` result: the list the Host stored. */
+export interface ProjectDirectoriesValue {
+  readonly projectId: string
+  readonly directories: readonly string[]
+}
+
+/**
+ * `setInjectProjectInfo` request: whether to inject the project's name and directories.
+ *
+ * Only the flag travels. The Host spreads the stored global before writing, so the
+ * project order and every other setting it holds survive — `global.set` replaces the
+ * whole singleton rather than merging into it.
+ */
+export interface ProjectSetInjectProjectInfoRequest {
+  readonly value: boolean
+}
+
+/** `setInjectProjectInfo` result: the stored value. */
+export interface ProjectInjectProjectInfoValue {
+  readonly value: boolean
+}
+
+/** `setInjectProjectDoc` request: whether to inject the work-document line too. */
+export interface ProjectSetInjectProjectDocRequest {
+  readonly value: boolean
+}
+
+/** `setInjectProjectDoc` result: the stored value. */
+export interface ProjectInjectProjectDocValue {
+  readonly value: boolean
+}
+
+/**
+ * `setDocSpecMode` request: which spec source applies before any override.
+ *
+ * Only the mode travels; the Host spreads the stored global before writing, so
+ * the project order and every other setting survive.
+ */
+export interface ProjectSetDocSpecModeRequest {
+  readonly mode: DocSpecMode
+}
+
+/** `setDocSpecMode` result: the stored choice. */
+export interface ProjectDocSpecModeValue {
+  readonly mode: DocSpecMode
+}
+
+/**
+ * `setDocSpecFileName` request: the uploaded spec the `'custom'` mode names.
+ *
+ * A bare `*.md` file name, never a path: uploaded specs live only under this
+ * plugin's own directory, so the Host owns the directory and the wire carries
+ * the identity. An empty string is the "selected but not chosen yet" state.
+ */
+export interface ProjectSetDocSpecFileNameRequest {
+  readonly name: string
+}
+
+/** `setDocSpecFileName` result: the stored name. */
+export interface ProjectDocSpecFileNameValue {
+  readonly name: string
+}
+
+/** `setPerProjectDocSpec` request: whether project dialogs expose a spec row. */
+export interface ProjectSetPerProjectDocSpecRequest {
+  readonly value: boolean
+}
+
+/** `setPerProjectDocSpec` result: the stored value. */
+export interface ProjectPerProjectDocSpecValue {
+  readonly value: boolean
+}
+
+/**
+ * `setProjectDocSpec` request: one project's spec override.
+ *
+ * Four cases, and each is a distinct stored state — collapsing any two of them
+ * would lose a distinction the project dialog shows:
+ *
+ * | `spec`          | stored            | resolves to            |
+ * |-----------------|-------------------|------------------------|
+ * | `null`          | key absent        | the global choice      |
+ * | `'none'`        | `'none'`          | no spec at all         |
+ * | `'default'`     | `'default'`       | the built-in spec      |
+ * | a file name     | that name         | that uploaded file     |
+ *
+ * `null` clears rather than storing a sentinel, because absence is what "inherit"
+ * means; `'none'` and `'default'` are deliberate choices that must stay
+ * distinguishable from it AND from each other.
+ */
+export interface ProjectSetProjectDocSpecRequest {
+  readonly projectId: string
+  readonly spec: DocSpecMode | string | null
+}
+
+/** `setProjectDocSpec` result: the project's stored override, or `null` when cleared. */
+export interface ProjectProjectDocSpecValue {
+  readonly projectId: string
+  readonly spec: DocSpecMode | string | null
+}
+
+/** `uploadSpec` request: one uploaded spec's file name and text. */
+export interface ProjectUploadSpecRequest {
+  readonly name: string
+  readonly content: string
+}
+
+/**
+ * `uploadSpec` result.
+ *
+ * `written: false` means the name is unsafe or already taken — the surface's rule
+ * is to refuse rather than overwrite a file the user may have edited, and it
+ * reports "already exists" instead.
+ */
+export interface ProjectUploadSpecValue {
+  readonly written: boolean
+  /** The names now present, so the caller can refresh its list in one round trip. */
+  readonly specs: readonly string[]
+}
+
+/** `deleteSpec` request: the uploaded spec to remove. */
+export interface ProjectDeleteSpecRequest {
+  readonly name: string
+}
+
+/** `deleteSpec` result: whether a file was removed, plus the remaining names. */
+export interface ProjectDeleteSpecValue {
+  readonly removed: boolean
+  readonly specs: readonly string[]
+}
+
+/** `specsUsedBy` request: which projects reference one uploaded spec. */
+export interface ProjectSpecsUsedByRequest {
+  readonly name: string
+}
+
+/**
+ * `specsUsedBy` result: the titles of projects that would fall back if the named
+ * spec were deleted.
+ *
+ * Titles rather than ids: the caller shows them to the user in a confirmation.
+ */
+export interface ProjectSpecsUsedByValue {
+  readonly titles: readonly string[]
+}
+
+/** `readSpec` request: fetch one uploaded spec's text for preview. */
+export interface ProjectReadSpecRequest {
+  readonly name: string
+}
+
+/** `readSpec` result: the text, or `null` when the file is absent. */
+export interface ProjectReadSpecValue {
+  readonly content: string | null
 }
 
 /**

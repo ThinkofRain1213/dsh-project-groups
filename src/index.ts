@@ -25,11 +25,44 @@
  */
 import { Context } from '@deepseek-ai/cordis'
 import { mkdir } from 'node:fs/promises'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { Domain, DomainChanged } from '@deepseek-ai/dsh-storage-domain'
 import type {} from '@deepseek-ai/dsh-storage-domain'
 import { PROJECT_DOMAIN_NAME, projectDomainSpec, type BaseWorkspaceSetting, type GlobalRecord, type ProjectRecord } from './spec.ts'
 import { defaultWorkspacePath as deriveDefaultWorkspacePath } from './default-workspace.ts'
+import {
+  renderProjectInjection,
+  shouldAskSpecDrift,
+  SPEC_DRIFT_QUESTION_ID,
+  matchSpecDriftChoice,
+  type DocumentInjection,
+  type InjectionLocale,
+  type SpecDriftChoice,
+} from './injection.ts'
+import {
+  documentPath,
+  specIdentity,
+  resolveSpec,
+  REWRITE_FLOW_PATH,
+  listUploadedSpecs,
+  writeUploadedSpec,
+  deleteUploadedSpec,
+  readUploadedSpec,
+  isSafeSpecName,
+} from './spec-store.ts'
+
+/**
+ * The slice of the settings service this plugin reads to resolve the locale.
+ *
+ * Structural, and reached with `ctx.get`: `@deepseek-ai/dsh-settings` is not a
+ * dependency of this package, and the property read is gated on the `inject`
+ * list. Only the one entry the locale preference lives on is described.
+ */
+interface SettingsDescriptorLike {
+  readonly ns: string
+  readonly value: unknown
+}
 import {
   PROJECT_NAMESPACE, PROJECT_SERVICE_KEY, withDefaultMode,
   type ProjectAssignRequest, type ProjectAssignmentValue, type ProjectBaseline,
@@ -38,10 +71,20 @@ import {
   type ProjectCreateOpensSessionValue,
   type ProjectFollowFrame, type ProjectOrderValue, type ProjectOrdersValue,
   type ProjectNewSessionTargetValue,
-  type ProjectRenameRequest, type ProjectRenameValue, type ProjectReorderRequest,
-  type ProjectRebuildBaseWorkspaceValue,
+  type ProjectUpdateRequest, type ProjectUpdateValue, type ProjectReorderRequest, type ProjectRebuildBaseWorkspaceValue,
   type ProjectSetBaseWorkspaceRequest,
   type ProjectSetCreateOpensSessionRequest,
+  type ProjectSetDirectoriesRequest, type ProjectDirectoriesValue,
+  type ProjectSetInjectProjectInfoRequest, type ProjectInjectProjectInfoValue,
+  type ProjectSetInjectProjectDocRequest, type ProjectInjectProjectDocValue,
+  type ProjectSetDocSpecModeRequest, type ProjectDocSpecModeValue,
+  type ProjectSetDocSpecFileNameRequest, type ProjectDocSpecFileNameValue,
+  type ProjectSetPerProjectDocSpecRequest, type ProjectPerProjectDocSpecValue,
+  type ProjectSetProjectDocSpecRequest, type ProjectProjectDocSpecValue,
+  type ProjectUploadSpecRequest, type ProjectUploadSpecValue,
+  type ProjectDeleteSpecRequest, type ProjectDeleteSpecValue,
+  type ProjectSpecsUsedByRequest, type ProjectSpecsUsedByValue,
+  type ProjectReadSpecRequest, type ProjectReadSpecValue,
   type ProjectSetExpandedRequest, type ProjectSetNewSessionTargetRequest, type ProjectSetOrdersRequest,
   type ProjectUnassignRequest, type ProjectUnassignValue,
   type ProjectValue, type ProjectValueResult,
@@ -51,8 +94,223 @@ import {
 /**
  * Required Host services. The storage domain facility opens this plugin's
  * domain; without it there is nowhere durable to put a project.
+ *
+ * Deliberately minimal. Both services this class reads opportunistically —
+ * `systemPrompt` for the injection and `sessions` for the subagent lineage walk —
+ * are read with `ctx.get` rather than declared here, because a name in this list
+ * is a **gate**: the whole plugin stays inactive until that service appears.
+ * Naming `sessions` would tie every project verb to the Session store, and naming
+ * `systemPrompt` would tie them to the prompt registry.
  */
 export const inject = ['storageDomain']
+
+/**
+ * The slice of `@deepseek-ai/dsh-system-prompt` this plugin consumes.
+ *
+ * Declared structurally rather than imported: that package is **not** a
+ * dependency of this one, so its `Context.systemPrompt` augmentation is out of
+ * scope and a bare `ctx.systemPrompt` read is a compile error — measured, TS2339.
+ * The shape mirrors the official `PromptContext`, plus the `agent` field
+ * `@deepseek-ai/dsh-agent` merges into `AssembleContext`.
+ *
+ * Only `agent.session.id` is read. Spelling the used surface out, rather than
+ * casting to `any`, is what keeps an upstream interface change a compile error at
+ * the single call site instead of a silent behaviour change.
+ */
+interface PromptAssemblyContext {
+  /** Agent for this assembly; absent on diagnostics and bare assemblies. */
+  readonly agent?: { readonly session?: { readonly id?: SessionId } } | undefined
+}
+
+/** One dynamic runtime-context contribution, as registered. */
+interface SystemPromptContextContribution {
+  readonly name: string
+  readonly order: number
+  readonly text: (context: PromptAssemblyContext) => string
+}
+
+/** The `systemPrompt` service face this plugin consumes. */
+interface SystemPromptFace {
+  context(contribution: SystemPromptContextContribution): () => void
+}
+
+/**
+ * The slice of the Session store the lineage walk reads.
+ *
+ * The header fields below are the whole of what is needed, and they are
+ * structural for the same reason the prompt face is: the walk must not depend on
+ * `@deepseek-ai/dsh-session`'s full `Session` type to read three fields.
+ */
+interface SessionHeaderFace {
+  readonly id: SessionId
+  /** Present and `'subagent'` on a delegated child; absent on an ordinary Session. */
+  readonly origin?: 'subagent'
+  /** The Session this one was forked from; the next rung of the lineage walk. */
+  readonly parentSession?: SessionId
+}
+
+/**
+ * The slice of the Session store this plugin reads.
+ *
+ * Reached with `ctx.get('sessions')`, never as a property: `sessions` is not in
+ * this plugin's `inject` list, and the property read is gated on that list — a
+ * bare `ctx.sessions` throws at runtime (measured). The package *is* a
+ * dependency, so the type alone would resolve; it is the gate, not the type, that
+ * forbids the property.
+ */
+interface SessionsFace {
+  get(id: SessionId): { readonly header: SessionHeaderFace } | undefined
+}
+
+/**
+ * The fields the drift observer reads out of a Session event.
+ *
+ * Both variants carry the same `type`/`data` shape as the real event; the
+ * observer narrows on `event.type` and reads a few fields, so this mirrors only
+ * those. Every other event type is ignored, and a shape change upstream turns
+ * the reads below into compile errors rather than silent misses.
+ */
+interface SessionEventLike {
+  readonly type: string
+  readonly data: unknown
+}
+
+/** The `tool/call` payload, as far as this plugin reads it. */
+interface ToolCallData {
+  readonly name: string
+  readonly callId: string
+  readonly arguments: string
+}
+
+/** The `tool/result` payload, as far as this plugin reads it. */
+interface ToolResultData {
+  readonly message: {
+    readonly toolCallId: string
+    readonly isError?: boolean
+    readonly content: readonly { readonly type: string; readonly text?: string }[]
+  }
+}
+
+/** Whether a parsed JSON value is a plain object to read keys from. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Reject a project spec override that is not one of the four storable values.
+ *
+ * Shared by BOTH write paths (`create` and `setProjectDocSpec`) because they must
+ * agree: `setProjectDocSpec` refused `'default'` while `create` accepted anything,
+ * so the same value was storable or not depending on which dialog the user opened.
+ * That is the one-sided-guard shape this codebase has already been bitten by twice.
+ *
+ * The four values are `null` (inherit), `'none'`, `'default'`, and an uploaded
+ * file name. `'none'` and `'default'` are semantic, not file names, so they must
+ * bypass the `.md` check that `isSafeSpecName` applies.
+ *
+ * Validating rather than coercing: a refused write surfaces as an error, where a
+ * silently-dropped field is what let the create dialog's choice vanish unnoticed.
+ * @param spec - the override as it arrived, or undefined/absent.
+ * @returns the override unchanged.
+ * @throws when the value is not storable.
+ */
+function assertUsableDocSpec(spec: string | null | undefined): string | null | undefined {
+  if (spec === undefined || spec === null) return spec
+  if (spec === 'none' || spec === 'default') return spec
+  if (!isSafeSpecName(spec)) {
+    throw new Error(`not a usable spec file name: ${JSON.stringify(spec)}`)
+  }
+  return spec
+}
+
+/**
+ * Narrow one event's `data` to the `tool/call` fields it should hold.
+ * @param data - the event's untyped payload.
+ * @returns the fields, or undefined when the payload is not a tool call.
+ */
+function asToolCall(data: unknown): ToolCallData | undefined {
+  if (!isRecord(data)) return undefined
+  if (typeof data.name !== 'string' || typeof data.callId !== 'string' || typeof data.arguments !== 'string') return undefined
+  return { name: data.name, callId: data.callId, arguments: data.arguments }
+}
+
+/**
+ * Narrow one event's `data` to the `tool/result` fields it should hold.
+ * @param data - the event's untyped payload.
+ * @returns the fields, or undefined when the payload is not a tool result.
+ */
+function asToolResult(data: unknown): ToolResultData | undefined {
+  if (!isRecord(data) || !isRecord(data.message)) return undefined
+  const message = data.message
+  if (typeof message.toolCallId !== 'string') return undefined
+  const content = message.content
+  if (!Array.isArray(content)) {
+    return { message: { toolCallId: message.toolCallId, ...message.isError === true ? { isError: true } : {}, content: [] } }
+  }
+  const blocks = content.filter(isRecord).map(block => ({
+    type: typeof block.type === 'string' ? block.type : '',
+    ...typeof block.text === 'string' ? { text: block.text } : {},
+  }))
+  return {
+    message: {
+      toolCallId: message.toolCallId,
+      ...message.isError === true ? { isError: true } : {},
+      content: blocks,
+    },
+  }
+}
+
+/**
+ * Parse a model-produced argument string, tolerating anything malformed.
+ * @param raw - the raw JSON string from `tool/call`.
+ * @returns the object, or undefined when it is not a JSON object.
+ */
+function parseJsonObject(raw: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return isRecord(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The first selected label in an `ask_user_question` result.
+ *
+ * The tool renders its answer as one text block holding
+ * `{ answers: [{ id, selected: [...] }] }`, so the label is read out of that
+ * JSON rather than out of prose. Only the first question's first selection is
+ * used: our question is single-select and is the only one we ask for.
+ * @param content - the result message's content blocks.
+ * @returns the label, or undefined when the payload is not an answer batch.
+ */
+function firstAnswerLabel(content: readonly { readonly type: string; readonly text?: string }[]): string | undefined {
+  const text = content.find(block => block.type === 'text')?.text
+  if (text === undefined) return undefined
+  const parsed = parseJsonObject(text)
+  const answers = parsed?.answers
+  if (!Array.isArray(answers)) return undefined
+  const first = answers[0]
+  if (!isRecord(first)) return undefined
+  const selected = first.selected
+  if (!Array.isArray(selected)) return undefined
+  const label = selected[0]
+  return typeof label === 'string' ? label : undefined
+}
+
+/**
+ * Order of this plugin's contribution within the runtime-context snapshot.
+ *
+ * A literal rather than a lookup: the official `getContextOrder` knows only
+ * `SANDBOX_POLICY` (110), `APPROVAL_POLICY` (115) and `SUBAGENT_DELEGATION` (120),
+ * so a plugin has no name to ask for. 200 places this block after all three — the
+ * end of the joined snapshot, which is where "which project am I working in"
+ * reads most naturally.
+ */
+const INJECTION_CONTEXT_ORDER = 200
+
+/** Contribution name, following the official `<area>:<aspect>` form. */
+const INJECTION_CONTEXT_NAME = 'project:info'
 
 /**
  * Host project registry: the durable table, its order, and the assignment map,
@@ -87,11 +345,169 @@ export class ProjectController extends TypertRemoteService {
   private operationTail: Promise<void> = Promise.resolve()
 
   /**
+   * `ask_user_question` calls carrying our drift question, by call id.
+   *
+   * The call and its result arrive as two separate `session/event`s, and only the
+   * result carries the answer, so the call id has to be remembered in between.
+   * Keyed by call id alone because the id is unique per session; the value keeps
+   * the session so the answer can be attributed to the right project.
+   */
+  private readonly pendingDriftCalls = new Map<string, { readonly sessionId: SessionId; readonly projectId: string }>()
+
+  /**
+   * The tail of the global-write chain.
+   *
+   * Every global write is a read-modify-write (`get()` then spread then `set()`),
+   * so two writes that overlap in flight both read the pre-write snapshot and the
+   * later one silently drops the earlier one's field. That was measured, not
+   * theorised: firing `setDocSpecFileName` and `setDocSpecMode` together lost the
+   * name in 12 of 12 runs, leaving `mode: 'custom'` with an empty file name — the
+   * exact "empty custom" state the setting must never hold.
+   *
+   * Chaining each write onto the previous one makes the `get()` happen after the
+   * previous `set()` has landed. It lives here rather than in the one call site
+   * that exposed it because the hazard is a property of `setGlobal`, not of that
+   * pair of fields: any two overlapping global writes can lose one another.
+   *
+   * A second queue beside {@link operationTail}, not a replacement for it. That
+   * one orders *compound* mutations (create/delete, several writes plus a recovery
+   * marker); this one orders the individual read-modify-write, and so also covers
+   * the settings verbs that never enter `operate` — which is precisely where the
+   * lost update was measured. The two nest harmlessly: a write inside `operate`
+   * simply waits for its own chain too.
+   */
+  private globalWriteChain: Promise<void> = Promise.resolve()
+
+  /**
    * @param ctx - Host context carrying the storage-domain facility.
    */
   constructor(ctx: Context) {
     super(ctx, PROJECT_SERVICE_KEY, { namespace: PROJECT_NAMESPACE })
     ctx.effect(() => () => this.close(), 'project-groups: domain close')
+    // Nested `inject`, never the plugin's top-level one. The top-level list is a
+    // gate: a service named there holds the WHOLE plugin inactive until it
+    // appears. This child fiber waits for `systemPrompt` on its own, so the Host
+    // half keeps serving every project verb whether or not a prompt registry is
+    // composed — a product without one simply gets no contribution.
+    ctx.inject(['systemPrompt'], (scope) => { this.installInjection(scope) })
+    ctx.effect(() => this.observeSessions(ctx), 'project-groups: spec-drift answers')
+  }
+
+  /**
+   * Follow every Session's events to learn which drift choice the user made.
+   *
+   * ## Why the event stream rather than the official projection
+   *
+   * `ctx.sessionProjections.stateOf(session, 'userQuestions')` looks like the
+   * natural source, and it is what `@deepseek-ai/dsh-user-questions` uses
+   * internally. It is empty here: that projection records a question only when
+   * the Session header shows the **timed** `ask_user_question` schema
+   * (`projection.ts`: `if (!fold.timed …) return fold`), and the shipped
+   * profile mounts the tool with its default `legacy` mode. Reading it would
+   * silently never fire, which is the worst kind of failure.
+   *
+   * So this reads the two events the tool itself produces — `tool/call` carries
+   * the questions, `tool/result` carries the answers — and selects ours by the
+   * question id rather than by matching prose.
+   *
+   * `{ global: true }` is what makes a plugin receive events from Sessions it
+   * does not own; the official `user-questions` plugin uses the same option for
+   * the same purpose.
+   * @param ctx - Host context to subscribe on.
+   * @returns the disposer the owning effect drops on unload.
+   */
+  private observeSessions(ctx: Context): () => void {
+    const off = ctx.on('session/event', (session, event) => {
+      try {
+        this.observeEvent(session.id, event)
+      } catch (error: unknown) {
+        // An observation failure must never reach the Session's own append path.
+        ctx.logger.warn('project-groups: spec-drift observation failed: %o', error)
+      }
+    }, { global: true })
+    return () => {
+      off()
+      this.pendingDriftCalls.clear()
+    }
+  }
+
+  /**
+   * Apply one Session event to the drift bookkeeping.
+   * @param sessionId - the Session the event belongs to.
+   * @param event - the event.
+   */
+  private observeEvent(sessionId: SessionId, event: SessionEventLike): void {
+    if (event.type === 'tool/call') {
+      const call = asToolCall(event.data)
+      if (call === undefined || call.name !== 'ask_user_question') return
+      if (!this.askCarriesDriftQuestion(call.arguments)) return
+      const domain = this.domain
+      if (domain === undefined) return
+      const projectId = this.projectOfSession(domain, sessionId)
+      if (projectId === undefined) return
+      this.pendingDriftCalls.set(call.callId, { sessionId, projectId })
+      return
+    }
+    if (event.type !== 'tool/result') return
+    const result = asToolResult(event.data)
+    if (result === undefined) return
+    const pending = this.pendingDriftCalls.get(result.message.toolCallId)
+    if (pending === undefined) return
+    this.pendingDriftCalls.delete(result.message.toolCallId)
+    // A failed call carries no answer; the question simply returns next time.
+    if (result.message.isError === true) return
+    const label = firstAnswerLabel(result.message.content)
+    if (label === undefined) return
+    const choice = matchSpecDriftChoice(label)
+    // An unmatched label records nothing, which is the safe outcome: the model
+    // rewrote a label we could not verify, and acting on a guess could rewrite a
+    // document the user asked to keep.
+    if (choice === undefined) return
+    void this.applyDriftChoice(pending.projectId, choice).catch((error: unknown) => {
+      this.ctx.logger.warn('project-groups: recording the spec-drift choice failed: %o', error)
+    })
+  }
+
+  /**
+   * Whether one `ask_user_question` argument JSON asks our drift question.
+   *
+   * The id is the selector; the prompt tells the model to reuse it verbatim, and
+   * a mismatch simply means this is somebody else's question.
+   * @param raw - the model's raw argument JSON.
+   * @returns true when one of the questions carries our id.
+   */
+  private askCarriesDriftQuestion(raw: string): boolean {
+    const parsed = parseJsonObject(raw)
+    const questions = parsed?.questions
+    if (!Array.isArray(questions)) return false
+    return questions.some(question => isRecord(question) && question.id === SPEC_DRIFT_QUESTION_ID)
+  }
+
+  /**
+   * Record the user's choice.
+   *
+   * The two durable choices both name the spec **content** they refer to, so a
+   * later spec change re-opens the question; the middle choice deliberately
+   * writes nothing, which is what makes it "this time" rather than "from now on".
+   * @param projectId - the project whose document is under discussion.
+   * @param choice - the matched choice.
+   */
+  private async applyDriftChoice(projectId: string, choice: SpecDriftChoice): Promise<void> {
+    const domain = await this.ready()
+    const record = domain.table('projects').get(projectId)
+    if (record === undefined) return
+    if (choice === 'skip') return
+    const spec = specIdentity(this.ctx, domain.global.get(), record)
+    if (spec.sha1 === undefined) return
+    const now = new Date().toISOString()
+    const { docSpecIgnored: _previous, ...rest } = record
+    const next: ProjectRecord = choice === 'rewrite'
+      // Aligned: the model was told, in the same snapshot that asked the
+      // question, to rewrite the document when this option was chosen.
+      ? { ...rest, docSpecUsed: spec.sha1, updatedAt: now }
+      // Dismissed until the spec changes, which a different hash expresses.
+      : { ...rest, docSpecIgnored: spec.sha1, updatedAt: now }
+    await domain.table('projects').put(projectId, next)
   }
 
   /**
@@ -232,21 +648,259 @@ export class ProjectController extends TypertRemoteService {
    * @param domain - the open domain.
    * @param patch - the fields to change.
    */
+  /**
+   * Merge a patch into the global record, serialized against every other global
+   * write.
+   *
+   * The read and the write are one critical section: `get()` runs only after the
+   * previous write in the chain has settled, so no two overlapping callers can
+   * read the same snapshot. The chain continues past a failure — a rejected write
+   * must not wedge every later one — and the failure still reaches its own caller.
+   *
+   * **Deliberately not merged into one verb per field pair.** A combined
+   * `setDocSpecModeAndFileName` would fix the reported symptom while leaving the
+   * hazard for the next pair of fields, which is why the queue is here instead.
+   * @param domain - the open domain.
+   * @param patch - the fields to merge into the stored global.
+   * @returns when this write has landed.
+   */
   private async setGlobal(
     domain: Domain<typeof projectDomainSpec>,
     patch: Partial<GlobalRecord>,
   ): Promise<void> {
-    await domain.global.set({ ...domain.global.get(), ...patch })
+    const write = this.globalWriteChain.then(() =>
+      domain.global.set({ ...domain.global.get(), ...patch }))
+    // Keep the chain alive after a rejection while letting this caller observe it.
+    this.globalWriteChain = write.then(() => undefined, () => undefined)
+    return write
   }
 
   private projectValue(projectId: string, record: ProjectRecord): ProjectValue {
     return {
       projectId,
       title: record.title,
+      // Copied, not aliased: the projection crosses the Remote boundary, and the
+      // record's own array must not become reachable to a client that could
+      // mutate it in place.
+      directories: [...record.directories],
       docPath: record.docPath,
+      // Spread rather than assigned as `undefined`: these are optional on the
+      // wire, and an explicit `undefined` key would survive JSON round-tripping
+      // as `null` — a value neither side treats as "inherits".
+      ...record.docSpec !== undefined ? { docSpec: record.docSpec } : {},
+      ...record.docSpecUsed !== undefined ? { docSpecUsed: record.docSpecUsed } : {},
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
     }
+  }
+
+  /**
+   * Register this plugin's runtime-context contribution for the lifetime of the
+   * injected scope.
+   *
+   * Scoped to the child fiber `ctx.inject` created, so it is disposed with the
+   * plugin and needs no separate effect: a disabled plugin contributes nothing,
+   * which is what "switching it off restores the official chain" means
+   * mechanically — there is nothing left to clean up.
+   * @param scope - the context whose scope owns the contribution.
+   */
+  private installInjection(scope: Context): void {
+    const prompt = scope.get('systemPrompt') as SystemPromptFace | undefined
+    // A composition without the prompt registry gets no contribution. Not an
+    // error: none of this plugin's own verbs depends on a prompt.
+    if (prompt === undefined) return
+    prompt.context({
+      name: INJECTION_CONTEXT_NAME,
+      order: INJECTION_CONTEXT_ORDER,
+      text: (context) => this.injectionText(context),
+    })
+  }
+
+  /**
+   * Render this plugin's contribution for one assembly.
+   *
+   * Synchronous because `PromptContext.text` is: the registry renders during
+   * request preparation and cannot await. Every read below is therefore an
+   * in-memory domain read, which is what `Domain` provides — tables and the
+   * global singleton are synchronous, only opening and writing are not.
+   *
+   * The provider is evaluated for every prepared request, but the registry
+   * commits a message only when the composed text differs from the one it
+   * retained (`agent-loop/src/runtime-context.ts`), so an unchanged project costs
+   * nothing in history. That is also why an edit becomes visible on the next
+   * request: the text is re-derived rather than cached here.
+   * @param context - the assembly's context; `agent` is absent on bare assemblies.
+   * @returns the contribution, or `''` to contribute nothing.
+   */
+  private injectionText(context: PromptAssemblyContext): string {
+    const sessionId = context.agent?.session?.id
+    // No agent means a diagnostic or bare assembly, with no Session to describe.
+    if (sessionId === undefined) return ''
+
+    const domain = this.domain
+    if (domain === undefined) {
+      // The domain opens lazily on first use, and this provider can run before any
+      // Remote call has. Start the open now — it is idempotent — and contribute
+      // nothing for this one request rather than rendering a half-known state.
+      void this.ready().catch((error: unknown) => {
+        this.ctx.logger.warn('project-groups: the project domain could not be opened for injection: %o', error)
+      })
+      return ''
+    }
+
+    // The base switch is the master: with it off this plugin contributes nothing
+    // at all, and the settings card disables the document switch to say so.
+    if (!domain.global.get().injectProjectInfo) return ''
+
+    const projectId = this.projectOfSession(domain, sessionId)
+    const project = projectId === undefined ? undefined : domain.table('projects').get(projectId)
+    // The document lines need a project to hang from: its record supplies the
+    // `docSpecUsed` the drift check compares, and an unfiled Session has none.
+    const document = projectId === undefined || project === undefined || !domain.global.get().injectProjectDoc
+      ? undefined
+      : this.documentInjection(domain, projectId, project)
+    return renderProjectInjection({ project, document })
+  }
+
+  /**
+   * Assemble the document half of the contribution for one filed project.
+   *
+   * ## Why the hashing happens here and not in the renderer
+   *
+   * `renderProjectInjection` is pure and covered by tests that pass plain
+   * objects. Reading the spec file is I/O, so it stays on this side and the
+   * renderer receives a finished value. This is also the only place that knows
+   * the configured locale, which the drift question needs.
+   *
+   * ## Why a missing `docSpecUsed` never reports drift
+   *
+   * That field is absent exactly when the document has never been written, and a
+   * document that does not exist has nothing to migrate. Asking about it would
+   * send the user a question whose first option ("rewrite the existing document")
+   * has nothing to act on.
+   * @param domain - the open domain.
+   * @param projectId - the owning project id.
+   * @param project - its record.
+   * @returns the document lines, including the drift prompt when it applies.
+   */
+  private documentInjection(
+    domain: Domain<typeof projectDomainSpec>,
+    projectId: string,
+    project: ProjectRecord,
+  ): DocumentInjection {
+    const global = domain.global.get()
+    const spec = specIdentity(this.ctx, global, project)
+    const docPath = documentPath(this.ctx, projectId)
+
+    // The drift decision lives in `shouldAskSpecDrift` (pure, and covered directly
+    // by `verify-project-injection.mjs`) because its effect is an ABSENCE — no
+    // drift text appears — which the rendered-text assertions cannot see. Its
+    // doc comment carries the reasoning, including why 无 never asks: migration
+    // needs a target spec, and 无 means "no format update".
+    //
+    // The stored `docSpecUsed` is deliberately left ALONE, which is what makes the
+    // round trip work: returning to the same spec later compares equal and stays
+    // silent, while switching to a genuinely different one still reports.
+    const drift = shouldAskSpecDrift({
+      usedSha1: project.docSpecUsed,
+      ignoredSha1: project.docSpecIgnored,
+      currentSha1: spec.sha1,
+    })
+      ? { locale: this.injectionLocale(), rewriteFlowPath: REWRITE_FLOW_PATH }
+      : undefined
+
+    return { docPath, specMode: spec.mode, specPath: spec.path, drift }
+  }
+
+  /**
+   * The locale for user-facing injection text.
+   *
+   * Read from the launcher's settings document, where the `locale` entry keeps
+   * its `preference`. The Host cannot see the operating-system language — the
+   * Desktop preload hands that straight to the browser — so an absent preference
+   * means "follow the system", and Chinese is the honest default for this
+   * deployment while an explicit choice is what makes the answer exact.
+   * @returns the locale to render the drift question in.
+   */
+  private injectionLocale(): InjectionLocale {
+    try {
+      const settings = this.ctx.get('settings') as { describe?: () => readonly SettingsDescriptorLike[] } | undefined
+      const locale = settings?.describe?.().find(entry => entry.ns === 'locale')
+      const value = locale?.value as { readonly preference?: unknown } | undefined
+      return value?.preference === 'en' ? 'en' : 'zh'
+    } catch {
+      // A diagnostic read must never break an assembly; falling back is correct.
+      return 'zh'
+    }
+  }
+
+  /**
+   * Resolve the project owning one Session, following subagent lineage.
+   *
+   * ## Why this walk exists
+   *
+   * A subagent's session never reaches `assignments`: only `session.create` with a
+   * `workspaceId` attaches anything, and a delegated child is created through the
+   * Agent registry instead. Without this, every delegated child would report itself
+   * ungrouped even though it is working inside its parent's project.
+   *
+   * ## Mirrored from the official walk
+   *
+   * The shape copies `underArchivedSession`
+   * (`packages/api/session-controller/src/archived-session-gate.ts`):
+   * the same synchronous store hop, the same `origin === 'subagent'` gate on the
+   * edge, and the same visited set against a corrupt lineage. That function is the
+   * one to copy rather than `forkWorkspace`, which answers the same question with
+   * an async `sessionQuery.traceSession()` and is therefore only usable from an
+   * occasional caller — this runs for every prepared request.
+   *
+   * ## A closed ancestor is still readable
+   *
+   * The parent's **project** is available even after that parent Session has
+   * closed: `assignments` is this plugin's own durable table keyed by session id,
+   * and the id survives in `header.parentSession`. Only climbing *past* the
+   * ancestor needs the live store. The official walk reads its set the same way —
+   * `archived.includes(parentId)` when the parent Session is absent.
+   * @param domain - the open domain.
+   * @param sessionId - the Session whose owning project is required.
+   * @returns the owning project id, or undefined when the Session is unfiled.
+   */
+  private projectOfSession(
+    domain: Domain<typeof projectDomainSpec>,
+    sessionId: SessionId,
+  ): string | undefined {
+    const assignments = domain.table('assignments')
+
+    // The Session itself: the common case, and the only case for an ordinary one.
+    const direct = assignments.get(String(sessionId))?.projectId
+    if (direct !== undefined) return direct
+
+    const sessions = this.ctx.get('sessions') as SessionsFace | undefined
+    if (sessions === undefined) return undefined
+
+    let header = sessions.get(sessionId)?.header
+    if (header === undefined) return undefined
+    // Only a subagent's parent is a candidate ancestor. A fork of a filed Session
+    // is an independent conversation — the judgement the official walk documents
+    // on its own `origin` check.
+    if (header.origin !== 'subagent') return undefined
+
+    const visited = new Set<SessionId>([sessionId])
+    while (header.parentSession !== undefined) {
+      const parentId = header.parentSession
+      if (visited.has(parentId)) return undefined // cycle in a corrupt lineage
+      visited.add(parentId)
+      const filed = assignments.get(String(parentId))?.projectId
+      if (filed !== undefined) return filed
+      const parent = sessions.get(parentId)
+      // A closed ancestor cannot be inspected further: the store holds live
+      // Sessions only, and the next parent id rides on a header we cannot read.
+      // Stopping is the honest answer; continuing would mean guessing.
+      if (parent === undefined) return undefined
+      header = parent.header
+      if (header.origin !== 'subagent') return undefined
+    }
+    return undefined
   }
 
   /**
@@ -294,6 +948,15 @@ export class ProjectController extends TypertRemoteService {
       newSessionTarget: domain.global.get().newSessionTarget,
       baseWorkspace: domain.global.get().baseWorkspace,
       createOpensSession: domain.global.get().createOpensSession,
+      injectProjectInfo: domain.global.get().injectProjectInfo,
+      injectProjectDoc: domain.global.get().injectProjectDoc,
+      docSpecMode: domain.global.get().docSpecMode,
+      docSpecFileName: domain.global.get().docSpecFileName,
+      perProjectDocSpec: domain.global.get().perProjectDocSpec,
+      // Read here rather than kept in memory: the directory is the source of
+      // truth for what has been uploaded, and a spec dropped in by hand should
+      // appear on the next reconnect without a restart.
+      specs: await listUploadedSpecs(this.ctx),
     }
   }
 
@@ -331,12 +994,29 @@ export class ProjectController extends TypertRemoteService {
   async create(request: ProjectCreateRequest): Promise<ProjectValueResult> {
     const title = request.title.trim()
     if (title === '') throw new Error('a project title is required')
+    // Copied out of the request before any write: a caller that reuses or mutates
+    // the array afterwards must not be able to reach stored state.
+    const directories = [...(request.directories ?? [])]
+    // Validated by the same guard `setProjectDocSpec` uses. Before this, `create`
+    // stored whatever arrived while the edit path refused values it did not know —
+    // so a value was storable or not depending on which dialog was open.
+    assertUsableDocSpec(request.docSpec)
     const domain = await this.ready()
     return await this.operate(domain, async () => {
       this.assertTitleFree(domain, title)
       const projectId = newProjectId()
       const now = new Date().toISOString()
-      const record: ProjectRecord = { title, docPath: '', createdAt: now, updatedAt: now }
+      const record: ProjectRecord = {
+        title,
+        directories,
+        docPath: '',
+        // Spread rather than assigned as `undefined`: the schema's `optional`
+        // means "inherit the global choice" must leave the key absent, and a
+        // present-but-undefined field would survive a JSON round trip as null.
+        ...request.docSpec !== undefined && request.docSpec !== null ? { docSpec: request.docSpec } : {},
+        createdAt: now,
+        updatedAt: now,
+      }
       await this.setGlobal(domain, { pendingMutation: { operation: 'create', projectId } })
       await domain.table('projects').put(projectId, record)
       await this.setGlobal(domain, {
@@ -348,21 +1028,49 @@ export class ProjectController extends TypertRemoteService {
   }
 
   /**
-   * Retitle one project.
-   * @param request - target project and its new title.
-   * @returns the updated project.
+   * Replace one project's title and directories in a single write.
+   *
+   * ## Why one verb and one write
+   *
+   * The edit dialog commits both fields with one button. A title write followed
+   * by a directory write would leave the row retitled while its directories were
+   * still the old ones — a state the user never asked for and can observe — and a
+   * failure between the two calls would leave exactly that state durably. A table
+   * `put` replaces the whole record, so doing both here costs nothing over one.
+   *
+   * These two fields are also the whole of what a project is to its owner: its
+   * name and where it lives. Separate verbs would make "edit a project" a
+   * caller-side protocol rather than a domain operation.
+   *
+   * ## What it preserves
+   *
+   * Every field it does not name, `docPath` included: the record is spread and
+   * re-put rather than rebuilt, so a field added later cannot be dropped here.
+   *
+   * ## Validation
+   *
+   * The title is trimmed, must be non-blank, and must be free — the same rule the
+   * former `rename` enforced and which `create` shares, excluded by id so
+   * re-submitting a project's own name is not a conflict with itself. Directories
+   * are **not** validated: they are user-declared associations, not proofs (see
+   * {@link setDirectories}).
+   * @param request - target project, its complete title and directory list.
+   * @returns the project as stored.
    */
-  @Remote('rename')
-  async rename(request: ProjectRenameRequest): Promise<ProjectRenameValue> {
+  @Remote('update')
+  async update(request: ProjectUpdateRequest): Promise<ProjectUpdateValue> {
     const title = request.title.trim()
     if (title === '') throw new Error('a project title is required')
     const domain = await this.ready()
     const record = domain.table('projects').get(request.projectId)
     if (record === undefined) throw new Error(`unknown project: ${request.projectId}`)
-    // Excluded by id, not title: renaming a project to the name it already holds is a no-op that
-    // the dialog disables on its own, and matching on the title would refuse it as a conflict.
     this.assertTitleFree(domain, title, request.projectId)
-    const next: ProjectRecord = { ...record, title, updatedAt: new Date().toISOString() }
+    const next: ProjectRecord = {
+      ...record,
+      title,
+      directories: [...request.directories],
+      updatedAt: new Date().toISOString(),
+    }
     await domain.table('projects').put(request.projectId, next)
     return { project: this.projectValue(request.projectId, next) }
   }
@@ -557,6 +1265,231 @@ export class ProjectController extends TypertRemoteService {
   }
 
   /**
+   * Replace one project's associated directories.
+   *
+   * **Whole-list**, matching {@link setOrders}: the caller is the edit dialog,
+   * which already holds the complete list it wants stored, so a partial add/remove
+   * protocol would only force the Host to reconstruct intent it was never given.
+   *
+   * The record is spread and re-put rather than field-updated, because a table
+   * `put` replaces the whole value — writing only `directories` would silently
+   * drop the title and the document binding.
+   *
+   * `updatedAt` is stamped, exactly as {@link rename} stamps it: the list is part
+   * of what a project *is*, so a change to it is a real mutation rather than a
+   * presentation-only write.
+   *
+   * Directories are **not** validated. They are user-declared associations, not
+   * filesystem proofs: a directory may be planned, temporarily offline, or on a
+   * drive that is not mounted right now, and refusing the write would make the
+   * setting unusable in precisely those cases. Nothing in this plugin resolves
+   * them, so an unresolvable entry costs nothing until something tries to read it.
+   * @param request - target project and its complete directory list.
+   * @returns the list as stored.
+   */
+  @Remote('setDirectories')
+  async setDirectories(request: ProjectSetDirectoriesRequest): Promise<ProjectDirectoriesValue> {
+    const domain = await this.ready()
+    const record = domain.table('projects').get(request.projectId)
+    if (record === undefined) throw new Error(`unknown project: ${request.projectId}`)
+    // Copied both ways: out of the request (the caller may reuse the array) and
+    // into the response, so the stored value is never aliased across the boundary.
+    const directories = [...request.directories]
+    await domain.table('projects').put(request.projectId, {
+      ...record,
+      directories,
+      updatedAt: new Date().toISOString(),
+    })
+    return { projectId: request.projectId, directories: [...directories] }
+  }
+
+  /**
+   * Choose whether a Session's project info is injected.
+   *
+   * Written through {@link setGlobal}, which spreads the stored singleton: a whole
+   * write would drop `projectIds` and empty the sidebar.
+   * @param request - the chosen behaviour.
+   * @returns the stored value.
+   */
+  @Remote('setInjectProjectInfo')
+  async setInjectProjectInfo(
+    request: ProjectSetInjectProjectInfoRequest,
+  ): Promise<ProjectInjectProjectInfoValue> {
+    const domain = await this.ready()
+    await this.setGlobal(domain, { injectProjectInfo: request.value })
+    return { value: request.value }
+  }
+
+  /**
+   * Choose whether the work-document line is injected alongside the base info.
+   *
+   * Independent of {@link setInjectProjectInfo} on purpose: the document is the
+   * extra feature, so its switch governs one line rather than riding the base
+   * switch. The injection itself reads both flags — the document line is emitted
+   * only when **this** is on, and the base block only when the other is.
+   * @param request - the chosen behaviour.
+   * @returns the stored value.
+   */
+  @Remote('setInjectProjectDoc')
+  async setInjectProjectDoc(
+    request: ProjectSetInjectProjectDocRequest,
+  ): Promise<ProjectInjectProjectDocValue> {
+    const domain = await this.ready()
+    await this.setGlobal(domain, { injectProjectDoc: request.value })
+    return { value: request.value }
+  }
+
+  /**
+   * Choose which spec source applies before any per-project override.
+   *
+   * Switching modes keeps `docSpecFileName`: it records which file the user last
+   * uploaded, so returning to `'custom'` restores that choice rather than
+   * forcing another upload. Readers branch on the mode, so a retained name
+   * cannot be mistaken for an active one.
+   * @param request - the chosen mode.
+   * @returns the stored mode.
+   */
+  @Remote('setDocSpecMode')
+  async setDocSpecMode(request: ProjectSetDocSpecModeRequest): Promise<ProjectDocSpecModeValue> {
+    const domain = await this.ready()
+    await this.setGlobal(domain, { docSpecMode: request.mode })
+    return { mode: request.mode }
+  }
+
+  /**
+   * Name the uploaded spec that `'custom'` mode refers to.
+   *
+   * An empty name is accepted and stored: it is the state the card renders as
+   * "selected but not chosen yet", and refusing it would make switching to
+   * `'custom'` before picking a file impossible.
+   * @param request - the bare `*.md` file name, or `''`.
+   * @returns the stored name.
+   */
+  @Remote('setDocSpecFileName')
+  async setDocSpecFileName(request: ProjectSetDocSpecFileNameRequest): Promise<ProjectDocSpecFileNameValue> {
+    const name = request.name.trim()
+    // A non-empty name must be one this plugin could actually resolve, or the
+    // setting would name a file that can never be read.
+    if (name !== '' && !isSafeSpecName(name)) {
+      throw new Error(`not a usable spec file name: ${JSON.stringify(request.name)}`)
+    }
+    const domain = await this.ready()
+    await this.setGlobal(domain, { docSpecFileName: name })
+    return { name }
+  }
+
+  /**
+   * Choose whether the project dialogs expose a per-project spec row.
+   * @param request - the chosen behaviour.
+   * @returns the stored value.
+   */
+  @Remote('setPerProjectDocSpec')
+  async setPerProjectDocSpec(
+    request: ProjectSetPerProjectDocSpecRequest,
+  ): Promise<ProjectPerProjectDocSpecValue> {
+    const domain = await this.ready()
+    await this.setGlobal(domain, { perProjectDocSpec: request.value })
+    return { value: request.value }
+  }
+
+  /**
+   * Set or clear one project's spec override.
+   *
+   * `null` clears the field rather than storing a sentinel, because absence is
+   * what "inherit the global choice" means; `'none'` is a deliberate "no spec"
+   * and must stay distinguishable from it.
+   * @param request - the project and its override, or `null` to inherit.
+   * @returns the override as stored.
+   */
+  @Remote('setProjectDocSpec')
+  async setProjectDocSpec(
+    request: ProjectSetProjectDocSpecRequest,
+  ): Promise<ProjectProjectDocSpecValue> {
+    const domain = await this.ready()
+    const record = domain.table('projects').get(request.projectId)
+    if (record === undefined) throw new Error(`no such project: ${request.projectId}`)
+    // The shared guard. It is what lets `'none'` and `'default'` through: they are
+    // semantic values, not file names, so `isSafeSpecName`'s `.md` requirement must
+    // not apply — and `'default'` being refused here meant the dropdown's 默认 row
+    // silently kept the previous value (measured: `not a usable spec file name`).
+    assertUsableDocSpec(request.spec)
+    const now = new Date().toISOString()
+    // Spread and drop: the schema's `optional` means the key must be absent, not
+    // present-and-undefined, for "inherit" to survive a JSON round trip.
+    const { docSpec: _cleared, ...rest } = record
+    const next: ProjectRecord = request.spec === null
+      ? { ...rest, updatedAt: now }
+      : { ...rest, docSpec: request.spec, updatedAt: now }
+    await domain.table('projects').put(request.projectId, next)
+    return { projectId: request.projectId, spec: request.spec }
+  }
+
+  /**
+   * Store one uploaded spec.
+   *
+   * Refusing a taken name rather than replacing it is the surface's rule: the
+   * file may have been hand-edited since it was uploaded, and destroying it
+   * silently is worse than making the user rename. The reply carries the current
+   * list so the caller refreshes in the same round trip.
+   * @param request - the file name and its text.
+   * @returns whether the write landed, plus the names now present.
+   */
+  @Remote('uploadSpec')
+  async uploadSpec(request: ProjectUploadSpecRequest): Promise<ProjectUploadSpecValue> {
+    const written = await writeUploadedSpec(this.ctx, request.name.trim(), request.content)
+    return { written, specs: await listUploadedSpecs(this.ctx) }
+  }
+
+  /**
+   * Delete one uploaded spec.
+   *
+   * The confirmation is the caller's: only the surface can tell the user which
+   * projects reference the file, and this method deliberately does not check —
+   * a project whose override points at a deleted file falls back to the global
+   * choice, which `resolveSpec` already handles.
+   * @param request - the file to remove.
+   * @returns whether a file was removed, plus the remaining names.
+   */
+  @Remote('deleteSpec')
+  async deleteSpec(request: ProjectDeleteSpecRequest): Promise<ProjectDeleteSpecValue> {
+    const removed = await deleteUploadedSpec(this.ctx, request.name.trim())
+    return { removed, specs: await listUploadedSpecs(this.ctx) }
+  }
+
+  /**
+   * List the projects that would stop using the named spec if it were deleted.
+   *
+   * Read before the confirmation, while the file still exists, so the dialog can
+   * say "N projects use this". A project counts when its **effective** spec is
+   * that file, which includes projects inheriting it from the global choice.
+   * @param request - the spec file name.
+   * @returns the titles of the affected projects, sorted.
+   */
+  @Remote('specsUsedBy')
+  async specsUsedBy(request: ProjectSpecsUsedByRequest): Promise<ProjectSpecsUsedByValue> {
+    const domain = await this.ready()
+    const global = domain.global.get()
+    const titles: string[] = []
+    for (const id of this.order()) {
+      const record = domain.table('projects').get(id)
+      if (record === undefined) continue
+      const spec = resolveSpec(this.ctx, global, record)
+      if (spec.mode === 'custom' && spec.fileName === request.name) titles.push(record.title)
+    }
+    return { titles: titles.sort((a, b) => a.localeCompare(b)) }
+  }
+
+  /**
+   * Read one uploaded spec's text, for the surface's preview.
+   * @param request - the spec file name.
+   * @returns the text, or `null` when the file is absent.
+   */
+  @Remote('readSpec')
+  async readSpec(request: ProjectReadSpecRequest): Promise<ProjectReadSpecValue> {
+    return { content: await readUploadedSpec(this.ctx, request.name.trim()) ?? null }
+  }
+
+  /**
    * Choose the Workspace every New Session this plugin opens lands in.
    *
    * ## `path`/`name` are a **memory**, not part of the mode
@@ -589,8 +1522,13 @@ export class ProjectController extends TypertRemoteService {
     // the Client's optimistic write, which applies the same rule before the round trip.
     // The `'specified'` arm stays inline: it is genuinely asymmetric (an absent `name` is
     // cleared here, where `'default'` retains one).
+    //
+    // `request` is passed as the requested memory: the 更换… chooser replaces the
+    // remembered Workspace WITHOUT switching the mode, so it sends the current mode plus
+    // the newly picked path. Without this the helper would keep the OLD path and the
+    // replacement would be silently discarded.
     const next: BaseWorkspaceSetting = request.mode === 'default'
-      ? withDefaultMode(domain.global.get().baseWorkspace)
+      ? withDefaultMode(domain.global.get().baseWorkspace, request)
       : { mode: 'specified', path: request.path, name: request.name ?? '' }
     await this.setGlobal(domain, { baseWorkspace: next })
     return next

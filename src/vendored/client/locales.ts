@@ -44,6 +44,29 @@ export const zh = {
   'field.projectName': '项目名称',
   'create': '创建',
   'rename.project.title': '重命名项目',
+  // Project edit copy. The menu entry and the dialog title read 编辑项目 rather
+  // than 重命名 because the dialog now commits a title *and* a directory list;
+  // `save` labels its button for the same reason. `rename.project.title` stays
+  // for the Workspace-side dictionary symmetry.
+  'edit.project': '编辑项目',
+  'edit.project.title': '编辑项目',
+  'save': '保存',
+  // Associated folders: the directories a project is linked to. Kept in the
+  // project block because nothing else in this dictionary has the concept.
+  // 「关联」rather than 「源」: the field records what a project is tied to, not
+  // where anything is read from.
+  'field.directories': '关联文件夹',
+  'field.docSpec': '文档规范',
+  // The spec dropdown. 跟随全局 is its own first row rather than a marker spread
+  // across the other entries: with a global choice of 自定义-but-empty there is no
+  // single entry that could carry "this is the global one" without either lying
+  // about the choice or merging 自定义 into the 无 row.
+  'docSpec.followGlobal': '跟随全局',
+  'docSpec.none': '无',
+  'docSpec.default': '默认',
+  'directory.add': '添加文件夹',
+  'directory.none': '未添加关联文件夹',
+  'directory.remove': '移除 {path}',
   'delete.project': '删除项目',
   'delete.project.desc': '将删除项目“{name}”。其中的会话不会被删除，会回到“未分组”。',
   'delete.project.pending': '正在删除项目…',
@@ -193,6 +216,17 @@ export const en = {
   'field.projectName': 'Project name',
   'create': 'Create',
   'rename.project.title': 'Rename project',
+  'edit.project': 'Edit project',
+  'edit.project.title': 'Edit project',
+  'save': 'Save',
+  'field.directories': 'Associated folders',
+  'field.docSpec': 'Document spec',
+  'docSpec.followGlobal': 'Follow global',
+  'docSpec.none': 'None',
+  'docSpec.default': 'Default',
+  'directory.add': 'Add folder',
+  'directory.none': 'No associated folders',
+  'directory.remove': 'Remove {path}',
   'delete.project': 'Delete project',
   'delete.project.desc': 'This deletes the project “{name}”. Its sessions are not deleted; they return to Ungrouped.',
   'delete.project.pending': 'Deleting project…',

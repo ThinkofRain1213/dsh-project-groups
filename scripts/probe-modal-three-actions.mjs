@@ -84,7 +84,7 @@ try {
   const menuTrigger = row.locator('button[aria-haspopup="menu"], button[aria-label*="项目"]').first()
   await menuTrigger.click({ force: true }).catch(() => {})
   await page.waitForTimeout(600)
-  const renameEntry = page.getByRole('menuitem', { name: /重命名/ }).first()
+  const renameEntry = page.getByRole('menuitem', { name: /编辑项目/ }).first()
   if (await renameEntry.count() > 0) await renameEntry.click({ force: true })
   await page.waitForTimeout(1200)
 

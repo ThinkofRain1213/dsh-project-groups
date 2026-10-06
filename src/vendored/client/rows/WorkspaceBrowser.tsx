@@ -18,10 +18,12 @@ import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, us
 import clsx from 'clsx'
 import {
   Button, IconArchiveCheckOutlineRegular, IconArchiveOffOutlineRegular, IconArchiveOutlineRegular,
-  IconChevronsUpDownOutlineRegular, IconClockOutlineRegular, IconCloseFillRegular,
-  IconFlatListOutlineRegular, IconFolderCloseRegular, IconProjectAddOutlineRegular,
+  IconChevronDownOutlineRegular, IconChevronsUpDownOutlineRegular, IconClockOutlineRegular, IconCloseFillRegular,
+  IconCloseOutlineRegular, IconFlatListOutlineRegular, IconFolderCloseRegular,
+  IconPlusOutlineRegular,
+  IconProjectAddOutlineRegular,
   IconQueueOutlineRegular, IconSearchOutlineRegular, IconSlidersTwoOutlineRegular,
-  IconWorkspaceTreeOutlineRegular, Menu, Modal, Toast, Tooltip,
+  IconWorkspaceTreeOutlineRegular, Menu, type MenuEntry, Modal, Toast, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   SessionListState, SessionSearchResultItem,
@@ -37,7 +39,7 @@ import type {
 import {
   deriveFlat, deriveGroups, deriveSearchResults, orderByRecency, owningGroupKey, owningParentFolder,
   owningSourceKey,
-  pinCurrentBlank, reconcileManualOrder, sessionMemberIds, UNGROUPED_KEY,
+  pinCurrentBlank, reconcileManualOrder, sameStringList, sessionMemberIds, UNGROUPED_KEY,
 } from '../tree.ts'
 import { ProjectRowItem, SearchResultItem, SessionNodeItem, sessionRowKey } from './Rows.tsx'
 import { AnimatedRows } from './AnimatedRows.tsx'
@@ -259,12 +261,259 @@ interface WorkspaceDragState {
  */
 export type RowRequest =
   | { readonly kind: 'workspace'; readonly id: WorkspaceId; readonly title: string }
-  | { readonly kind: 'project'; readonly id: string; readonly title: string }
+  | {
+    readonly kind: 'project'
+    readonly id: string
+    readonly title: string
+    /**
+     * Current directories, so the edit dialog starts from what is stored.
+     *
+     * Optional because the delete dialog shares this type and has no use for it:
+     * a required field would force that caller to fabricate an empty list, which
+     * is a value it holds no opinion about.
+     */
+    readonly directories?: readonly string[] | undefined
+    /**
+     * The stored spec override: `'none'`, an uploaded file name, or absent to
+     * inherit the global choice.
+     *
+     * Optional for the same reason as `directories`: the delete dialog shares
+     * this type and has no use for it.
+     */
+    readonly docSpec?: string | undefined
+  }
 
 /** Resolve an insertion side across the Workspace header, descendants, and Sessions. */
 function workspaceGroupHalf(e: { clientY: number; currentTarget: HTMLElement }): 'before' | 'after' {
   const rect = e.currentTarget.getBoundingClientRect()
   return e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+}
+
+/**
+ * The source-folder rows shared by the create and edit dialogs.
+ *
+ * One component rather than two copies: the rows, their order and their remove
+ * affordance are identical, and a second copy is where a styling or behaviour
+ * difference would appear without anyone deciding it should.
+ *
+ * The remove control reuses {@link css.iconButton}, this file's own
+ * icon-button rule — the same 28×28 transparent control the section header's
+ * actions use. A bare `<button>` with only a colour set keeps the browser's
+ * native chrome (grey fill, inset border), which is what made the first version
+ * read as a foreign element inside an official-styled dialog.
+ * @param props - the current list, whether the dialog is busy, and the remove sink.
+ * @returns the empty placeholder, or the list.
+ */
+function DirectoryRows({
+  paths, disabled, onRemove, t,
+}: {
+  paths: readonly string[]
+  disabled: boolean
+  onRemove: (path: string) => void
+  t: WorkspaceBrowserProps['t']
+}) {
+  if (paths.length === 0) return <div className={css.directoryEmpty}>{t('directory.none')}</div>
+  return (
+    <ul className={css.directoryList}>
+      {paths.map(path => (
+        // Keyed by path, not index: removing a middle row would otherwise make
+        // React reuse the wrong identity for every row after it.
+        <li key={path} className={css.directoryRow}>
+          <span className={css.directoryPath} title={path}>{path}</span>
+          <button
+            type="button"
+            className={css.iconButton}
+            disabled={disabled}
+            aria-label={t('directory.remove', { path })}
+            onClick={() => { onRemove(path) }}
+          >
+            <IconCloseOutlineRegular size={14} />
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/**
+ * The add-folder header above {@link DirectoryRows}, shared by both dialogs.
+ *
+ * The control is the shell's own `Button` (`size="sm"`, `ghost`) with the add
+ * glyph the official "new …" actions use — `ui-plugin-manager` and `ui-schedule`
+ * both build theirs as `Button variant="primary" size="sm" icon={<IconPlusOutlineRegular/>}`.
+ * `ghost` rather than `primary` because this is a repeatable, in-dialog action
+ * beside a field, not the dialog's own commit; the primary weight belongs to
+ * 创建 / 保存 in the footer.
+ *
+ * The first version was a bare `<button>` with only a colour set, which keeps the
+ * browser's native chrome — grey fill, inset border — and inside an
+ * official-styled dialog that reads as a foreign element.
+ * @param props - the label, the add control's state, and its sink.
+ * @returns the header row.
+ */
+function DirectoryHeader({
+  label, onAdd, disabled, t,
+}: {
+  label: string
+  onAdd: () => void
+  disabled: boolean
+  t: WorkspaceBrowserProps['t']
+}) {
+  return (
+    <div className={css.directoryHeader}>
+      <span className={css.directoryLabel}>{label}</span>
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={<IconPlusOutlineRegular size={13} />}
+        disabled={disabled}
+        onClick={onAdd}
+      >
+        {t('directory.add')}
+      </Button>
+    </div>
+  )
+}
+
+/**
+ * The per-project document-spec dropdown, shared by both project dialogs.
+ *
+ * ## 跟随全局 is a ROW, not a marker
+ *
+ * The list is fixed as `跟随全局 / 无 / 默认 / uploaded files…`, and inheritance is
+ * the first row rather than a suffix spread across the others.
+ *
+ * The marker version needed a way to decide WHICH row was "the global one", and
+ * with a global choice of 自定义-but-empty that question had no good answer: the
+ * effective value is 无, but the choice is 自定义, so the marker either lied about
+ * the choice or merged 自定义 into the 无 row. An explicit row removes the
+ * question — the drop-down no longer needs to know what the global choice is at
+ * all, which is why this component no longer takes it.
+ *
+ * | stored   | selected row                                |
+ * |----------|---------------------------------------------|
+ * | `null`   | 跟随全局                                    |
+ * | `'none'` | 无                                          |
+ * | name     | that uploaded file                          |
+ *
+ * A stored name whose file has been deleted resolves to the global choice, so it
+ * selects 跟随全局: the row states what is IN EFFECT, the same rule the settings
+ * card follows when it declines to display a spec that is not applied.
+ *
+ * ## Why no divider
+ *
+ * The two semantic choices and the uploaded files are the same kind of thing —
+ * each is one value the project can hold, and selecting any of them is the same
+ * act. A rule between them only implied a hierarchy that does not exist.
+ * @param props - the draft, the uploaded names, and the change sink.
+ * @returns the row.
+ */
+function DocSpecRow({
+  value, specs, disabled, onChange, t,
+}: {
+  value: string | null
+  specs: readonly string[]
+  disabled: boolean
+  onChange: (next: string | null) => void
+  t: WorkspaceBrowserProps['t']
+}) {
+  const [open, setOpen] = useState(false)
+
+  /**
+   * Id of the row that means "inherit the global choice".
+   *
+   * A sentinel rather than `null`: a menu item needs a string id, and `null` is
+   * already the stored value this row WRITES, so reusing it as the row id would
+   * blur "the row" with "the setting".
+   *
+   * It cannot collide with a real entry: uploaded specs must end in `.md`
+   * (`isSafeSpecName`), and the other two ids are `none` / `default`.
+   */
+  const FOLLOW_GLOBAL = 'follow-global'
+
+  /**
+   * The selectable rows, kept in their own array so the selected label can be read
+   * off it: `MenuEntry` is a union that includes separators and headings, which
+   * have no `label`, so searching the `items` array directly would not type-check.
+   */
+  const choices: readonly { readonly id: string; readonly label: string }[] = [
+    { id: FOLLOW_GLOBAL, label: t('docSpec.followGlobal') },
+    { id: 'none', label: t('docSpec.none') },
+    { id: 'default', label: t('docSpec.default') },
+    ...specs.map(name => ({ id: name, label: name })),
+  ]
+
+  const items: readonly MenuEntry[] = choices
+
+  /**
+   * Whether the stored override names a file that no longer exists.
+   *
+   * The Host's resolver treats a missing file as a stale override and falls back
+   * to the global choice. Showing the stored name anyway would label the row with
+   * a spec that is NOT in effect, so the failure shows up as a project quietly
+   * following a different spec than its dialog claims.
+   */
+  const stale = value !== null && value !== 'none' && value !== 'default'
+    && !specs.includes(value)
+
+  /**
+   * The row the current draft selects.
+   *
+   * `null` means "whatever the global choice is", and so does a stale override —
+   * both are in effect "the global choice", so both select the 跟随全局 row.
+   */
+  const selectedId = value === null || stale ? FOLLOW_GLOBAL : value
+  const selectedLabel = choices.find(entry => entry.id === selectedId)?.label
+    ?? t('docSpec.followGlobal')
+
+  return (
+    /*
+     * ONE row: label on the left, the selector pill on the right — the same
+     * shape the directory block's header uses for its add action. The first
+     * version stacked a label above a full-width button, which read as two
+     * unrelated rows rather than one setting.
+     */
+    <div className={css.docSpecRow}>
+      <span className={css.directoryLabel}>{t('field.docSpec')}</span>
+      <Menu
+        open={open}
+        onClose={() => { setOpen(false) }}
+        items={items}
+        selectedId={selectedId}
+        onSelect={(id) => {
+          setOpen(false)
+          // Picking 跟随全局 clears the override. It is the only row that writes
+          // `null`, so no other selection can be confused with it.
+          onChange(id === FOLLOW_GLOBAL ? null : id)
+        }}
+        align="end"
+        // The project dialog clips its own overflow, so an in-place list is cut
+        // off at the dialog's edge (measured: the list ran 7px past it and the
+        // last row was sliced). The same reason the view-options menu above
+        // portals.
+        portal
+        // The wrapper span is content-sized, so a percentage max-width would be
+        // measured against the pill rather than the row. The class carries a
+        // value relative to the row instead.
+        className={css.docSpecMenu}
+        anchor={(
+          <button
+            type="button"
+            className={css.docSpecSelector}
+            aria-haspopup="menu"
+            aria-expanded={open}
+            aria-label={t('field.docSpec')}
+            title={selectedLabel}
+            disabled={disabled}
+            onClick={() => { setOpen(open => !open) }}
+          >
+            <span className={css.docSpecValue}>{selectedLabel}</span>
+            <IconChevronDownOutlineRegular size={14} className={css.chevron} />
+          </button>
+        )}
+      />
+    </div>
+  )
 }
 
 type SessionTreeProps = Pick<
@@ -899,7 +1148,24 @@ function SessionTree({
           groupDrop={groupDrop}
           actions={group.kind === 'project'
             ? {
-              rename: () => { onRenameRequest({ kind: 'project', id: group.key, title: group.label }) },
+              rename: () => {
+                onRenameRequest({
+                  kind: 'project',
+                  id: group.key,
+                  title: group.label,
+                  // Resolved from the override by key rather than carried on the
+                  // node: the derived tree is presentation, and a directory list
+                  // is not something it renders. `?? []` because a consumer
+                  // grouping by something else supplies none.
+                  directories: groupingOverride?.find(source => source.key === group.key)?.directories ?? [],
+                  // Same lookup, same reason: the spec override is data, not
+                  // presentation, so it stays on the source rather than the node.
+                  ...(() => {
+                    const stored = groupingOverride?.find(source => source.key === group.key)?.docSpec
+                    return stored === undefined ? {} : { docSpec: stored }
+                  })(),
+                })
+              },
               delete: () => { onDeleteRequest({ kind: 'project', id: group.key, title: group.label }) },
             }
             : group.workspaceId === undefined
@@ -1280,7 +1546,8 @@ export function WorkspaceBrowser({
   setDirectoryBusy,
   dismissForkError,
   createProject,
-  renameProject,
+  updateProject,
+  pickDirectory,
   deleteProject,
   reorderProject,
   assignSession,
@@ -1290,6 +1557,10 @@ export function WorkspaceBrowser({
   useExpansions,
   useOrders,
   useCreateOpensSession,
+  usePerProjectDocSpec,
+  useInjectProjectInfo,
+  useInjectProjectDoc,
+  useSpecs,
   renderSlot,
   t,
 }: WorkspaceBrowserProps) {
@@ -1322,6 +1593,23 @@ export function WorkspaceBrowser({
   // official add-workspace flow does. A composition without the state supplies an
   // observable answering `true`, which is that official behaviour.
   const openSessionOnCreate = useCreateOpensSession(value => value)
+  // The document-spec facts, read only by the project dialogs' spec row. A
+  // composition without a document model supplies observables answering the
+  // schema defaults, and the row is hidden by the switch below.
+  const perProjectDocSpec = usePerProjectDocSpec(value => value)
+  const injectProjectInfo = useInjectProjectInfo(value => value)
+  const injectProjectDoc = useInjectProjectDoc(value => value)
+  /**
+   * Whether the project dialogs may show the per-project spec row.
+   *
+   * The SAME three-way chain the settings card uses: the row is meaningless
+   * unless a document line is injected, and the document line is itself gated on
+   * the master project-info line. Gating on the switch alone offered a spec
+   * setting while the settings page showed the whole group as unavailable — the
+   * user could set a spec for a project whose document is never described.
+   */
+  const showDocSpecRow = perProjectDocSpec && injectProjectDoc && injectProjectInfo
+  const specs = useSpecs(value => value)
   // The resolved name, not `t`, is the memo dependency: the bound seat keeps
   // its identity across a language switch.
   const defaultWorkspaceName = t('workspace.defaultName')
@@ -1648,14 +1936,35 @@ export function WorkspaceBrowser({
   // seeded with the label on screen. They differ for a Workspace still
   // carrying its automatic title, so confirming the prefill pins that name.
   //
-  // One dialog serves both row kinds: a project row renames a caller-supplied
-  // record through `renameProject`, a Workspace row renames a registry entry.
+  // One dialog serves both row kinds: a project row edits its caller-supplied
+  // record through `updateProject`, a Workspace row renames a registry entry.
   // Only the commit differs, so the target carries which one it is.
   type RenameTarget =
     | { readonly kind: 'workspace'; readonly id: WorkspaceId; readonly storedTitle: string }
-    | { readonly kind: 'project'; readonly id: string; readonly storedTitle: string }
+    | {
+      readonly kind: 'project'
+      readonly id: string
+      readonly storedTitle: string
+      /** Directories as stored, so the dirty check compares against the truth. */
+      readonly storedDirectories: readonly string[]
+      /**
+       * The spec override as stored: `'none'`, a file name, or `null` for
+       * "inherit the global choice". Seeded on open so the dropdown's dirty
+       * check compares against the truth rather than against a leftover draft.
+       */
+      readonly storedDocSpec: string | null
+    }
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  // The project's directory draft. Seeded on every open, exactly like `renameDraft`:
+  // a list left from the previous edit would otherwise leak into this one, which is
+  // the same trap `openCreate` resets its draft for.
+  const [renameDirectories, setRenameDirectories] = useState<readonly string[]>([])
+  /** The project's spec draft; `null` means "inherit the global choice". */
+  const [renameDocSpec, setRenameDocSpec] = useState<string | null>(null)
+  /** The create dialog's spec draft, reset per open like its directory list. */
+  const [createDocSpec, setCreateDocSpec] = useState<string | null>(null)
+  const [pickingRenameDirectory, setPickingRenameDirectory] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [renameError, setRenameError] = useState<string | null>(null)
   const renameTrimmed = renameDraft.trim()
@@ -1674,8 +1983,25 @@ export function WorkspaceBrowser({
           source.key !== renameTarget.id && source.label === renameTrimmed) ?? false)
         : false
   )
+  // A project is edited by title AND directories, so "nothing changed" is both
+  // being unchanged. Without the list comparison, changing only the directories
+  // would leave the confirm button disabled — which reads as a bug, because the
+  // dialog is showing the change the user just made.
+  const renameDirectoriesChanged = renameTarget?.kind === 'project'
+    && !sameStringList(renameDirectories, renameTarget.storedDirectories)
+  /**
+   * The spec dropdown counts as dirty only when the feature is on.
+   *
+   * With the per-project row hidden the draft is never seeded from the record,
+   * so comparing it would report every edit as a spec change and write an
+   * override the user never saw.
+   */
+  const renameDocSpecChanged = showDocSpecRow
+    && renameTarget?.kind === 'project'
+    && renameDocSpec !== renameTarget.storedDocSpec
   const renameBlocked = renaming || renameTrimmed === ''
-    || renameTarget === null || renameTrimmed === renameTarget.storedTitle || renameDuplicate
+    || renameTarget === null || renameDuplicate
+    || (renameTrimmed === renameTarget.storedTitle && !renameDirectoriesChanged && !renameDocSpecChanged)
   const closeRename = () => {
     if (renaming) return
     setRenameTarget(null)
@@ -1687,9 +2013,9 @@ export function WorkspaceBrowser({
     setRenameError(null)
     const commit = renameTarget.kind === 'workspace'
       ? renameWorkspace(renameTarget.id, renameTrimmed)
-      : renameProject === undefined
+      : updateProject === undefined
         ? Promise.reject(new Error('no project model'))
-        : renameProject(renameTarget.id, renameTrimmed)
+        : updateProject(renameTarget.id, renameTrimmed, renameDirectories, renameDocSpec)
     commit.then(() => {
       setRenaming(false)
       setRenameTarget(null)
@@ -1698,12 +2024,27 @@ export function WorkspaceBrowser({
       setRenameError(reason instanceof Error ? reason.message : String(reason))
     })
   }
+  /**
+   * Add one directory from the Host picker to the edit dialog's list.
+   *
+   * Mirrors the create dialog's helper, including the cancel and dedupe rules;
+   * the two differ only in which list they write and which error slot they fill.
+   */
+  const addRenameDirectory = (): void => {
+    if (pickDirectory === undefined) return
+    setPickingRenameDirectory(true)
+    pickDirectory().then((path) => {
+      if (path !== null) setRenameDirectories(list => list.includes(path) ? list : [...list, path])
+    }).catch((reason: unknown) => {
+      setRenameError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => { setPickingRenameDirectory(false) })
+  }
 
   // The search results' restore button; the row actions own the rest of the
   // Session verbs as slot entries.
   // New-project dialog. Structurally the rename dialog with an empty seed: a
-  // project is a title in the caller's own model, so there is no directory to
-  // pick and nothing to rename. Browser-owned for the same reason the others
+  // project is a title plus the directories it associates, and neither exists
+  // until the dialog is confirmed. Browser-owned for the same reason the others
   // are (it must outlive any row).
   //
   // It exists only when the composition supplies a project model. Without one
@@ -1711,6 +2052,8 @@ export function WorkspaceBrowser({
   // composition without projects can perform.
   const [creating, setCreating] = useState(false)
   const [createDraft, setCreateDraft] = useState('')
+  const [createDirectories, setCreateDirectories] = useState<readonly string[]>([])
+  const [pickingCreateDirectory, setPickingCreateDirectory] = useState(false)
   const [createBusy, setCreateBusy] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const createTrimmed = createDraft.trim()
@@ -1720,8 +2063,29 @@ export function WorkspaceBrowser({
   const createDuplicate = createTrimmed !== ''
     && (groupingOverride?.some(source => source.label === createTrimmed) ?? false)
   const createBlocked = createBusy || createTrimmed === '' || createDuplicate
+  /**
+   * Add one directory from the Host picker to the create dialog's list.
+   *
+   * Cancelling is a decision, not a failure: a null answer adds nothing and
+   * reports nothing. A chosen path already on the list is ignored, because two
+   * identical rows are indistinguishable and the remove button filters by path —
+   * so one click would delete both.
+   */
+  const addCreateDirectory = (): void => {
+    if (pickDirectory === undefined) return
+    setPickingCreateDirectory(true)
+    pickDirectory().then((path) => {
+      if (path !== null) setCreateDirectories(list => list.includes(path) ? list : [...list, path])
+    }).catch((reason: unknown) => {
+      setCreateError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => { setPickingCreateDirectory(false) })
+  }
   const openCreate = () => {
     setCreateDraft('')
+    // Reset per open, like the draft above: a list left from the previous create
+    // would otherwise leak into this one.
+    setCreateDirectories([])
+    setCreateDocSpec(null)
     setCreateError(null)
     setCreating(true)
   }
@@ -1734,7 +2098,7 @@ export function WorkspaceBrowser({
     if (createBlocked || createProject === undefined) return
     setCreateBusy(true)
     setCreateError(null)
-    createProject({ title: createTrimmed }).then(({ projectId }) => {
+    createProject({ title: createTrimmed, directories: createDirectories, docSpec: createDocSpec }).then(({ projectId }) => {
       setCreateBusy(false)
       setCreating(false)
       // The official add-workspace flow opens a Session as part of creating the row
@@ -2062,13 +2426,30 @@ export function WorkspaceBrowser({
                 t={t}
                 onRenameRequest={(row) => {
                   setRenameTarget(row.kind === 'project'
-                    ? { kind: 'project', id: row.id, storedTitle: row.title }
+                    ? {
+                      kind: 'project',
+                      id: row.id,
+                      storedTitle: row.title,
+                      // `?? []` because the field is optional on the shared request
+                      // type — the delete dialog has no directories to carry.
+                      storedDirectories: row.directories ?? [],
+                      // `undefined` on the wire means "inherit", which the
+                      // dropdown can only express as its own `null` — an absent
+                      // key and "no override" are the same state, but the draft
+                      // needs a value to compare.
+                      storedDocSpec: row.docSpec ?? null,
+                    }
                     : {
                       kind: 'workspace',
                       id: row.id,
                       storedTitle: storedWorkspaces.find(w => w.workspaceId === row.id)?.title ?? row.title,
                     })
                   setRenameDraft(row.title)
+                  // Reset per open, exactly like `openCreate` resets its list: a
+                  // directory set left from the previous edit would otherwise leak
+                  // into this one.
+                  setRenameDirectories(row.kind === 'project' ? [...(row.directories ?? [])] : [])
+                  setRenameDocSpec(row.kind === 'project' ? row.docSpec ?? null : null)
                   setRenameError(null)
                 }}
                 onDeleteRequest={(row) => {
@@ -2083,11 +2464,19 @@ export function WorkspaceBrowser({
         open={renameTarget !== null}
         onClose={closeRename}
         closeLabel={t('close')}
-        title={t(renameTarget?.kind === 'project' ? 'rename.project.title' : 'rename.workspace.title')}
+        title={t(renameTarget?.kind === 'project' ? 'edit.project.title' : 'rename.workspace.title')}
+        // Wider only for a project: that dialog carries a directory list, and the
+        // shipped 380px card clips even a middling path. The Workspace arm keeps
+        // the standard width, so the two rows do not drift.
+        {...renameTarget?.kind === 'project' ? { className: css.directoryDialog } : {}}
         footer={(
           <>
             <Button variant="outline" disabled={renaming} onClick={closeRename}>{t('cancel')}</Button>
-            <Button variant="primary" disabled={renameBlocked} onClick={confirmRename}>{t('rename')}</Button>
+            {/* A project row commits a title *and* a directory list, so its button
+              * says 保存; a Workspace row only renames. */}
+            <Button variant="primary" disabled={renameBlocked} onClick={confirmRename}>
+              {t(renameTarget?.kind === 'project' ? 'save' : 'rename')}
+            </Button>
           </>
         )}
       >
@@ -2116,6 +2505,44 @@ export function WorkspaceBrowser({
             {t(renameTarget?.kind === 'project' ? 'conflict.projectNamed' : 'conflict.named',
               { name: renameTrimmed })}
           </div>
+        )}
+        {/*
+          The directory block exists only for a project row: a Workspace has no
+          associated directories, and its own `cwd` lives in the registry.
+        */}
+        {renameTarget?.kind === 'project' && (
+          <div className={css.directoryBlock}>
+            <DirectoryHeader
+              label={t('field.directories')}
+              disabled={renaming || pickingRenameDirectory || pickDirectory === undefined}
+              onAdd={addRenameDirectory}
+              t={t}
+            />
+            <DirectoryRows
+              paths={renameDirectories}
+              disabled={renaming}
+              onRemove={(path) => {
+                setRenameDirectories(list => list.filter(item => item !== path))
+              }}
+              t={t}
+            />
+          </div>
+        )}
+        {/*
+          The spec dropdown, present only for a project **and** only while the
+          per-project switch is on: with the switch off there is one spec for
+          every project, and a fourth row would offer a choice the user turned
+          off. 跟随全局 is its own first row, so the list needs no knowledge of
+          what the global choice currently is.
+        */}
+        {renameTarget?.kind === 'project' && showDocSpecRow && (
+          <DocSpecRow
+            value={renameDocSpec}
+            specs={specs}
+            disabled={renaming}
+            onChange={setRenameDocSpec}
+            t={t}
+          />
         )}
         {renameError !== null && <div className={css.renameError} role="alert">{renameError}</div>}
       </Modal>
@@ -2148,14 +2575,19 @@ export function WorkspaceBrowser({
         {deleteError !== null && <div className={css.renameError} role="alert">{deleteError}</div>}
       </Modal>
 
-      {/* New project: one title, no directory. Present only under a project
-          model, so an upstream composition renders no dialog it could reach. */}
+      {/* New project: a title plus the directories it associates. Present only
+          under a project model, so an upstream composition renders no dialog it
+          could reach. */}
       {projectModelAvailable && (
         <Modal
           open={creating}
           onClose={closeCreate}
           closeLabel={t('close')}
           title={t('project.create.title')}
+          // The same widened card the project edit dialog uses: both show a
+          // directory list, so a long path must not be clipped in one and fit in
+          // the other.
+          className={css.directoryDialog}
           footer={(
             <>
               <Button variant="outline" disabled={createBusy} onClick={closeCreate}>{t('cancel')}</Button>
@@ -2173,6 +2605,32 @@ export function WorkspaceBrowser({
             onChange={(e) => { setCreateDraft(e.target.value) }}
             onKeyDown={(e) => { if (e.key === 'Enter') confirmCreate() }}
           />
+          <div className={css.directoryBlock}>
+            <DirectoryHeader
+              label={t('field.directories')}
+              disabled={createBusy || pickingCreateDirectory || pickDirectory === undefined}
+              onAdd={addCreateDirectory}
+              t={t}
+            />
+            <DirectoryRows
+              paths={createDirectories}
+              disabled={createBusy}
+              onRemove={(path) => {
+                setCreateDirectories(list => list.filter(item => item !== path))
+              }}
+              t={t}
+            />
+          </div>
+          {/* The per-project spec row, gated exactly as the edit dialog's is. */}
+          {showDocSpecRow && (
+            <DocSpecRow
+              value={createDocSpec}
+              specs={specs}
+              disabled={createBusy}
+              onChange={setCreateDocSpec}
+              t={t}
+            />
+          )}
           {createDuplicate && (
             <div className={css.renameError} role="alert">
               {t('conflict.projectNamed', { name: createTrimmed })}

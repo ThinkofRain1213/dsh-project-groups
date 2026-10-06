@@ -69,7 +69,7 @@ try {
   await page.waitForTimeout(8000)
   await dismiss()
 
-  // Create a project so its row menu exists to open the rename dialog from.
+  // Create a project so its row menu exists to open the edit dialog from.
   await page.locator('button[aria-label="新建项目"]').first().click()
   await page.waitForTimeout(800)
   await page.locator('input[aria-label="项目名称"]').first().fill('布局探针')
@@ -79,15 +79,15 @@ try {
   const row = page.locator('[data-row-key^="workspace:"]', { hasText: '布局探针' }).first()
   await row.hover({ timeout: 5000 }).catch(() => {})
   await page.waitForTimeout(400)
-  // The row's "..." menu, then its rename entry.
+  // The row's "..." menu, then its edit entry. A project row's entry reads 编辑项目.
   await row.locator('button[aria-label*="项目"][aria-label*="操作"], button[aria-label*="更多"], button[aria-label*="菜单"]')
     .first().click({ force: true }).catch(async () => {
       await row.locator('button[aria-haspopup="menu"]').first().click({ force: true })
     })
   await page.waitForTimeout(700)
-  const renameEntry = page.getByRole('menuitem', { name: /重命名/ }).first()
+  const renameEntry = page.getByRole('menuitem', { name: /编辑项目/ }).first()
   if (await renameEntry.count() === 0) {
-    console.log('打不开重命名菜单，改用官方对话框测量')
+    console.log('打不开编辑项目菜单，改用官方对话框测量')
   } else {
     await renameEntry.click({ force: true })
   }
@@ -102,7 +102,7 @@ try {
    */
   const layout = await page.evaluate(() => {
     const dialogs = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"]')]
-    const dialog = dialogs.find(node => (node.textContent ?? '').includes('重命名'))
+    const dialog = dialogs.find(node => (node.textContent ?? '').includes('编辑项目'))
       ?? dialogs[dialogs.length - 1]
     if (dialog === undefined) return { found: false }
 

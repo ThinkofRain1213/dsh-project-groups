@@ -109,6 +109,36 @@ const EMPTY_EXPANSIONS: Readonly<Record<string, boolean>> = Object.freeze({})
 /** No caller-owned group has a recorded order: the default `orders` snapshot. */
 const EMPTY_ORDERS: Readonly<Record<string, readonly string[]>> = Object.freeze({})
 
+/** No document spec has been uploaded: the default `specs` snapshot. */
+const EMPTY_SPECS: readonly string[] = Object.freeze([])
+
+/**
+ * The document-spec facts the project dialogs read.
+ *
+ * Grouped into one argument rather than five positional parameters: they are
+ * always supplied together (a caller either has a document model or does not),
+ * and five trailing optionals would make each call site unreadable.
+ */
+export interface DocSpecHooks {
+  /**
+   * Whether the project dialogs expose a per-project spec row.
+   *
+   * This is the innermost of three gates. The settings card disables the whole
+   * spec group unless the document line is injected AND the master project-info
+   * line is injected, so a per-project row while either is off would offer a
+   * setting the settings page itself shows as unavailable — and whose value the
+   * Host would never use. The two flags are carried here for exactly that
+   * reason.
+   */
+  readonly perProjectDocSpec: HostObservable<boolean>
+  /** Whether the project-info line is injected at all (the master switch). */
+  readonly injectProjectInfo: HostObservable<boolean>
+  /** Whether the project document line is injected. */
+  readonly injectProjectDoc: HostObservable<boolean>
+  /** Every uploaded spec's file name, sorted. */
+  readonly specs: HostObservable<readonly string[]>
+}
+
 /**
  * The caller's project verbs, threaded into the browsing region's inject face.
  * Absent, the region keeps the shipped directory flow and a caller-supplied
@@ -122,8 +152,42 @@ export interface ProjectActions {
    * the official add-workspace flow creates the row and then opens a Session in it,
    * and filing that Session under the new project needs the id.
    */
-  createProject: (input: { title: string }) => Promise<{ projectId: string }>
-  renameProject: (id: string, title: string) => Promise<void>
+  createProject: (input: { title: string; directories: readonly string[]; docSpec: string | null }) => Promise<{ projectId: string }>
+  /**
+   * Replace one project's title and directories in one commit.
+   *
+   * One verb rather than a retitle plus a directory write: the edit dialog
+   * commits both fields with one button, and splitting them would expose a
+   * retitled-but-stale state the user never asked for.
+   */
+  updateProject: (id: string, title: string, directories: readonly string[], docSpec: string | null) => Promise<void>
+  /**
+   * Store one uploaded document spec.
+   *
+   * Resolves false when the name is taken: the region refuses to overwrite a
+   * file the user may have edited, and reports it beside the picker instead of
+   * throwing, so a refusal reaches the user as an answer rather than as an error.
+   */
+  uploadSpec?: ((name: string, content: string) => Promise<boolean>) | undefined
+  /** Delete one uploaded document spec. */
+  deleteSpec?: ((name: string) => Promise<boolean>) | undefined
+  /** Titles of projects that would fall back if the named spec were deleted. */
+  specsUsedBy?: ((name: string) => Promise<readonly string[]>) | undefined
+  /**
+   * Open the Host's directory picker and return the chosen path.
+   *
+   * The region cannot reach the picker itself — it is a Remote namespace, and an
+   * injected face carries verbs, not services. Absent (a composition without a
+   * picking backend), the create dialog renders its add-folder control disabled
+   * rather than failing on click.
+   *
+   * Implemented over the OS-native chooser, which is a plain read: choosing a
+   * directory adopts nothing, so cancelling the dialog leaves no trace.
+   * `DESIGN.md` §25.5.1 records the alternative (the official in-app browser
+   * panel) and why this is not it.
+   * @returns the chosen absolute path, or null when cancelled or unavailable.
+   */
+  pickDirectory?: (() => Promise<string | null>) | undefined
   deleteProject: (id: string) => Promise<void>
   reorderProject: (id: string, beforeId?: string) => Promise<void>
   /** File one Session under one project; a project row's ＋ uses this. */
@@ -232,6 +296,9 @@ export interface UnscopedPlacement {
  * add-workspace flow does. Omitted, the flag answers `false` so adding a project
  * stays the row-only action this region performs on its own; a composition with a
  * project model supplies the user's own choice.
+ * @param docSpecHooks - optional document-spec facts for the project dialogs'
+ * spec row. A composition without a document model omits this, and the row then
+ * renders disabled — there is nothing to configure.
  */
 export function apply(
   ctx: Context,
@@ -240,6 +307,7 @@ export function apply(
   expansionsOverride?: HostObservable<Readonly<Record<string, boolean>>>,
   ordersOverride?: HostObservable<Readonly<Record<string, readonly string[]>>>,
   createOpensSessionOverride?: HostObservable<boolean>,
+  docSpecHooks?: DocSpecHooks,
 ): void {
   const sessions = ctx.get('sessions') as ISessions
   const workspaces = ctx.get('workspaces') as IWorkspaces
@@ -345,6 +413,28 @@ export function apply(
   // without a project model at all.
   const createOpensSession: HostObservable<boolean> = createOpensSessionOverride ?? {
     getSnapshot: () => false,
+    subscribe: () => () => {},
+  }
+  // The document-spec facts, each defaulting to the schema's own answer so a
+  // composition without a document model still renders the row consistently:
+  // the built-in spec applies, no per-project row, and no uploaded files.
+  const perProjectDocSpec: HostObservable<boolean> = docSpecHooks?.perProjectDocSpec ?? {
+    getSnapshot: () => false,
+    subscribe: () => () => {},
+  }
+  // The two outer gates, answering `false` in a composition without a document
+  // model: that is the honest answer for "is a spec being injected", and it keeps
+  // the row hidden rather than offering a setting nothing implements.
+  const injectProjectInfo: HostObservable<boolean> = docSpecHooks?.injectProjectInfo ?? {
+    getSnapshot: () => false,
+    subscribe: () => () => {},
+  }
+  const injectProjectDoc: HostObservable<boolean> = docSpecHooks?.injectProjectDoc ?? {
+    getSnapshot: () => false,
+    subscribe: () => () => {},
+  }
+  const specs: HostObservable<readonly string[]> = docSpecHooks?.specs ?? {
+    getSnapshot: () => EMPTY_SPECS,
     subscribe: () => () => {},
   }
   const hostInfo: HostObservable<RemoteHostFacts> = {
@@ -480,7 +570,11 @@ export function apply(
     // shipped directory flow.
     ...(projectActions === undefined ? {} : {
       createProject: projectActions.createProject,
-      renameProject: projectActions.renameProject,
+      updateProject: projectActions.updateProject,
+      pickDirectory: projectActions.pickDirectory,
+      uploadSpec: projectActions.uploadSpec,
+      deleteSpec: projectActions.deleteSpec,
+      specsUsedBy: projectActions.specsUsedBy,
       deleteProject: projectActions.deleteProject,
       reorderProject: projectActions.reorderProject,
       assignSession: projectActions.assignSession,
@@ -497,6 +591,10 @@ export function apply(
       expansions,
       orders,
       createOpensSession,
+      perProjectDocSpec,
+      injectProjectInfo,
+      injectProjectDoc,
+      specs,
     },
   })
   const pickerInjected = (): WorkspacePickerInjected => ({

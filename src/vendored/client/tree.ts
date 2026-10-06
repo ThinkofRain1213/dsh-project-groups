@@ -45,6 +45,24 @@ export function owningSourceKey(
   return sources.find(source => source.sessionIds.includes(sessionId))?.key ?? UNGROUPED_KEY
 }
 
+/**
+ * Positional equality over two string lists.
+ *
+ * Lives here rather than beside either caller: the browser's edit dialog needs it
+ * for its dirty check, and any later comparison of directory or order lists wants
+ * the same rule. A `client/` module cannot be reached from this tree — the
+ * dependency runs one way — so this side needs its own implementation regardless,
+ * and a second private copy inside `rows/` would be the point where the two
+ * drift.
+ * @param left - one list.
+ * @param right - the other.
+ * @returns whether the lists are the same length and equal element-wise.
+ */
+export function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false
+  return left.every((value, index) => value === right[index])
+}
+
 /** Pending interaction kinds with dedicated Workspace-row presentation. */
 export type SessionPendingInteractionStatus = 'approval' | 'plan-review' | 'question'
 type SessionStatuses = SessionStatusSnapshot
@@ -97,6 +115,27 @@ export interface GroupSource {
   path?: string | undefined
   /** Sort time in epoch ms; absent sorts after dated groups. */
   createdAt?: number | undefined
+  /**
+   * Directories associated with this caller-supplied group, in display order.
+   *
+   * Optional like `path` and `createdAt`: a consumer that groups by something
+   * other than a project supplies none, and the edit dialog then starts from an
+   * empty list rather than failing.
+   *
+   * Distinct from {@link path}, which is the hover card's single path. Folding
+   * the two would make a multi-directory project show only its first, and would
+   * put a display concern onto the editing surface.
+   */
+  directories?: readonly string[] | undefined
+  /**
+   * This group's document-spec override: `'none'`, an uploaded file name, or
+   * absent to inherit the global choice.
+   *
+   * Read only by the project dialogs' spec row, and only while that feature's
+   * per-project switch is on. Absence is the inheritance signal, which is why
+   * this is not defaulted to `'none'` — the two mean different things.
+   */
+  docSpec?: string | undefined
   /**
    * The row is a caller-managed entity rather than a Host Workspace.
    *

@@ -51,6 +51,7 @@
   "files": [
     "lib",
     "src",
+    "spec",
     "locale/*.json",
     "cordis.patch.yml",
     "README.md",
@@ -69,11 +70,19 @@
     "verify:new-session": "node scripts/verify-new-session.mjs",
     "verify:projects": "node scripts/verify-projects.mjs",
     "verify:project-host": "node scripts/verify-project-host.mjs",
+    "verify:project-directories": "node scripts/verify-project-directories.mjs",
+    "verify:project-injection": "node scripts/verify-project-injection.mjs",
+    "verify:doc-spec": "node scripts/verify-doc-spec.mjs",
+    "verify:locales": "node scripts/verify-locales.mjs",
     "verify:host-import": "node scripts/probe-host-import.mjs lib/index.js",
     "probe:plugin-toggle": "node scripts/probe-plugin-toggle.mjs",
     "probe:project-reorder": "node scripts/probe-project-reorder.mjs",
     "probe:project-drop-marker": "node scripts/probe-project-drop-marker.mjs",
     "probe:project-duplicate-name": "node scripts/probe-project-duplicate-name.mjs",
+    "probe:project-directories-dialog": "node scripts/probe-project-directories-dialog.mjs",
+    "probe:settings-injection-switches": "node scripts/probe-settings-injection-switches.mjs",
+    "probe:dialog-width": "node scripts/probe-dialog-width.mjs",
+    "probe:doc-spec": "node scripts/probe-doc-spec.mjs",
     "probe:order-mode": "node scripts/probe-order-mode.mjs",
     "probe:cross-group": "node scripts/probe-cross-group.mjs",
     "probe:drop-highlight": "node scripts/probe-drop-highlight.mjs",
@@ -96,7 +105,7 @@
     "probe:base-workspace-rebuild": "node scripts/probe-base-workspace-rebuild.mjs",
     "probe:base-workspace-confirm": "node scripts/probe-base-workspace-confirm.mjs",
     "probe:rebuild-default-mode": "node scripts/probe-rebuild-default-mode.mjs",
-    "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:host-import && pnpm probe"
+    "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:project-directories && pnpm verify:project-injection && pnpm verify:doc-spec && pnpm verify:locales && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
