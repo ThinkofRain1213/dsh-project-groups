@@ -42,7 +42,7 @@ const {
 } = await import('../src/spec-store.ts')
 const {
   matchSpecDriftChoice, specDriftQuestion, renderProjectInjection,
-  SPEC_DRIFT_LABELS, SPEC_DRIFT_QUESTION_ID, UNFILED_PROJECT,
+  SPEC_DRIFT_LABELS, SPEC_DRIFT_QUESTION_ID,
 } = await import('../src/injection.ts')
 const { projectRecord, globalRecord, initialGlobal } = await import('../src/spec.ts')
 
@@ -277,8 +277,16 @@ console.log('\n=== schema compatibility (the live unit must keep opening) ===')
 console.log('\n=== unfiled sessions carry no document lines ===')
 {
   const text = renderProjectInjection({ project: undefined })
-  check('one line only', text === `Current project: ${UNFILED_PROJECT}`, JSON.stringify(text))
+  check('the unfiled sentence, and nothing else about a project',
+    text.includes('This conversation does not belong to any project'), JSON.stringify(text))
   check('no document line', !text.includes('Project document'))
+  // A document hangs off the project record, so this is a structural
+  // impossibility rather than a switch: passed one anyway, the renderer drops it.
+  check('and none even when a document input reaches the renderer',
+    !renderProjectInjection({
+      project: undefined,
+      document: { docPath: 'C:\\home\\p.md', specMode: 'default', specPath: 'C:\\s.md' },
+    }).includes('Project document'))
 }
 
 console.log('')

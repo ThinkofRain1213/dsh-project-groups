@@ -3644,12 +3644,14 @@ src/injection.ts:235  未分组在【第一行就 return】，文档段代码不
 XML 不改变这一点；但声明段会随**段清单**变化（开关文档时），
 ⇒ 那一次会重新注入一条上下文消息。
 
-**⇒ 待同步改动的测试**（`scripts/verify-project-injection.mjs`）：
-`no XML frame wraps the block` 这条断言**必须反向**为"断言 XML 框存在"，
-理由改写为"界定含用户数据的半可信块"。
+**测试已同步（2026-10-07）**：`no XML frame wraps the block` 已**反向**为
+断言"框在首尾各出现一次"，并新增四条断言：声明段的段清单随门控变化、
+保留段（`related links`）永不被声明、**未分组即便传入 document 也不渲染文档段**
+（把"结构上不可能"钉成可执行的断言），以及单目录用单数标签。
 
-**当前实现态（2026-10-06）**：本节为**已定案、待实施**。
-`src/injection.ts` 仍是旧形态（`Current project:` / `Related folders` / 无 XML）。
+**实现态（2026-10-07）：已实施。** `src/injection.ts` 渲染本节所述形态；
+`src/index.ts` **未改动**（`injectionText` 的取值与门控原本就符合）。
+`verify-project-injection.mjs` 61 条、`verify-doc-spec.mjs` 80 条，全量门禁通过。
 
 ---
 

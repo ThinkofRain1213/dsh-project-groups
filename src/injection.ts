@@ -6,19 +6,34 @@
  * the wording be tested without a composition, and what keeps the one question
  * that matters — what does the model actually read — in a single readable place.
  *
- * ## Why the wording is English and unwrapped
+ * ## Why the block is framed
  *
- * This text is contributed through `systemPrompt.context()`, so it is joined
- * into the single official runtime-context message rather than sent as a message
- * of its own. Everything else in that message is an English declarative sentence
- * — `Current DSH file policy: …`, `Approval prompts are disabled …` — and every
- * one of the official `context()` contributions reads the same way
- * (`sandbox-policy`, `user-approval`, `subagent`): a `Label: value` sentence,
- * with no XML frame. The two official paths that *do* wrap their text in
- * `<system-reminder>` (`agent-instructions`, `skill-catalog`) build their own
- * user message instead, because a frame exists to bound untrusted or unbounded
- * content. What is rendered here is a title, our own directory list, and two
- * paths, so it takes the plain form and stays legible as one more state line.
+ * The text is contributed through `systemPrompt.context()`, so it is joined into
+ * the single official runtime-context message. The surrounding lines there are
+ * English declarative sentences with no frame — `Current DSH file policy: …`,
+ * `Approval prompts are disabled …` — and this block's fields keep that form.
+ *
+ * The `<project-context>` frame is still used, on purpose. The block is no longer
+ * one status line: it carries several segments, including a project title and
+ * directory paths the user supplied. A frame is what upstream uses for exactly
+ * that situation — `agent-instructions` wraps a user's `AGENTS.md` and escapes its
+ * closing tag — and it gives the block a boundary that later segments (related
+ * links, the work document) can join without another shape change.
+ *
+ * A frame is not free: the registry only re-commits this context when the composed
+ * text changes, so anything that alters the declaration re-injects once. The
+ * declaration therefore names each segment only while that segment is renderable,
+ * which is why switching the document feature on changes it exactly once.
+ *
+ * ## Why the declaration ends by ruling out a reading
+ *
+ * Two unqualified statements reach the model: the official persona suffix names a
+ * working directory, and this block names a project. Nothing used to relate them,
+ * and sessions were measured paying for that — one spent 27 steps doubting which
+ * project was meant and ran six reconnaissance commands to locate its own project,
+ * because the working directory and the project directory are different trees.
+ * The closing sentence states the relation the architecture already has: every
+ * project shares one base workspace, so the directory does not indicate a project.
  *
  * ## Why only the question is localized
  *
@@ -32,11 +47,19 @@
  */
 import type { ProjectRecord } from './spec.ts'
 
-/** The project value when the Session belongs to no project. */
-export const UNFILED_PROJECT = 'none (ungrouped)'
+/** The frame this plugin's block is wrapped in. */
+export const PROJECT_CONTEXT_OPEN = '<project-context>'
+/** @see PROJECT_CONTEXT_OPEN */
+export const PROJECT_CONTEXT_CLOSE = '</project-context>'
 
-/** The directories value when the project defines none. */
-export const ABSENT = 'none'
+/**
+ * Shown when a filed project has no directory yet.
+ *
+ * A sentence rather than a bare `none`: it says the user has not set one, which is
+ * actionable, and `yet` is accurate — a directory can be added at any time, and a
+ * session that began without one has been given one mid-conversation.
+ */
+export const DIRECTORY_UNSET = 'The user has not yet set up the relevant directory.'
 
 /** Locales this plugin renders user-facing text for. */
 export type InjectionLocale = 'zh' | 'en'
@@ -201,25 +224,34 @@ export interface ProjectInjectionInput {
 /**
  * Render the injection for one Session.
  *
- * ## Why the unfiled case is one line and a filed case is two
+ * ## Shape
+ *
+ * A framed block: a constant declaration paragraph, an `Owning project` line, then
+ * the directory lines and — when that feature is on and the session is filed — the
+ * document lines.
+ *
+ * ## Why unfiled and filed state different things, not empty ones
  *
  * `directories` is a field of the **project record**. An unfiled Session has no
  * record, so there is nowhere a directory could be associated with it — the
- * Ungrouped row offers no editing surface because there is nothing to edit.
- * Emitting a `Related folders:` line there would name a setting that does not
- * exist and cannot be changed, which is worse than saying nothing: it invites
- * the model to report a fixable absence.
+ * Ungrouped row offers no editing surface because there is nothing to edit. Naming
+ * a directory there would point at a setting that does not exist and cannot be
+ * changed, inviting the model to report a fixable absence. The same absence rules
+ * out the document lines: a document hangs off the record, so an unfiled Session
+ * cannot have one. This is a structural impossibility, not a policy choice, and it
+ * is why the unfiled branch returns before any document code runs — a caller that
+ * passes one anyway still gets no document.
  *
  * A **filed** project with no directories keeps its line, and that asymmetry is
- * the point: that project *does* have an edit surface («编辑项目»), so `none` is
- * a real, actionable state rather than a missing one.
+ * the point: that project *does* have an edit surface («编辑项目»), so the
+ * unset-directory sentence is a real, actionable state rather than a missing one.
  *
- * ## Shape rules
+ * ## Why the declaration is a separate paragraph
  *
- * A **single** associated directory uses the same list form as two or more. A
- * one-line special case would make the block's shape depend on how many
- * directories happen to be associated, which is the kind of rule that drifts
- * once a second writer touches it.
+ * The model reads two unqualified statements — the official working directory and
+ * this project — and nothing used to relate them. The declaration states the
+ * relation once, so the rest of the block can be read as data. It also names the
+ * segments it is about to carry, each only while that segment is renderable.
  *
  * ## Why the drift block drops the document's trailing sentence
  *
@@ -232,26 +264,87 @@ export interface ProjectInjectionInput {
  */
 export function renderProjectInjection(input: ProjectInjectionInput): string {
   const { project, document } = input
-  if (project === undefined) return `Current project: ${UNFILED_PROJECT}`
 
-  const lines = [`Current project: ${project.title}`]
-
-  const directories = project.directories
-  if (directories.length === 0) {
-    lines.push(`Related folders: ${ABSENT}`)
+  const body: string[] = []
+  if (project === undefined) {
+    // A sentence, not a template slot: `project name "none (ungrouped)"` would
+    // assert a project that does not exist.
+    body.push('Owning project: This conversation does not belong to any project. '
+      + 'It is under the "Ungrouped" category.')
   } else {
-    lines.push('Related folders:')
-    for (const directory of directories) lines.push(`- ${directory}`)
+    body.push('Owning project: You are currently working on this project, '
+      + `project name "${project.title}"`)
+    body.push(...renderDirectoryLines(project.directories))
+
+    if (document !== undefined) {
+      // A blank line, not a contiguous run: the document half answers a different
+      // question from the project half, and the gap keeps the two readable as
+      // separate groups once the reserved link segment joins them.
+      body.push('')
+      body.push(renderDocumentLine(document))
+      body.push(renderSpecLine(document))
+      if (document.drift !== undefined) body.push(renderDriftBlock(document.drift))
+    }
   }
 
-  if (document !== undefined) {
-    lines.push(renderDocumentLine(document))
-    lines.push(renderSpecLine(document))
-    if (document.drift !== undefined) lines.push(renderDriftBlock(document.drift))
-  }
-
-  return lines.join('\n')
+  return [PROJECT_CONTEXT_OPEN, renderDeclaration(input), '', ...body, PROJECT_CONTEXT_CLOSE]
+    .join('\n')
 }
+
+/**
+ * The segments the declaration announces, in presentation order.
+ *
+ * Dynamic by design: a segment is named only while it can actually be rendered, so
+ * the declaration never promises a field the block does not carry. `related links`
+ * is reserved for the project-link feature, which does not exist yet — naming it
+ * here would send the model looking for a value that is always absent.
+ * @param input - the same input the block is rendered from.
+ * @returns the segment names, space-separated.
+ */
+function declaredSegments(input: ProjectInjectionInput): string {
+  const segments = ['`owning project`']
+  if (input.project !== undefined) segments.push('`relevant directories`')
+  // `related links` belongs here once the project record carries it.
+  if (input.document !== undefined) segments.push('`work document`')
+  return segments.join(' ')
+}
+
+/**
+ * The constant opening paragraph.
+ *
+ * The closing sentence rules out the one reading that was measured to cost turns:
+ * that the working directory indicates which project is being worked on. It does
+ * not — every project shares a single base workspace by construction — and saying
+ * so is what lets the model skip reconciling two unqualified statements.
+ * @param input - the same input the block is rendered from.
+ * @returns the paragraph as one line, matching the node's other state lines.
+ */
+function renderDeclaration(input: ProjectInjectionInput): string {
+  return 'This section is injected by the `project-groups` plugin. It provides context '
+    + `information about the session's ${declaredSegments(input)}. `
+    + 'Project membership is classified by the plugin layer; the plugin does not modify '
+    + "the official workspace system, so all projects' workspace directories fall into "
+    + 'a single base workspace. The "working directory" injected in the earlier system '
+    + 'prompt is the official base workspace directory, and has no substantive relation '
+    + 'to the project this session belongs to under this plugin.'
+}
+
+/**
+ * The directory lines, whose label follows the count.
+ *
+ * Three shapes rather than one: a single path under a plural heading reads as a
+ * truncated list, and the design settled on matching the label to the count. The
+ * multi-directory form still uses plain dashes; it is not an XML list, so the only
+ * markup in the block stays the frame itself.
+ * @param directories - the project's associated directories, in display order.
+ * @returns one or more lines.
+ */
+function renderDirectoryLines(directories: readonly string[]): string[] {
+  if (directories.length === 0) return [`Relevant directory: ${DIRECTORY_UNSET}`]
+  if (directories.length === 1) return [`Relevant directory: ${directories[0]}`]
+  return ['Relevant directories:', ...directories.map(directory => `- ${directory}`)]
+}
+
 
 /**
  * The `Project document:` line.

@@ -20,7 +20,7 @@ import { register } from 'node:module'
 
 register('./lib/ts-loader.mjs', import.meta.url)
 
-const { renderProjectInjection, shouldAskSpecDrift, UNFILED_PROJECT, ABSENT, matchSpecDriftChoice, SPEC_DRIFT_LABELS, specDriftQuestion, SPEC_DRIFT_QUESTION_ID } = await import('../src/injection.ts')
+const { renderProjectInjection, shouldAskSpecDrift, PROJECT_CONTEXT_OPEN, PROJECT_CONTEXT_CLOSE, DIRECTORY_UNSET, matchSpecDriftChoice, SPEC_DRIFT_LABELS, specDriftQuestion, SPEC_DRIFT_QUESTION_ID } = await import('../src/injection.ts')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -49,39 +49,58 @@ const render = (value) => renderProjectInjection({ project: value })
 
 console.log('=== renderer: the block the model reads ===')
 
-// The unfiled case is ONE line: `directories` is a field of the project record,
-// and an unfiled Session has no record — so a `Related folders` line would name a
-// setting that does not exist and has no editing surface.
+// The declaration paragraph, written out here as the expected text rather than
+// derived from the renderer: this is the spec for the wording, so copying it from
+// the implementation would make the assertion vacuous.
+const DECLARATION_TAIL = 'Project membership is classified by the plugin layer; the plugin does not modify '
+  + "the official workspace system, so all projects' workspace directories fall into a single base "
+  + 'workspace. The "working directory" injected in the earlier system prompt is the official base '
+  + 'workspace directory, and has no substantive relation to the project this session belongs to '
+  + 'under this plugin.'
+const decl = (segments) => 'This section is injected by the `project-groups` plugin. It provides '
+  + `context information about the session's ${segments}. ${DECLARATION_TAIL}`
+
+// The unfiled case states that there is no project. It is a sentence, not the
+// filed template with an empty slot: `project name "none (ungrouped)"` would
+// assert a project that does not exist.
 {
   const text = render(undefined)
-  check('an unfiled Session names only its status',
-    text === `Current project: ${UNFILED_PROJECT}`, JSON.stringify(text))
+  check('an unfiled Session says it belongs to no project',
+    text.includes('Owning project: This conversation does not belong to any project. '
+      + 'It is under the "Ungrouped" category.'), JSON.stringify(text))
+  // `directories` is a field of the project record and an unfiled Session has no
+  // record, so the line would name a setting with no editing surface.
   check('an unfiled Session carries no directory line',
-    !text.includes('Related folders'), JSON.stringify(text))
+    !text.includes('Relevant directory'), JSON.stringify(text))
+  check('an unfiled block is framed',
+    text.startsWith(`${PROJECT_CONTEXT_OPEN}\n`) && text.endsWith(`\n${PROJECT_CONTEXT_CLOSE}`),
+    JSON.stringify(text))
 }
 
 // A filed project WITH no directories keeps its line: that project does have an
-// edit surface, so `none` is actionable rather than absent.
+// edit surface, so the unset sentence is actionable rather than absent.
 {
   const text = render(project('项目一', []))
-  check('a filed project with no directories keeps the line and says none',
-    text === `Current project: 项目一\nRelated folders: ${ABSENT}`, JSON.stringify(text))
+  check('a filed project with no directories points at the unset state',
+    text.includes(`Relevant directory: ${DIRECTORY_UNSET}`), JSON.stringify(text))
 }
 
-// A SINGLE directory uses the list form, not a one-line special case. This is the
-// rule the design settled on, and it is the one most likely to be "simplified"
-// back into a special case later.
+// ONE directory takes the SINGULAR label and no list. The design settled on the
+// label following the count; a plural heading above a single path reads as a
+// truncated list.
 {
   const text = render(project('项目一', ['C:\\work']))
-  check('a single directory uses the list form, not a special case',
-    text === 'Current project: 项目一\nRelated folders:\n- C:\\work', JSON.stringify(text))
+  check('a single directory uses the singular label and no list',
+    text.includes('Relevant directory: C:\\work')
+    && !text.includes('Relevant directories:'), JSON.stringify(text))
 }
 
-// Several directories, order preserved.
+// Several directories take the plural label, keep their order, and still use plain
+// dashes — the block's only markup stays the frame.
 {
   const text = render(project('项目一', ['C:\\a', 'D:\\b', 'E:\\c']))
-  check('several directories are listed in order',
-    text === 'Current project: 项目一\nRelated folders:\n- C:\\a\n- D:\\b\n- E:\\c', JSON.stringify(text))
+  check('several directories use the plural label, in order',
+    text.includes('Relevant directories:\n- C:\\a\n- D:\\b\n- E:\\c'), JSON.stringify(text))
 }
 
 // A project record carrying a `docPath` does NOT make the renderer emit a
@@ -94,14 +113,67 @@ console.log('=== renderer: the block the model reads ===')
     !text.includes('Project document'), JSON.stringify(text))
 }
 
-console.log('\n=== renderer: the document lines ===')
+console.log('\n=== renderer: the declaration and its segment list ===')
 
+// Declared here because the segment list depends on them: a document input is what
+// adds the `work document` segment, so the sample must exist before it is asserted.
 const DOC = 'C:\\Users\\Someone\\.dsh\\project-groups\\p1.md'
 const SPEC = 'C:\\Users\\Someone\\.dsh\\project-groups\\specs\\team-spec.md'
 const BUILT_IN = 'C:\\pkg\\spec\\PROJECT-SPEC.md'
 
 /** Render with the document feature on. */
 const withDoc = (document) => renderProjectInjection({ project: project('项目一', ['C:\\a']), document })
+
+// The declaration names each segment only while it can be rendered, so it never
+// promises a field the block does not carry. `related links` is reserved for a
+// feature that does not exist yet, so announcing it would send the model looking
+// for a value that is always absent.
+{
+  const unfiled = render(undefined)
+  check('unfiled announces only the owning project',
+    unfiled.includes(decl('`owning project`')), JSON.stringify(unfiled))
+
+  const filed = render(project('项目一', []))
+  check('a filed project announces its directories too',
+    filed.includes(decl('`owning project` `relevant directories`')), JSON.stringify(filed))
+
+  const documented = withDoc({ docPath: DOC, specMode: 'none' })
+  check('the document feature adds its segment to the declaration',
+    documented.includes(decl('`owning project` `relevant directories` `work document`')),
+    JSON.stringify(documented))
+
+  check('a reserved segment is never announced',
+    !filed.includes('related links') && !documented.includes('related links'),
+    JSON.stringify(filed))
+}
+
+// The frame is what bounds a block that now carries user-supplied names and paths.
+// Asserted as the boundary itself: counting `<` would pass on any markup at all.
+{
+  const text = render(project('p', ['C:\\a']))
+  check('the block opens with the frame and closes with it',
+    text.startsWith(`${PROJECT_CONTEXT_OPEN}\n`) && text.endsWith(`\n${PROJECT_CONTEXT_CLOSE}`),
+    JSON.stringify(text))
+  check('the frame appears exactly once at each end',
+    text.split(PROJECT_CONTEXT_OPEN).length === 2
+    && text.split(PROJECT_CONTEXT_CLOSE).length === 2, JSON.stringify(text))
+  check('the declaration is the first content inside the frame',
+    text.split('\n')[1] === decl('`owning project` `relevant directories`'), JSON.stringify(text))
+}
+
+// The unreachable combination, pinned so a refactor cannot quietly allow it: a
+// document hangs off a project record, so an unfiled Session has none. This was
+// asserted wrongly once, which is why it is a test rather than a comment.
+{
+  const text = renderProjectInjection({
+    project: undefined,
+    document: { docPath: DOC, specMode: 'default', specPath: BUILT_IN },
+  })
+  check('an unfiled Session renders no document even when one is passed',
+    !text.includes('Project document'), JSON.stringify(text))
+}
+
+console.log('\n=== renderer: the document lines ===')
 
 // The common case: a spec exists, and the line tells the model what a failed
 // read means without the plugin ever touching the filesystem.
@@ -227,16 +299,23 @@ const withDoc = (document) => renderProjectInjection({ project: project('项目�
     && specDriftQuestion('en').options.length === 3)
 }
 
-// The wording is English and unwrapped, matching every official `context()`
-// contribution in the same joined message. A regression to the earlier Chinese
-// labels, or to an XML frame, would both be stylistic drift away from upstream.
+// The fields and the declaration are English, and the block's only markup is its
+// frame. A regression to the earlier Chinese labels, or to an XML *list* inside the
+// frame, would both be drift away from the design.
+//
+// The frame itself is asserted above. This check is the other half: the fields
+// inside it use the `<label>: value` form that every official `context()`
+// contribution uses, so the frame bounds prose rather than replacing it.
 {
   const text = render(project('p', ['C:\\a']))
-  check('the labels are English', text.startsWith('Current project: ')
-    && text.includes('Related folders:'), JSON.stringify(text))
-  check('no XML frame wraps the block', !text.includes('<'), JSON.stringify(text))
+  check('the fields are English and use the plain label form',
+    text.includes('Owning project: ') && text.includes('Relevant directory: '),
+    JSON.stringify(text))
+  check('the only markup is the frame',
+    text.replaceAll(PROJECT_CONTEXT_OPEN, '').replaceAll(PROJECT_CONTEXT_CLOSE, '').includes('<') === false,
+    JSON.stringify(text))
   check('the dirs list uses plain dashes, not an XML list',
-    text.includes('\n- C:\\a'), JSON.stringify(text))
+    render(project('p', ['C:\\a', 'D:\\b'])).includes('\n- C:\\a\n- D:\\b'), JSON.stringify(text))
 }
 
 // Every render is non-empty: the caller relies on that to decide it has content.
@@ -247,17 +326,17 @@ const withDoc = (document) => renderProjectInjection({ project: project('项目�
 }
 
 // For a FILED project the shape depends only on the directory count, so the model
-// sees the same block regardless of which project it is. The unfiled case is the
-// one deliberate exception, and it is one line shorter (see the module doc).
+// sees the same block regardless of which project it is. The counts include the
+// frame (2 lines), the declaration (1) and a blank line before the frame's close.
 {
   const lines = (text) => text.split('\n').length
   check('a filed block’s shape depends only on the directory count',
-    lines(render(project('a', []))) === 2
-    && lines(render(project('b', []))) === 2
-    && lines(render(project('a', ['x']))) === 3
-    && lines(render(project('b', ['y', 'z']))) === 4)
-  check('the unfiled block is one line, shorter than any filed block',
-    lines(render(undefined)) === 1)
+    lines(render(project('a', []))) === 6
+    && lines(render(project('b', []))) === 6
+    && lines(render(project('a', ['x']))) === 6
+    && lines(render(project('b', ['y', 'z']))) === 8)
+  check('the unfiled block is shorter than any filed block',
+    lines(render(undefined)) === 5)
 }
 
 console.log('\n=== lineage walk: subagent sessions resolve to the parent’s project ===')

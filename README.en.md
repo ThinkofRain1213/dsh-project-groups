@@ -158,7 +158,7 @@ official bundle, read out of the installed `app.asar`.
 pnpm install
 pnpm typecheck        # tsc --noEmit over src (including the vendored tree)
 pnpm build            # tsdown -> lib/index.js + lib/client.js
-pnpm check            # typecheck + build + 11 verification scripts + probes (652 assertions)
+pnpm check            # typecheck + build + 11 verification scripts + probes (662 assertions)
 ```
 
 > **⚠️ When developing locally (`dsh plugin add .` / a `link:` install), a change under `src/`
@@ -187,7 +187,7 @@ Source layout:
 | `CHANGELOG.md` | What changed in each release, as users see it |
 | `DESIGN.md` | Architecture, verified harness facts, the layer plan and the decision record (Chinese) |
 
-**`pnpm check` runs all 11 verification scripts and the probes (652 assertions).**
+**`pnpm check` runs all 11 verification scripts and the probes (662 assertions).**
 `pnpm probe:doc-spec` (131 browser end-to-end assertions) additionally needs a **real DSH and a free
 port**, so it is not on the default chain — run it by hand when touching the injection or the settings
 surface.
