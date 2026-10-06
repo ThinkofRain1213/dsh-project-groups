@@ -140,7 +140,7 @@ bundle 的构建满足与上游相同的模块边界规则：
 pnpm install
 pnpm typecheck        # tsc --noEmit，覆盖 src（含 vendored 树）
 pnpm build            # tsdown -> lib/index.js + lib/client.js
-pnpm check            # typecheck + build + 10 个校验脚本 + 探针（609 条断言）
+pnpm check            # typecheck + build + 11 个校验脚本 + 探针（652 条断言）
 ```
 
 > **⚠️ 本地开发（`dsh plugin add .` / `link:` 安装）时，改完 `src/` 必须
@@ -164,11 +164,35 @@ pnpm check            # typecheck + build + 10 个校验脚本 + 探针（609 �
 | `src/client/spec-picker.tsx` | 规范选择 / 上传 / 删除对话框 |
 | `src/vendored/` | 官方 client 源码副本 + **60 条登记的 patch**（见其 [README](src/vendored/README.md)） |
 | `scripts/` | 探针与校验；`DESIGN.md` 说明每个脚本证明了什么 |
+| `CHANGELOG.md` | 每个版本对使用者可见的变化 |
 | `DESIGN.md` | 架构、已核实的 harness 事实、分层计划与决策记录 |
 
-**`pnpm check` 会跑全部 10 个校验脚本与探针（609 条断言）。**
+**`pnpm check` 会跑全部 11 个校验脚本与探针（652 条断言）。**
 另有 `pnpm probe:doc-spec`（131 条浏览器端到端断言）需要**真实 DSH 与可用端口**，
 故不在默认链上——改动注入或设置界面时应手动跑一次。
+
+`verify:release` 专门守住发布相关的事实：版本号在三处一致、`locale` 描述与功能同步、
+两版 README 结构对等、`files` 会打包到新增文件、以及没有误提交的 `.tgz`。
+
+### 发布
+
+`prepublishOnly` 就是 `pnpm check`，而其中 `verify:bundle` 会**读取本机已安装 DSH 的
+`app.asar`**，用来对比产物解析的 external。
+
+**⇒ 发布要在装了 DSH 的机器上做**；否则那个脚本找不到 `app.asar`，会以退出码 2 中止
+（也可手动把官方 `lib/client.js` 的路径作为参数传给它）。
+
+```bash
+# 1. 改版本号：package.json 的 version + CHANGELOG.md 加一段
+# 2. 全量门禁
+pnpm check
+# 3. 提交并打 tag
+git commit -am "chore: release vX.Y.Z"
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push && git push --tags
+# 4. 发布（prepublishOnly 会再跑一次 check）
+npm publish
+```
 
 ## 维护这份 fork
 

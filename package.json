@@ -1,7 +1,7 @@
 {
   "name": "dsh-project-groups",
-  "version": "0.1.0",
-  "description": "DSH plugin: owns the sidebar workspace browser (vendored from the official plugin) so project-grouping logic can be layered onto the real UI instead of a reimplementation.",
+  "version": "0.2.0",
+  "description": "DSH plugin: group sidebar sessions by project (a label, not a directory) and give each project a work document whose format follows a spec — when that spec changes, the model asks before migrating.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -56,6 +56,7 @@
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
@@ -74,6 +75,7 @@
     "verify:project-injection": "node scripts/verify-project-injection.mjs",
     "verify:doc-spec": "node scripts/verify-doc-spec.mjs",
     "verify:locales": "node scripts/verify-locales.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
     "verify:host-import": "node scripts/probe-host-import.mjs lib/index.js",
     "probe:plugin-toggle": "node scripts/probe-plugin-toggle.mjs",
     "probe:project-reorder": "node scripts/probe-project-reorder.mjs",
@@ -105,7 +107,7 @@
     "probe:base-workspace-rebuild": "node scripts/probe-base-workspace-rebuild.mjs",
     "probe:base-workspace-confirm": "node scripts/probe-base-workspace-confirm.mjs",
     "probe:rebuild-default-mode": "node scripts/probe-rebuild-default-mode.mjs",
-    "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:project-directories && pnpm verify:project-injection && pnpm verify:doc-spec && pnpm verify:locales && pnpm verify:host-import && pnpm probe"
+    "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:project-directories && pnpm verify:project-injection && pnpm verify:doc-spec && pnpm verify:locales && pnpm verify:release && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
@@ -155,7 +157,9 @@
     "deepseek-harness",
     "sidebar",
     "workspace",
-    "session-groups"
+    "session-groups",
+    "project-groups",
+    "project-document"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"

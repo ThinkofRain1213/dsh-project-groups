@@ -158,7 +158,7 @@ official bundle, read out of the installed `app.asar`.
 pnpm install
 pnpm typecheck        # tsc --noEmit over src (including the vendored tree)
 pnpm build            # tsdown -> lib/index.js + lib/client.js
-pnpm check            # typecheck + build + 10 verification scripts + probes (609 assertions)
+pnpm check            # typecheck + build + 11 verification scripts + probes (652 assertions)
 ```
 
 > **⚠️ When developing locally (`dsh plugin add .` / a `link:` install), a change under `src/`
@@ -184,12 +184,38 @@ Source layout:
 | `src/client/spec-picker.tsx` | The spec choose / upload / delete dialog |
 | `src/vendored/` | Copy of the official client source + **60 registered patches** (see its [README](src/vendored/README.md)) |
 | `scripts/` | Probes and verification; `DESIGN.md` explains what each proves |
+| `CHANGELOG.md` | What changed in each release, as users see it |
 | `DESIGN.md` | Architecture, verified harness facts, the layer plan and the decision record (Chinese) |
 
-**`pnpm check` runs all 10 verification scripts and the probes (609 assertions).**
+**`pnpm check` runs all 11 verification scripts and the probes (652 assertions).**
 `pnpm probe:doc-spec` (131 browser end-to-end assertions) additionally needs a **real DSH and a free
 port**, so it is not on the default chain — run it by hand when touching the injection or the settings
 surface.
+
+`verify:release` guards the facts a release turns on: the version agreeing in all three places, the
+`locale` descriptions matching what the plugin now does, the two READMEs staying structurally equal,
+`files` covering every newly shipped path, and no stray `.tgz` in the tree.
+
+### Releasing
+
+`prepublishOnly` is `pnpm check`, and `verify:bundle` inside it **reads the locally installed DSH's
+`app.asar`** to compare the resolved externals.
+
+**⇒ A release must be cut on a machine with DSH installed**; otherwise that script cannot find the
+`app.asar` and stops with exit code 2. (You can also pass it the official `lib/client.js` path as an
+argument.)
+
+```bash
+# 1. bump: package.json's version + a new CHANGELOG.md section
+# 2. the full gate
+pnpm check
+# 3. commit and tag
+git commit -am "chore: release vX.Y.Z"
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push && git push --tags
+# 4. publish (prepublishOnly runs the gate again)
+npm publish
+```
 
 ## Maintaining the fork
 
