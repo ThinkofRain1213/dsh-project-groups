@@ -64,7 +64,7 @@ interface SettingsDescriptorLike {
   readonly value: unknown
 }
 import {
-  PROJECT_NAMESPACE, PROJECT_SERVICE_KEY, withDefaultMode,
+  PROJECT_NAMESPACE, PROJECT_SERVICE_KEY, nonBlankLinks, withDefaultMode,
   type ProjectAssignRequest, type ProjectAssignmentValue, type ProjectBaseline,
   type ProjectBaseWorkspaceValue,
   type ProjectCreateRequest, type ProjectDeleteRequest, type ProjectExpansionValue,
@@ -89,6 +89,8 @@ import {
   type ProjectUnassignRequest, type ProjectUnassignValue,
   type ProjectValue, type ProjectValueResult,
   type ProjectDefaultWorkspacePathValue,
+  type ProjectOfficialDefaultValue,
+  type ProjectSetValidateLinksRequest, type ProjectValidateLinksValue,
 } from './protocol.ts'
 
 /**
@@ -683,6 +685,8 @@ export class ProjectController extends TypertRemoteService {
       // record's own array must not become reachable to a client that could
       // mutate it in place.
       directories: [...record.directories],
+      // Copied, not aliased, for the same reason as `directories` above.
+      links: [...record.links],
       docPath: record.docPath,
       // Spread rather than assigned as `undefined`: these are optional on the
       // wire, and an explicit `undefined` key would survive JSON round-tripping
@@ -953,6 +957,10 @@ export class ProjectController extends TypertRemoteService {
       docSpecMode: domain.global.get().docSpecMode,
       docSpecFileName: domain.global.get().docSpecFileName,
       perProjectDocSpec: domain.global.get().perProjectDocSpec,
+      // Listed field-by-field like every other setting here: the baseline does **not**
+      // spread the stored global, so omitting this would leave the Client permanently
+      // unable to read the switch.
+      validateLinks: domain.global.get().validateLinks,
       // Read here rather than kept in memory: the directory is the source of
       // truth for what has been uploaded, and a spec dropped in by hand should
       // appear on the next reconnect without a restart.
@@ -997,6 +1005,11 @@ export class ProjectController extends TypertRemoteService {
     // Copied out of the request before any write: a caller that reuses or mutates
     // the array afterwards must not be able to reach stored state.
     const directories = [...(request.directories ?? [])]
+    // Copied out of the request for the same reason as the directories above, and with
+    // blanks dropped: an empty row is the editor's "I opened a row and typed nothing",
+    // not a link. Storing one would put a bare `- ` in the injected block and a ghost row
+    // in the next dialog — which then reads as "unchanged", leaving 保存 disabled.
+    const links = nonBlankLinks(request.links ?? [])
     // Validated by the same guard `setProjectDocSpec` uses. Before this, `create`
     // stored whatever arrived while the edit path refused values it did not know —
     // so a value was storable or not depending on which dialog was open.
@@ -1009,6 +1022,7 @@ export class ProjectController extends TypertRemoteService {
       const record: ProjectRecord = {
         title,
         directories,
+        links,
         docPath: '',
         // Spread rather than assigned as `undefined`: the schema's `optional`
         // means "inherit the global choice" must leave the key absent, and a
@@ -1069,6 +1083,14 @@ export class ProjectController extends TypertRemoteService {
       ...record,
       title,
       directories: [...request.directories],
+      // Written explicitly, not left to the spread above: `next` starts as
+      // `{ ...record }`, so omitting this would **silently keep the old links** — the
+      // edit dialog would appear to save and change nothing.
+      //
+      // The same blank-drop `create` applies, from the same function: a rule written twice
+      // is a rule that disagrees with itself eventually (`docSpec` in Z-3 was exactly that —
+      // `create` accepted a value the edit path refused).
+      links: nonBlankLinks(request.links),
       updatedAt: new Date().toISOString(),
     }
     await domain.table('projects').put(request.projectId, next)
@@ -1393,6 +1415,24 @@ export class ProjectController extends TypertRemoteService {
   }
 
   /**
+   * Choose whether the project dialogs mark `links` that are not `http(s)://` URLs.
+   *
+   * Only the flag travels; the Host spreads the stored global before writing, so the
+   * project order and every other setting survive. Note what this switch does **not**
+   * do: it never touches a write. The Host stores whatever links it is given, valid or
+   * not — the flag only governs whether the editor computes a verdict, so no legacy
+   * value can dead-lock a save.
+   * @param request - the chosen behaviour.
+   * @returns the stored value.
+   */
+  @Remote('setValidateLinks')
+  async setValidateLinks(request: ProjectSetValidateLinksRequest): Promise<ProjectValidateLinksValue> {
+    const domain = await this.ready()
+    await this.setGlobal(domain, { validateLinks: request.value })
+    return { value: request.value }
+  }
+
+  /**
    * Set or clear one project's spec override.
    *
    * `null` clears the field rather than storing a sentinel, because absence is
@@ -1527,9 +1567,17 @@ export class ProjectController extends TypertRemoteService {
     // remembered Workspace WITHOUT switching the mode, so it sends the current mode plus
     // the newly picked path. Without this the helper would keep the OLD path and the
     // replacement would be silently discarded.
+    //
+    // `adoptedPath` is carried through BOTH arms, for the same reason the memory is: it is
+    // the default Workspace's own location, and 默认 → 指定 → 默认 must come back to the
+    // Workspace this plugin took over rather than to the official pointer, which is
+    // permanently dead once this field is set. Writing a bare literal here silently dropped
+    // it — found by the takeover assertions in `verify-project-host.mjs`.
+    const stored = domain.global.get().baseWorkspace
+    const adopted = stored.adoptedPath === undefined ? {} : { adoptedPath: stored.adoptedPath }
     const next: BaseWorkspaceSetting = request.mode === 'default'
-      ? withDefaultMode(domain.global.get().baseWorkspace, request)
-      : { mode: 'specified', path: request.path, name: request.name ?? '' }
+      ? withDefaultMode(stored, request)
+      : { mode: 'specified', path: request.path, name: request.name ?? '', ...adopted }
     await this.setGlobal(domain, { baseWorkspace: next })
     return next
   }
@@ -1555,14 +1603,20 @@ export class ProjectController extends TypertRemoteService {
    * service that has nothing to do with them. The ungated read also means a composition without it
    * degrades to a refused rebuild rather than a dead plugin.
    *
-   * ## Why `'default'` mode is adopted rather than pointed at
+   * ## Why `'default'` mode is taken over in this plugin's own setting
    *
    * `initializeDefault` returns `entities.get(defaultWorkspaceId)` as soon as that field is set and
    * never falls through to creation, so after a deletion a re-registered path is an id the pointer
    * does not adopt and the dialog would reappear on the next click. Rewriting that pointer would
-   * mean editing another plugin's durable state behind its invariants; instead this plugin records
-   * the rebuilt path as **its own** `'specified'` setting, which its resolver does read. `mode` in
-   * the result reports that, because it changes what the settings card shows.
+   * mean editing another plugin's durable state behind its invariants — it is written in exactly one
+   * place (`createCanonical`, under its `firstUse` flag, which only `initializeDefault` sets) and has
+   * no public setter at all.
+   *
+   * Instead this plugin records the rebuilt path as **its own** `baseWorkspace.adoptedPath`, which
+   * its resolver does read, and **keeps the mode**. The repair is what the user asked for; switching
+   * where their Sessions land is not. An earlier version rewrote the mode to `'specified'`, which
+   * moved the card's highlight off 默认工作区 and told the user their rebuild had changed their
+   * setting — the reported defect this shape fixes.
    * @returns the Workspace now at the base path, and the setting's mode afterwards.
    */
   @Remote('rebuildBaseWorkspace')
@@ -1574,8 +1628,13 @@ export class ProjectController extends TypertRemoteService {
     const usesStoredPath = stored.mode === 'specified'
     const path = usesStoredPath
       ? (stored.path ?? '')
-      // `'default'` mode names no path of its own; this is the same derivation the dialog showed.
-      : (await deriveDefaultWorkspacePath() ?? '')
+      // `'default'` AFTER a takeover: the Workspace that is missing is the one this plugin recorded,
+      // so re-deriving the official location here would rebuild a *different* directory and leave
+      // the plugin's own path still unresolved — the dialog would reappear on the next click.
+      : stored.adoptedPath !== undefined && stored.adoptedPath !== ''
+        ? stored.adoptedPath
+        // `'default'` BEFORE any takeover: this is the same derivation the dialog showed.
+        : (await deriveDefaultWorkspacePath() ?? '')
     if (path === '') throw new Error('there is no base workspace path to rebuild')
     // The stored name is only meaningful for the path it was captured with. In `'default'` mode the
     // memory belongs to some *other* Workspace (it survives a switch to 默认 by design), so passing
@@ -1599,8 +1658,11 @@ export class ProjectController extends TypertRemoteService {
 
     const mode = stored.mode
     if (mode === 'default') {
+      // The default Workspace is **taken over**, not switched to another mode. Spread the stored
+      // setting rather than rebuilding it: it still carries the memory of the user's last 指定
+      // pick, which 默认 → 指定 → 默认 must restore (see `withDefaultMode`).
       await this.setGlobal(domain, {
-        baseWorkspace: { mode: 'specified', path: entity.path ?? path, name: entity.title },
+        baseWorkspace: { ...stored, mode: 'default', adoptedPath: entity.path ?? path },
       })
     }
     return {
@@ -1609,7 +1671,7 @@ export class ProjectController extends TypertRemoteService {
       path: entity.path ?? path,
       workspaceId: String(entity.id),
       title: entity.title ?? '',
-      mode: mode === 'default' ? 'specified' : mode,
+      mode,
     }
   }
 
@@ -1629,6 +1691,74 @@ export class ProjectController extends TypertRemoteService {
   @Remote('defaultWorkspacePath')
   async defaultWorkspacePath(): Promise<ProjectDefaultWorkspacePathValue> {
     return { path: await deriveDefaultWorkspacePath() }
+  }
+
+  /**
+   * Report whether the official default Workspace still resolves, without writing anything.
+   *
+   * ## Why this cannot be a Client-side probe
+   *
+   * `initializeDefault` has three branches. With its recorded `defaultWorkspaceId` set it
+   * returns `entities.get(id)` — a pure read, and `undefined` once that registration is
+   * deleted. With the pointer unset **and** the registry, archive set, or Session history
+   * non-empty it returns `undefined` before any directory resolution. Only when every one
+   * of those is empty does it `mkdir` and register a Workspace, which is a write.
+   *
+   * The Client cannot tell those apart: its Workspace snapshot carries `items`,
+   * `archivedSessionIds` and `pinnedSessionIds`, and no view of the pointer or of stored
+   * Session headers. Rendering a settings page must not create a directory, so the
+   * discrimination happens here, where the registry's internals are reachable.
+   *
+   * ## How the creating branch is made unreachable
+   *
+   * `initializeDefault(resolveDirectory)` takes the directory resolver as an argument and
+   * calls it **only** on that third branch, immediately before `mkdir`. Passing a resolver
+   * that throws therefore aborts after the branch test and before any filesystem or native
+   * query work: no directory, no registration, no `powershell.exe`. The rejection is caught
+   * below and reported as `'unknown'`, which is the honest reading — the probe learned
+   * nothing about the pointer.
+   *
+   * ## Why the registry's mutation queue is not damaged
+   *
+   * `initializeDefault` runs inside `enqueueOperation`, whose tail swallows each operation's
+   * rejection (`operationTail = result.then(() => {}, () => {})`), so this throw is observed
+   * only by this call. The queue's `recoverPendingMutation` pre-step runs for every operation
+   * alike, this one included, so nothing new is introduced by probing.
+   *
+   * ## Why `'missing'` rather than `'unknown'` on the early return
+   *
+   * When the pointer is unset and other state exists, the official flow can never create the
+   * default Workspace again, so a New Session click **will** report a missing 底层工作区. That
+   * makes `'missing'` the accurate answer, and it is what keeps the card's warning and the
+   * click's dialog from disagreeing.
+   * @returns the probe's three-state answer.
+   */
+  @Remote('officialDefaultWorkspace')
+  async officialDefaultWorkspace(): Promise<ProjectOfficialDefaultValue> {
+    const registry = this.ctx.get('workspaceRegistry') as
+      | {
+        initializeDefault(resolveDirectory: () => Promise<string>): Promise<
+          { id: unknown; path?: string } | undefined
+        >
+      }
+      | undefined
+    // Absent in a composition without `dsh-workspace`. Not an error: the settings card then
+    // simply has no warning to show, and the click path still reports a missing base Workspace.
+    if (registry === undefined) return { status: 'unknown' }
+    try {
+      const entity = await registry.initializeDefault(() => {
+        // Reached only on the branch that would create a Workspace. Throwing here is what
+        // makes this probe provably read-only; see the method note.
+        throw new Error('officialDefaultWorkspace: refusing to create a Workspace during a probe')
+      })
+      if (entity === undefined) return { status: 'missing' }
+      return { status: 'present', workspaceId: String(entity.id), path: entity.path ?? '' }
+    } catch {
+      // Includes this method's own refusal above, and a registry that rejected the call
+      // outright. Either way the probe could not tell, so it says so rather than warning
+      // about a Workspace that may be perfectly fine.
+      return { status: 'unknown' }
+    }
   }
 
   /**

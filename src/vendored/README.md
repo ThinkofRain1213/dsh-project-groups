@@ -170,6 +170,18 @@ source with a comment naming the seam.
 | `tree.ts` | `GroupSource.docSpec?: string` — the per-project spec override, absent meaning "inherit the global choice" | re-add the field |
 | `contract/slots.ts` | `hooks.perProjectDocSpec`, `hooks.injectProjectInfo`, `hooks.injectProjectDoc`, `hooks.specs`; `createProject` takes `docSpec`; `updateProject` takes a fourth `docSpec` argument; `uploadSpec` / `deleteSpec` / `specsUsedBy` verbs | re-add the four hooks, the extended signatures, and the three verbs |
 | `client/index.ts` | the `DocSpecHooks` bundle threaded into `apply` as one trailing argument, defaulting each observable to the schema's answer (`false` for the two gates, so a composition without the feature hides the row) | re-add the interface, the parameter, and the four defaults |
+| `tree.ts` | `GroupSource.links?: readonly string[]` — the project's associated URLs, absent meaning "none supplied" | re-add the field |
+| `contract/slots.ts` | `hooks.validateLinks`; `createProject` takes `links`; `updateProject` takes a fourth `links` argument (before `docSpec`) | re-add the hook, the field, and the two signatures |
+| `client/index.ts` | the `LinkHooks` bundle threaded into `apply` as a second trailing argument, defaulting `validateLinks` to `false` so a composition without the switch marks nothing | re-add the interface, the parameter, and the default |
+| `rows/WorkspaceBrowser.tsx` | the create and edit dialogs collect a link draft (`createRows` / `renameRows`) as `LinkRowDraft[]` — a row's **id** plus its url, rendered by new `LinkHeader` / `LinkRows` / `LinkRow` components; `RowRequest` and `RenameTarget` each carry the stored list, and `renameBlocked` compares it (**behaviour change**, see below) | re-apply the components, the two state values, the two target fields, the comparison, and both blocks |
+| `rows/WorkspaceBrowser.tsx` | link rows are keyed by `LinkRowDraft.id`, **not** by index and not by url. The draft carries ids that `linkUrls` drops at the two commit sites, so the protocol and the stored record keep plain strings. Keying by index made a removal hand every later component the next row's value — it re-checked text nobody had touched, and for one frame showed a verdict belonging to another row | re-add `LinkRowDraft`, `newLinkRow`, `linkUrls`, and the `key={row.id}` |
+| `rows/WorkspaceBrowser.tsx` | **the only place this tree runs a debounced check**: `useLinkCheck` marks a row after 0.5s of no typing, showing a spinner while typing, a green check while valid *and* focused, and an amber ⓘ while invalid. Measured against the installed DSH, **no official component does this** — see the deviation note below | re-add `LinkCheck`, `useLinkCheck`, and `countInvalidLinks` |
+| `rows/WorkspaceBrowser.tsx` | a freshly added link row takes focus (`LinkRow`'s `autoFocus` + the parent clearing its marker), and any empty row adds a **quiet** notice to the header (`countBlankLinks`, `.linkBlankCount`). The two are independent: the notice never consults focus, while the auto-focus is there so the user can type straight away | re-add the marker state, the focus effect, and the notice |
+| `rows/WorkspaceBrowser.tsx` | `useSettledUrls` returns the url each row has **concluded on**, keyed by its id, rebuilt wholesale when the interval expires. The failing count counts a row only while `settled.get(id) === row.url`, which is what stops it reporting a value nothing has judged and stops it keeping a failure whose text is gone. The blank count reads the **live** draft instead, because emptiness is a fact and must not wait for a judgement — the two notices are deliberately on different clocks | re-add `useSettledUrls`, both count functions and their `LinkBlock` wiring |
+| `rows/WorkspaceBrowser.tsx` | `LinkBlock` owns the link header, its rows and the state they share, and is mounted **with the dialog** — the official `Modal` returns `null` while closed. That is what keeps the header's settled snapshot from outliving the rows: with the hook at the dialog's top level, reopening a project skipped the wait and opening another showed the **previous** project's count | re-add the component and use it in both dialogs |
+| `rows/WorkspaceBrowser.tsx` | imports `isValidLink` from `../../../protocol.ts` — the rule is shared with the Host half rather than reimplemented here | re-add the import |
+| `locales.ts` | `field.links`, `link.add`, `link.none`, `link.remove`, `link.invalid`, `link.countInvalid`, `link.countBlank` in both dictionaries, in one contiguous block | re-add the block |
+| `rows/WorkspaceBrowser.module.css` | `.linkBlock` / `.linkHeader` / `.linkHeading` / `.linkLabel` / `.linkInvalidCount` / `.linkBlankCount` / `.linkEmpty` / `.linkList` / `.linkRow` / `.linkField` / `.linkInput` / `.linkStatus` / `.linkValid` / `.linkInvalid` — the trailing-status slot the official `Input` does not offer (`position: relative` wrapper + `padding-right`), and the two-notice header whose alignment lives on the container | re-add the block |
 
 Two invariants keep these patches honest:
 
@@ -615,6 +627,155 @@ Two consequences are deliberate:
   second Workspace, and is pinned by `probe-recent-blank.mjs` and
   `probe-two-project-plus.mjs`. It is **not** a defect introduced here.
 
+**16. A link row validates as the user types.**
+
+Shipped: nothing in this tree — or anywhere in the installed DSH — validates an input while it
+is being edited. A whole-asar scan for a debounce sitting next to input-and-validity semantics
+found no candidate, so there was no precedent to copy and this is written from scratch:
+`useLinkCheck` in `rows/WorkspaceBrowser.tsx`.
+
+The behaviour, decided by the user rather than inferred from a precedent:
+
+- typing shows a spinner (it is **checking**, not yet answering);
+- 0.5s without a change runs the check;
+- a passing link shows a green check **only while the row has focus**;
+- a failing link shows an amber ⓘ **regardless of focus**, with the rule in its tooltip;
+- an empty row shows nothing — at once, with no spinner — and the switch being off removes all
+  states at once, in-flight timer included;
+- **emptiness and a verdict take different clocks** (user's decision, 2026-10-09). Empty is a
+  **fact** — visible in the input box, unable to be wrong — so it is applied the moment it is true.
+  Passing and failing are **judgements**, which can be wrong while the user is still typing, so
+  only those wait. The earlier version ran all three on one interval, which made a fact wait for a
+  judgement: clearing a row left its ⓘ spinning for half a second and its failure counted for half
+  a second after the text was gone.
+
+Three details are load-bearing and easy to "fix" wrongly:
+
+- **The visible state is derived, not stored.** The focus rule lives on the return value, which is
+  what stops a focus change from overwriting a verdict that just landed. A focus gain deliberately
+  does **not** re-run the check — an earlier version made it a dependency, and `focused` as a
+  dependency meant a **blur** re-ran the check too, showing a spinner for half a second where the
+  amber ⓘ is specified to stay. Nothing is lost: only an edit can change a verdict.
+- **A verdict is stored with the value it judged** — `{ url, mark }`, not a bare mark. That single
+  pairing is what makes a verdict expire on its own: when the value changes, the old verdict is not
+  a stale answer to be cleared later, it is simply not a verdict **about this row** any more. A
+  bare mark meant the render that changed the value still painted the previous one, and an effect
+  corrected it a pass later. This is also what answers "reward early" (Baymard's *Remove Error
+  Messages as Soon as the Field Is Corrected*): editing a failing row drops the failure in that
+  same pass.
+- **The rows are keyed by their own id** — neither the value nor the position. The value is what
+  the user is editing, so keying on it remounts the row and drops focus on every keystroke
+  (measured: `2) 输入后立刻是转圈 — none`). The position is no better, and worse in a way that is
+  hard to see: a link's check runs off its **value**, so a removal keyed by index hands each later
+  component the next row's value — it re-checks text nobody touched, and for one frame it paints
+  the verdict that belonged to the value it used to hold. With a passing row above a failing one
+  that frame reads as **passing** while the text is `not a url` (measured: `["none","invalid"]` →
+  `["none"]` for ~17ms). Rows therefore carry an id that `linkUrls` drops at the commit sites, so
+  nothing leaves the client. **The id is also what lets the header key its settled snapshot by row**
+  (`useSettledUrls`), without which a removal would make the count read another row's verdict.
+
+This is a **visible departure** from the official 1:1 interface, which is why it is recorded
+here rather than treated as a seam. `probe-project-links.mjs` pins it against a real browser.
+
+**A second, smaller departure lives in the same block: the header's second notice.**
+
+An empty row is announced as `{n} 行为空，保存时忽略` — **dimmed, not amber**. The amber invalid
+count asks the user to act; this one asks for nothing, because the row is dropped on save either
+way. The two colours keep "needs attention" and "nothing to do" apart, and
+`probe-project-links.mjs` asserts they differ with both on screen (measured: `rgb(245,158,11)`
+vs `rgb(129,133,140)`).
+
+Two details were each got wrong once and are worth stating plainly.
+
+**It is driven by emptiness — not by focus.** The first version announced a row only after the
+user had *left* it, which meant a row was reported as dropped later than it became droppable. The
+user's rule is that a row is empty or it is not; a freshly added row therefore reads as blank at
+once. The focus bookkeeping that the old rule needed — a type, two pieces of state, two resets,
+two pass-throughs and two handler bindings — existed for that rule and nothing else, so it is gone.
+The per-row green check keeps its own focus rule and must **not** be swept up with it: it is shown
+only while focused, which is the official `ModelRow` behaviour and is deliberately unchanged. Note
+that a focus gain no longer **re-runs** the check — the verdict is already right, and only an edit
+can change it — so the focus handlers are display-only now. The **auto-focus** of a newly added row
+is likewise unaffected; it is there so the user can type straight away.
+
+**The colour was changed from `label-dimmed` to `label-tertiary`.** The first choice measured
+**1.45** against the dark dialog surface: present, and effectively invisible — which is how the
+user found it. `label-dimmed` is the wrong *category* of token here, not merely too dark: of its
+14 uses in the installed DSH, every one is `:disabled` or `::placeholder`, so it means "not
+interactive", not "quiet". `label-tertiary` is what the official styles use for quiet
+explanatory text (367 uses) and measures **6.53** dark / **3.71** light. The light figure is below
+AA for 12px text — accepted knowingly, since the failure the user actually hit was invisible in
+dark, and this token is legible in both. A "different from amber" assertion passes happily on an
+invisible colour, so the probe now measures **contrast against the surface**, in both themes.
+
+**The count is derived, never accumulated.** The first version kept a set of row indices that
+rows added themselves to on blur, and cleared it whole on removal on the theory that "the next
+blur will redo it". A blur only happens when focus actually moves: after a removal focus sits
+on the delete button, nothing re-blurs, and the notice vanished for every remaining blank row
+and never returned. Asking "which rows are empty *right now*" (`countBlankLinks`) needs no
+bookkeeping at all — removal, typing and reopening cannot stale it, because none of them is
+remembered in the first place.
+
+**A third departure in the same block: three layers, not one time line.**
+
+The header summarised the raw draft while the rows debounced, so on the first keystroke it
+announced `1 条链接未通过校验` while the row it named still spun — the same value called failing by
+one control and unjudged by the other (measured: 450ms of disagreement on every check). An earlier
+patch made it wait, then patched that again to skip the wait on blank transitions, then patched
+*that* so the two notices came from one pass. Each patch was correct and the next one was needed
+anyway, because all three shared a premise: **the rows and the header ran separate time lines from
+separate sources.**
+
+The premise was wrong, not just the implementation (user's decision, 2026-10-09):
+
+- **Layer 1 — emptiness is a fact.** Visible in the input box, unable to be wrong, so it is applied
+  the moment it is true: no spinner, no wait. The row's mark, the failing count and the blank
+  notice all move in that same pass.
+- **Layer 2 — a verdict is a judgement.** It can be wrong while the user is still typing, which is
+  the only reason to wait, so passing and failing take `LINK_CHECK_DEBOUNCE_MS` and show a spinner.
+- **Layer 3 — correction is automatic.** A verdict is stored with the value it judged
+  (`{ url, mark }`), so when the value changes the old verdict is not a stale answer awaiting
+  cleanup — it is not a verdict about this row any more. This layer is a consequence of the
+  invariant, not code: **a verdict is only valid for the value it was reached for.**
+
+The one interval for all three is what the previous versions had, and it was wrong in the expensive
+direction: it made a **fact** wait for a **judgement**, so clearing a row left its ⓘ spinning for
+half a second and its failure counted for half a second after the text was gone. Baymard's usability
+testing names the second half directly — an error left after the field is corrected makes users
+*"misinterpret their newly corrected, and now valid, input to still contain an error"*.
+
+- **The header keys the settled snapshot by row id.** `useSettledUrls` returns the url each row has
+  concluded on, rebuilt wholesale when the interval expires, and the failing count counts a row only
+  while `settled.get(id) === row.url`. That one comparison is the whole rule: a value just typed has
+  no verdict, so it cannot be reported as failing (the count used to lead the rows), and a value
+  just cleared is no longer the judged one, so its failure disappears at once (the count used to lag
+  them). It replaced `useSettledLinks` and `headerShouldWait`, which held the whole previous list
+  and decided when to hold it — machinery for keeping two notices in step that is not needed when
+  there is no stale number to hold.
+- **The blank notice reads the live draft, not the snapshot**, because it is a fact and must not
+  wait for a judgement. The two notices are deliberately on different clocks; that is the departure.
+- **`isBlankLink` lives in `protocol.ts`** and `nonBlankLinks` uses it, so the storing side, the
+  blank count and the row's own idle verdict cannot describe emptiness differently.
+- **The hook lives in `LinkBlock`, which mounts with the dialog.** The official `Modal` returns
+  `null` while closed, so the header's memory cannot outlive the rows it describes. With the hook
+  at the dialog's top level it did: reopening a project skipped the wait and reported a count
+  before anything was checked, and opening another project showed the **previous** project's count
+  for the whole wait. Mounting them together also removed five hand-written resets and two
+  `autoFocus` markers that existed only because the state outlived the dialog.
+
+⚠️ **This is the `edited` ref's inverse.** It is gone: it existed only to tell a row **born** blank
+from one the user **emptied**, and under layer 1 both are simply empty. Re-adding it, or making a
+blank value wait again, reintroduces the single-time-line defect — `7c) 清空后行内不转圈` and
+`7o) 清空全程没有任何一行转圈` both fail, the second showing the frame where the row starts spinning
+*after* the count and the notice have already moved.
+
+`probe-project-links.mjs` pins all of it. Its timing sections sample the mark and the count **in one
+pass**, and the three-layer section records the mark **and both notices in every frame** — asserting
+either alone passes while the other is stale, which is how the earlier versions shipped. Its
+open-dialog sections install a `requestAnimationFrame` recorder **before** the dialog opens, because
+a snapshot taken after an open sees only the settled state; an earlier version of that assertion
+passed with the leak present.
+
 ## Keeping it in sync
 
 Upstream ships this package at the same version as the whole harness line, so a DSH upgrade is the
@@ -705,6 +866,8 @@ browser probes that drive a live instance. They are run by hand rather than by
 | `scripts/probe-row-key-motion.mjs` | samples every Session row each animation frame across all four transitions (a project's ＋, the same ＋ again, another project's ＋, a blank becoming real) plus a cross-group drag, so a glide shows as a run of intermediate positions and a fade as `opacity→opacity`; asserts the blank→real case has no animation at all | spawns a server; the shipped `session:<id>` key must fail its four cross-project checks |
 | `scripts/probe-project-create-motion.mjs` | creates a project while sampling every project row from both a rAF loop and a MutationObserver, so a new row that starts at the bottom and travels to the top shows as a run of y values while a row that simply appears shows one; also records the keyframes each row ran | spawns a server; the pre-fix Host (with the order backfill) must fail it — measured `654→594→…→206`, against a constant `206` after the fix |
 | `scripts/probe-two-project-plus.mjs` | clicks project A's ＋ and then B's, tracking Session **ids** rather than counts, so "the blank moved" is distinguishable from "each project got its own" | spawns a server; pins upstream's `reuseOrCreateBlank` semantics in the project model — measured: the same id leaves A and appears under B |
+| `scripts/probe-project-directories-dialog.mjs` | drives the directory dialog's rows | spawns a server |
+| `scripts/probe-project-links.mjs` | drives the whole link surface — the debounced check's three states, the focus rule, the header's two notices, the blank-row drop, the switch, and what reaches the Host. Its timing sections sample both the row's mark and the header's count **in one pass**, because either half alone passes while the other is stale — which is how the count-first and count-late versions both shipped. Its frame-order section installs a `requestAnimationFrame` recorder **inside the page** instead of polling with `evaluate`: the bad frame exists for a single commit, so a round trip between samples misses it | spawns a server |
 | `scripts/probe-base-workspace-dialog.mjs` | deletes the default Workspace's **registration** (files and Sessions kept, by design) and then clicks New Session: asserts the dialog appears instead of silence, names the Host-derived path, stacks three full-width non-overflowing actions, leaves the two repairs disabled, and that 取消 closes it without writing | spawns a server; the shipped silent `return` must fail its "dialog appears" check |
 
 `probe-plugin-toggle.mjs` owns its lifecycle deliberately: localStorage is scoped

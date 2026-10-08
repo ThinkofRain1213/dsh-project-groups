@@ -141,7 +141,7 @@ try {
 
   // The add control is the second button in the header row (the first text match
   // is the label span's parent).
-  const addChrome = await create.getByRole('button', { name: '添加文件夹' }).first().evaluate((node) => {
+  const addChrome = await create.getByRole('button', { name: '添加目录' }).first().evaluate((node) => {
     const style = getComputedStyle(node)
     return {
       background: style.backgroundColor,
@@ -149,7 +149,7 @@ try {
       height: Math.round(node.getBoundingClientRect().height),
     }
   })
-  console.log(`  添加文件夹按钮: ${JSON.stringify(addChrome)}`)
+  console.log(`  添加目录按钮: ${JSON.stringify(addChrome)}`)
   check('2) 添加按钮没有原生灰底', addChrome.background === 'rgba(0, 0, 0, 0)'
     || addChrome.background === 'transparent', addChrome.background)
   check('2) 添加按钮没有原生边框', addChrome.borderWidth === '0px', addChrome.borderWidth)

@@ -392,6 +392,22 @@ export const clientPerProjectDocSpec: HostObservable<boolean> = pendingSeat(
   live => live.perProjectDocSpec$,
 )
 
+/**
+ * Whether the project dialogs mark links that are not `http(s)://` URLs.
+ *
+ * Given to the vendored tree **and** read by the settings card: the marking happens in
+ * the dialog, which cannot see this model, and the card's switch must show the same value
+ * the dialog acts on.
+ *
+ * Before the model exists the snapshot is `true`, matching `EMPTY_STATE` and the Host's
+ * schema default — a fresh install marks, which is the behaviour it is about to get.
+ */
+export const clientValidateLinks: HostObservable<boolean> = pendingSeat(
+  live => live.validateLinksValue(),
+  true,
+  live => live.validateLinks$,
+)
+
 /** Every uploaded spec's file name, sorted. */
 export const clientSpecs: HostObservable<readonly string[]> = pendingSeat(
   live => live.specsValue(),

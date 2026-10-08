@@ -105,6 +105,7 @@ export const projectGroupsRemote: TypertRemoteContribution = {
     unary('setDocSpecMode', ['request'], 'ProjectDocSpecModeValue'),
     unary('setDocSpecFileName', ['request'], 'ProjectDocSpecFileNameValue'),
     unary('setPerProjectDocSpec', ['request'], 'ProjectPerProjectDocSpecValue'),
+    unary('setValidateLinks', ['request'], 'ProjectValidateLinksValue'),
     unary('setProjectDocSpec', ['request'], 'ProjectProjectDocSpecValue'),
     unary('uploadSpec', ['request'], 'ProjectUploadSpecValue'),
     unary('deleteSpec', ['request'], 'ProjectDeleteSpecValue'),
@@ -112,6 +113,7 @@ export const projectGroupsRemote: TypertRemoteContribution = {
     unary('readSpec', ['request'], 'ProjectReadSpecValue'),
     unary('setBaseWorkspace', ['request'], 'ProjectBaseWorkspaceValue'),
     unary('defaultWorkspacePath', [], 'ProjectDefaultWorkspacePathValue'),
+    unary('officialDefaultWorkspace', [], 'ProjectOfficialDefaultValue'),
     unary('rebuildBaseWorkspace', [], 'ProjectRebuildBaseWorkspaceValue'),
     {
       id: `dsh-project-groups#${PROJECT_NAMESPACE}/follow`,

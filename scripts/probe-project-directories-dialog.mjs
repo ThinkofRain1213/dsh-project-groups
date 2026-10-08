@@ -185,7 +185,7 @@ try {
   const bareRows = await directoryRows(bareEdit).count()
   const bareText = (await bareEdit.innerText()).replace(/\s+/g, ' ')
   check('4) 编辑对话框没有目录行', bareRows === 0, `rows=${bareRows}`)
-  check('4) 显示未添加关联文件夹', bareText.includes('未添加关联文件夹'), bareText.slice(0, 160))
+  check('4) 显示未添加关联目录', bareText.includes('未添加关联目录'), bareText.slice(0, 160))
   await bareEdit.getByRole('button', { name: '取消' }).first().click({ force: true })
   await page.waitForTimeout(600)
 
@@ -197,7 +197,7 @@ try {
   check('5) 新建对话框打开', await create.count() > 0)
   check('5) 新建时没有目录行', await directoryRows(create).count() === 0,
     `rows=${await directoryRows(create).count()}`)
-  check('5) 有添加文件夹按钮', (await create.getByRole('button', { name: '添加文件夹' }).count()) > 0)
+  check('5) 有添加目录按钮', (await create.getByRole('button', { name: '添加目录' }).count()) > 0)
   await create.getByRole('button', { name: '取消' }).first().click({ force: true })
   await page.waitForTimeout(600)
 

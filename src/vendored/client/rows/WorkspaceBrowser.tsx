@@ -18,12 +18,14 @@ import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, us
 import clsx from 'clsx'
 import {
   Button, IconArchiveCheckOutlineRegular, IconArchiveOffOutlineRegular, IconArchiveOutlineRegular,
+  IconCheckOutlineRegular,
   IconChevronDownOutlineRegular, IconChevronsUpDownOutlineRegular, IconClockOutlineRegular, IconCloseFillRegular,
   IconCloseOutlineRegular, IconFlatListOutlineRegular, IconFolderCloseRegular,
+  IconInfoOutlineRegular,
   IconPlusOutlineRegular,
   IconProjectAddOutlineRegular,
   IconQueueOutlineRegular, IconSearchOutlineRegular, IconSlidersTwoOutlineRegular,
-  IconWorkspaceTreeOutlineRegular, Menu, type MenuEntry, Modal, Toast, Tooltip,
+  IconWorkspaceTreeOutlineRegular, Menu, type MenuEntry, Modal, StateDot, Toast, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   SessionListState, SessionSearchResultItem,
@@ -44,6 +46,11 @@ import {
 import { ProjectRowItem, SearchResultItem, SessionNodeItem, sessionRowKey } from './Rows.tsx'
 import { AnimatedRows } from './AnimatedRows.tsx'
 import { FLAT_SESSION_ORDER_KEY, type SessionGroupBy } from '../stores.ts'
+// The validation rule itself, imported rather than reimplemented: it is shared with the
+// Host half (`protocol.ts` is the two halves' vocabulary), and a local copy would be free
+// to drift from what the Host means when it speaks about links. Registered as a vendored
+// patch in `src/vendored/README.md`, like every other change to this tree.
+import { isBlankLink, isValidLink } from '../../../protocol.ts'
 import { WorkspacePickFlow } from '../WorkspacePicker.tsx'
 import css from './WorkspaceBrowser.module.css'
 
@@ -274,6 +281,13 @@ export type RowRequest =
      */
     readonly directories?: readonly string[] | undefined
     /**
+     * Current links, so the edit dialog starts from what is stored.
+     *
+     * Optional for the same reason as `directories`: the delete dialog shares this
+     * type and has no use for it.
+     */
+    readonly links?: readonly string[] | undefined
+    /**
      * The stored spec override: `'none'`, an uploaded file name, or absent to
      * inherit the global choice.
      *
@@ -371,6 +385,671 @@ function DirectoryHeader({
       >
         {t('directory.add')}
       </Button>
+    </div>
+  )
+}
+
+/**
+ * The header above {@link LinkRows}, shared by both project dialogs.
+ *
+ * Same shape as {@link DirectoryHeader} plus one addition: the count of rows that fail the
+ * `http(s)://` check, sitting **right of the label** rather than on its own line. Amber,
+ * because it reports the same kind of fact the settings card's amber lines do — something
+ * the surface remembers is not in the state its name implies.
+ *
+ * The count is passed in rather than derived here: the verdict belongs to each row's own
+ * debounced check, and this component would otherwise have to duplicate the rule.
+ * @param props - the label, the add control's state and sink, and the failing-row count.
+ * @returns the header row.
+ */
+function LinkHeader({
+  label, onAdd, disabled, invalidCount, blankCount, t,
+}: {
+  label: string
+  onAdd: () => void
+  disabled: boolean
+  invalidCount: number
+  /**
+   * Rows left empty after being visited. Shown in a **dimmed** tone, not the amber the
+   * invalid count uses: that one asks the user to fix something, while an empty row asks
+   * for nothing — it is dropped on save either way. One colour for both would flatten
+   * "needs attention" and "nothing to do" into a single signal.
+   */
+  blankCount: number
+  t: WorkspaceBrowserProps['t']
+}) {
+  return (
+    <div className={css.linkHeader}>
+      {/*
+        The label and both notices are one group, and the add control is the header's other
+        child. That grouping is what makes the layout independent of the notices: with all
+        of them as direct children the count had to carry `margin-right: auto` to push the
+        button right, so the button's position collapsed to the left the moment there was
+        nothing to report (measured). Splitting the alignment across a container and a child
+        is what broke it; both ends are laid out by the container now, so neither notice can
+        move the button.
+      */}
+      <span className={css.linkHeading}>
+        <span className={css.linkLabel}>{label}</span>
+        {/* `role="status"` rather than `alert`: a count that changes as the user types is
+          * progress, not an error, and an alert on every keystroke would interrupt. */}
+        {invalidCount > 0 && (
+          <span className={css.linkInvalidCount} role="status">
+            {t('link.countInvalid', { n: invalidCount })}
+          </span>
+        )}
+        {blankCount > 0 && (
+          <span className={css.linkBlankCount} role="status">
+            {t('link.countBlank', { n: blankCount })}
+          </span>
+        )}
+      </span>
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={<IconPlusOutlineRegular size={13} />}
+        disabled={disabled}
+        onClick={onAdd}
+      >
+        {t('link.add')}
+      </Button>
+    </div>
+  )
+}
+
+/** What a link row shows at its right edge; `idle` renders nothing. */
+type LinkCheck = 'idle' | 'checking' | 'valid' | 'invalid'
+
+/**
+ * One link row of a dialog, as the **draft** holds it.
+ *
+ * ## Why a row carries an id at all
+ *
+ * The rows were keyed by **index** while a link's check runs off its **value**, so the two
+ * identities disagreed the moment a row was removed. Deleting index `i` left every later
+ * component holding the *next* value: each re-ran a check for a value no user had touched, and —
+ * worse — for one frame it painted the verdict belonging to the value it used to hold onto the
+ * value it now held.
+ *
+ * Measured with a passing row above a failing one: `["none","invalid"]` became `["none"]` and
+ * stayed that way for ~17ms before the check restarted, so the row read as **passing** while its
+ * text was `not a url`. With four rows that all failed the mispaired frame is invisible, because
+ * a wrong verdict looks exactly like the right one.
+ *
+ * The id makes the component's identity and the data's identity the same thing again, so a row
+ * can move without changing what it is. `key={url}` is not an option: the value is what the user
+ * is editing, so keying on the value would remount the row — and drop focus — on every keystroke.
+ */
+interface LinkRowDraft {
+  /** Stable for the row's whole life in the draft; never derived from the url or the position. */
+  readonly id: string
+  readonly url: string
+}
+
+/**
+ * A fresh row identity.
+ *
+ * A counter rather than `crypto.randomUUID()`: ids only have to be unique **within one dialog's
+ * draft**, so a counter cannot collide and needs nothing from the platform. Called from event
+ * handlers and from the open handler — never during render, where a double invocation would burn
+ * ids (`StrictMode` runs render twice; the ids would merely skip, but there is no reason to).
+ */
+let linkRowSeq = 0
+function newLinkRow(url = ''): LinkRowDraft {
+  linkRowSeq += 1
+  return { id: `link-${linkRowSeq}`, url }
+}
+
+/**
+ * The urls of a draft, in display order.
+ *
+ * This is the shape the check, both counts and the Host all consume, so it is also the only place
+ * a draft's ids are dropped — the protocol and the stored record keep plain strings.
+ * @param rows - the draft rows.
+ * @returns their urls, in order.
+ */
+function linkUrls(rows: readonly LinkRowDraft[]): string[] {
+  return rows.map(row => row.url)
+}
+
+/**
+ * How many rows are empty, for the header's blank notice.
+ *
+ * ## Derived, not accumulated
+ *
+ * The first version kept a **set of indices** that rows added themselves to on blur. That
+ * model was wrong, and the way it failed is worth keeping: removing a row cleared the whole
+ * set on the theory that "every later index moved, and the next blur will redo it" — but a
+ * blur only happens when focus actually moves. After a removal focus sits on the delete
+ * button, nothing re-blurs, and the notice vanished for every remaining blank row and never
+ * came back (reported from a screenshot: five empty rows, no notice).
+ *
+ * The set was also accumulating state that had to be patched in three places — typing,
+ * removing, and opening the dialog — and every patch was a chance to drift from reality.
+ * Asking "which rows are empty **right now**" needs no patches at all:
+ *
+ *   - removing a row cannot stale it, because the row is simply no longer in the list;
+ *   - typing cannot stale it, because a non-blank row fails the emptiness test;
+ *   - reopening cannot stale it, because the list is the draft that was just seeded.
+ *
+ * ## Empty alone, with no regard to focus
+ *
+ * An earlier rule also required the row to be **unfocused**, so the notice appeared only after
+ * the user *left* a row. The user changed that on 2026-10-08: the row is dropped on save
+ * because it is empty, and that is already true the moment it exists — waiting for a blur
+ * stated the fact later than it became true. The focus bookkeeping existed for that rule and
+ * nothing else, so it went with it.
+ *
+ * Two neighbours are **not** affected and keep their own focus logic: the per-row green check
+ * (shown only while focused) and the auto-focus of a newly added row.
+ *
+ * ## Live, not settled
+ *
+ * It reads the **live** draft, and that is a deliberate layering decision (2026-10-09):
+ * emptiness is a **fact** — visible in the input box, unable to be wrong — while a verdict is a
+ * **judgement** that has to wait for the typing to stop. Feeding this count the settled snapshot
+ * made a fact wait for a judgement, which is what showed clearing a row as an ⓘ that kept
+ * spinning for half a second around a notice that had already appeared.
+ *
+ * From the live draft it can be reported the moment it is true: clearing a row adds one here in
+ * the same pass as its ⓘ disappearing and the failing count dropping. The three move together
+ * because all three describe the value that is on screen now.
+ *
+ * The `trim()` is {@link isBlankLink}'s, shared with `nonBlankLinks` on the storing side and
+ * with the `idle` verdict `useLinkCheck` gives a blank row, so the three cannot describe
+ * emptiness differently.
+ * @param rows - the live draft.
+ * @returns the number of empty rows.
+ */
+function countBlankLinks(rows: readonly LinkRowDraft[]): number {
+  return rows.filter(row => isBlankLink(row.url)).length
+}
+
+/**
+ * How long a row waits after the last change before it shows a verdict.
+ *
+ * Shared by the row's own check and the header's summary, and that sharing is the point: they
+ * used to disagree, and the disagreement was user-visible (see {@link useSettledInvalidCount}).
+ */
+const LINK_CHECK_DEBOUNCE_MS = 500
+
+/**
+ * How many rows are failing, for the header's count.
+ *
+ * ## One condition, three defects
+ *
+ * A row counts only while the url it holds is **the one that was judged** — the same pairing
+ * {@link useLinkCheck} applies to a single row. Everything the count has ever got wrong came from
+ * missing that condition, and all of it goes away with it:
+ *
+ *   - a value the user has just typed **has no verdict yet**, so it cannot be announced as failing
+ *     while the row beside it still spins (the count led the rows);
+ *   - a value the user has just **cleared is no longer the judged one**, so its failure
+ *     disappears in that same pass rather than half a second later (the count lagged them, and it
+ *     kept asserting a failure about text that was no longer on screen);
+ *   - deriving both notices in one render pass is what stops the failing count and the blank
+ *     notice from appearing one pass apart.
+ *
+ * The first two were patched separately before this: a shared interval from a shared function, and
+ * a "hold the previous number" mechanism on top. Both were treatments of the symptom, and this
+ * pair is what makes them unnecessary — there is no previous number to hold, because an
+ * unjudged row is simply not counted.
+ *
+ * ## Why `settled` is keyed by id
+ *
+ * The snapshot has to name **which** row reached a verdict, and an index would name the wrong row
+ * after a removal — the mispairing this file already had once (see {@link LinkRowDraft}). Keyed by
+ * id, a row that moved keeps its own entry.
+ * @param rows - the live draft.
+ * @param settled - the url each row concluded on; see {@link useSettledUrls}.
+ * @param enabled - the 开启http(s)://校验 setting; off means nothing is counted.
+ * @returns the number of rows whose current value was judged failing.
+ */
+function countInvalidLinks(
+  rows: readonly LinkRowDraft[],
+  settled: ReadonlyMap<string, string>,
+  enabled: boolean,
+): number {
+  if (!enabled) return 0
+  return rows.filter((row) => {
+    // Not the judged value: either it is new (spinner) or it was just cleared (nothing to judge).
+    if (settled.get(row.id) !== row.url) return false
+    // A blank row is not a failing one — a failure is a verdict about content, and empty is the
+    // absence of content. This arm is what keeps a cleared row out of the count even before the
+    // pairing above would have.
+    if (isBlankLink(row.url)) return false
+    return !isValidLink(row.url.trim())
+  }).length
+}
+
+/**
+ * The url each row has concluded on, keyed by row id.
+ *
+ * ## Why the url, and not just a "settled" flag
+ *
+ * A verdict is only valid for the value it was reached for (see {@link useLinkCheck}), so the
+ * header has to know **which value** each row's verdict belongs to. A boolean per row would say
+ * "something settled" without saying what, which is exactly the gap the failing count fell
+ * through: it needs to count a row only while the url on screen is the one that was judged.
+ *
+ * ## Why this replaced a "hold the previous snapshot" model
+ *
+ * The previous version kept the whole previous **list** and a separate function
+ * (`headerShouldWait`) deciding when to hold it. That machinery existed to keep two notices in
+ * step while a check was in flight, and it had to be re-reasoned for every transition — an
+ * addition, a removal, an emptied row, the switch turning on. Two of those reasonings were wrong
+ * in turn, and each was fixed by adding one more condition.
+ *
+ * This shape has no previous list to hold. A row whose url is not the settled one contributes
+ * nothing, so "in flight" and "about to be judged" both fall out of a single comparison in the
+ * consumer rather than out of a decision function here. There is nothing to hold because there is
+ * nothing stale to display: the count simply does not include a row that has not concluded.
+ *
+ * ## Keyed by id
+ *
+ * The snapshot has to name **which** row concluded. An index would name the wrong row after a
+ * removal — the mispairing this file already had once (see {@link LinkRowDraft}) — so the map is
+ * keyed by the row's id and a row that moved keeps its own entry.
+ *
+ * ## Replaced wholesale, so nothing leaks
+ *
+ * The map is rebuilt from scratch when the interval expires: a removed row cannot leave an entry
+ * behind, and the map cannot grow with the dialog's history. `setSettled` is called only in the
+ * timer, never during render, so a render that does not commit cannot change what is displayed.
+ *
+ * ## The switch being off
+ *
+ * Nothing is judged with it off, so nothing is concluded — the map is emptied rather than left
+ * describing a verdict the disabled setting no longer produces.
+ *
+ * ## Why this may lag a row's own spinner by a frame
+ *
+ * Both this interval and each row's own start from the same `rows` change, so they land within
+ * the same frame. Should they ever be a frame apart, the failure mode is benign **by
+ * construction**: a mismatch excludes a row from the count, it never adds one. The worst case is
+ * therefore a count that appears one frame late — never a count that reports a verdict the row
+ * beside it has not reached.
+ *
+ * It lives inside {@link LinkBlock}, which mounts and unmounts with its dialog (the official
+ * `Modal` returns `null` when closed), so the map cannot outlive the rows it describes. The
+ * version that kept this state at the dialog's top level survived the close and showed the
+ * **previous** project's count on the next dialog; mounting them together is what removes that,
+ * rather than a reset somebody has to remember.
+ * @param rows - the live draft.
+ * @param enabled - the 开启http(s)://校验 setting.
+ * @returns the concluded url per row id; a row absent from it has not concluded.
+ */
+function useSettledUrls(
+  rows: readonly LinkRowDraft[],
+  enabled: boolean,
+): ReadonlyMap<string, string> {
+  const [settled, setSettled] = useState<ReadonlyMap<string, string>>(() => new Map<string, string>())
+  useEffect(() => {
+    // Off: nothing is judged, so nothing is concluded.
+    if (!enabled) {
+      setSettled(prev => (prev.size === 0 ? prev : new Map<string, string>()))
+      return
+    }
+    // Any change restarts the interval for the whole list, which is the same rule each row applies
+    // to itself: once it expires, nothing has moved for a full interval, so every row's verdict —
+    // and only those — is current.
+    const timer = setTimeout(() => {
+      setSettled(new Map(rows.map(row => [row.id, row.url])))
+    }, LINK_CHECK_DEBOUNCE_MS)
+    return () => { clearTimeout(timer) }
+  }, [rows, enabled])
+  return settled
+}
+
+/**
+ * Debounced `http(s)://` validation for one link row.
+ *
+ * ## Why this is written by hand
+ *
+ * Measured against the installed DSH: **no official component validates an input as the
+ * user types** — a whole-asar scan for a debounce next to input-and-validity semantics
+ * found nothing. So there is no precedent to copy here, and this is a **deliberate
+ * deviation** from the 1:1 UI, registered in `src/vendored/README.md`.
+ *
+ * ## Two layers, not one time line
+ *
+ * Emptiness and a verdict are different kinds of statement, so they get different clocks
+ * (user's decision, 2026-10-09):
+ *
+ *   - **Emptiness is a fact.** It is visible in the input box, it cannot be wrong, and the three
+ *     consumers of it — the row's own mark, the failing count, and the blank notice — all say
+ *     what is true the moment it becomes true. So it is applied on the spot, with no wait.
+ *   - **A verdict is a judgement.** It can be wrong while the user is still typing, which is the
+ *     only reason to wait. So it takes `LINK_CHECK_DEBOUNCE_MS` and shows a spinner while it
+ *     waits.
+ *
+ * Running the two on **one** time line is what the earlier version did, and it was wrong in the
+ * expensive direction: it made a fact wait for a judgement, so clearing a row left its ⓘ spinning
+ * for half a second and its failure counted for half a second after the text was gone. The wait
+ * mechanism was then patched repeatedly — a shared interval, a "hold the previous number", a
+ * blank-value fast path — because each patch treated a symptom of the two layers sharing a clock.
+ *
+ * ## The verdict is stored with its value
+ *
+ * `verdict` holds the mark **and the url it was reached for**, and the mark is derived during
+ * render by comparing the two. That single pairing is what makes a verdict expire on its own:
+ *
+ *   - the url changed, so the old verdict is not a verdict **about this row** any more — it does
+ *     not need to be cleared, it is already inapplicable, and no frame can paint it over the new
+ *     value;
+ *   - the url is unchanged and matches, so the verdict applies;
+ *   - the url is unchanged and does not match yet, so the judgement is still in flight.
+ *
+ * Storing the mark alone (the earlier shape) meant the render that changed the value still
+ * painted the previous mark, and an effect corrected it one pass later — a frame of the wrong
+ * verdict, which is the same defect as the mispairing fixed by keying rows on an id.
+ *
+ * This is what answers "reward early": editing a row that was failing drops the failure in that
+ * same pass, because its verdict no longer applies to the value now on screen. `edited` — the ref
+ * that existed only to tell a born-blank row from an emptied one — is gone with it, since both are
+ * simply empty now.
+ *
+ * ## Focus: shown, but not re-checked
+ *
+ * The **visible** state is derived on the way out rather than stored: a `valid` verdict shows
+ * only while focused, while `checking` and `invalid` show regardless. That is the official
+ * `ModelRow` behaviour and is deliberately kept.
+ *
+ * A focus gain no longer re-runs the check (user's decision, 2026-10-08: the verdict is already
+ * right). The earlier version re-ran it, which is why this hook once carried a focus-gain
+ * counter as a dependency — `focused` itself as the dependency made a **blur** re-run the check,
+ * showing a spinner for half a second where the amber ⓘ is specified to stay. Nothing that can
+ * change a verdict is lost by dropping the counter: editing changes `value`, and a focus change
+ * does not.
+ * @param value - the row's current input.
+ * @param enabled - the 开启http(s)://校验 setting.
+ * @returns the mark to render, plus the two handlers the input must bind.
+ */
+function useLinkCheck(value: string, enabled: boolean): {
+  mark: LinkCheck
+  onFocus: () => void
+  onBlur: () => void
+} {
+  /**
+   * The last verdict **and the url it was reached for**.
+   *
+   * `null` means this row has not concluded anything yet — either the value has never been judged
+   * or it has changed since. Both are the same thing to the render below, which is why no
+   * separate "not yet" state is needed.
+   */
+  const [verdict, setVerdict] = useState<{ url: string; mark: LinkCheck } | null>(null)
+  const [focused, setFocused] = useState(false)
+  useEffect(() => {
+    // The switch being off takes the whole set away, so an in-flight timer goes too.
+    if (!enabled) { setVerdict(null); return }
+    // Emptiness is a fact, applied at once: there is nothing to judge, so there is no verdict and
+    // no spinner. This is the layer that used to wait, and waiting is what made clearing a row
+    // look like a check in progress.
+    if (isBlankLink(value)) { setVerdict(null); return }
+    // A non-blank value is judged, and the judgement waits for the typing to stop.
+    const timer = setTimeout(() => {
+      setVerdict({ url: value, mark: isValidLink(value.trim()) ? 'valid' : 'invalid' })
+    }, LINK_CHECK_DEBOUNCE_MS)
+    return () => { clearTimeout(timer) }
+  }, [value, enabled])
+  /**
+   * Derived during render rather than stored, so the mark always describes the value that is on
+   * screen in this pass. A verdict whose url is not the current one contributes nothing.
+   *
+   * The switch is checked **here** as well as in the effect, and that is not redundant: with it
+   * off the effect clears `verdict`, which would otherwise leave a non-blank row falling through
+   * to `checking` — a spinner that never lands, because nothing is going to conclude. Caught by
+   * `8) 关掉后不出标记` when this derivation was first written without it.
+   */
+  const settled: LinkCheck = !enabled || isBlankLink(value)
+    ? 'idle'
+    : verdict !== null && verdict.url === value
+      ? verdict.mark
+      : 'checking'
+  return {
+    // A green check is shown only while the row has focus; the other two show regardless.
+    mark: settled === 'valid' && !focused ? 'idle' : settled,
+    onFocus: () => { setFocused(true) },
+    onBlur: () => { setFocused(false) },
+  }
+}
+
+/**
+ * One editable link row: a rounded field, its verdict at the right edge, and a remove
+ * control.
+ *
+ * Modelled on the official `ModelRow` (`dsh-client-ui-settings-models`) rather than on
+ * {@link DirectoryRows} beside it. The difference is the point: a directory is picked
+ * through the native chooser and therefore rendered read-only, while a link is **typed**,
+ * so the row has to be an input.
+ *
+ * Keyed by the row's own **id**, not by its value and not by its position. The value is what the
+ * user edits, so keying on it would remount the row — and drop focus — on every keystroke; and
+ * keying on the position made a removal hand this component the *next* row's value, so it
+ * re-checked text nobody had touched and briefly showed a verdict belonging to another row.
+ * @param props - the row's identity, its value, its position, and the two sinks.
+ * @returns the row.
+ */
+function LinkRow({
+  id, url, index, disabled, enabled, autoFocus, onEdit, onRemove, onAutoFocused, t,
+}: {
+  /** The row's stable identity within the draft; see {@link LinkRowDraft}. */
+  id: string
+  url: string
+  /** 1-based position for the accessible name only — **not** an identity. */
+  index: number
+  disabled: boolean
+  enabled: boolean
+  /** Whether this is the row 「添加链接」 just created; see {@link LinkRow.onAutoFocused}. */
+  autoFocus: boolean
+  onEdit: (id: string, url: string) => void
+  onRemove: (id: string) => void
+  /**
+   * Take focus on mount, because this row was just created by 「添加链接」.
+   *
+   * So the cursor is in the new row and the user can type straight away. It is **not** tied to
+   * the header's blank notice: that notice counts empty rows regardless of focus, so a
+   * freshly added row reads as blank immediately rather than being held back until it loses focus.
+   * @param autoFocus - whether this is the freshly added row.
+   * @param onAutoFocused - called once the focus has been taken, so the parent clears its
+   * marker and a later render cannot steal focus back from wherever the user has moved on to.
+   */
+  onAutoFocused: () => void
+  t: WorkspaceBrowserProps['t']
+}) {
+  const { mark: check, onFocus, onBlur } = useLinkCheck(url, enabled)
+  const inputRef = useRef<HTMLInputElement>(null)
+  // The callback through a ref: it is a fresh closure per parent render, and depending on it
+  // directly would re-run this effect on every keystroke elsewhere in the dialog.
+  const settled = useRef(onAutoFocused)
+  settled.current = onAutoFocused
+  useEffect(() => {
+    if (!autoFocus) return
+    inputRef.current?.focus()
+    settled.current()
+  }, [autoFocus])
+  // The position is in the label because several rows share the same accessible name
+  // otherwise — the official `ModelRow` does the same for its per-row controls.
+  const position = String(index + 1)
+  return (
+    <li className={css.linkRow}>
+      <span className={css.linkField}>
+        <input
+          ref={inputRef}
+          className={css.linkInput}
+          type="text"
+          value={url}
+          disabled={disabled}
+          aria-label={`${t('field.links')} ${position}`}
+          // `onFocus` / `onBlur` are `useLinkCheck`'s: they keep the green check visible only while
+          // focused. A focus gain no longer re-runs the check, so these are display-only now.
+          onFocus={onFocus}
+          onBlur={onBlur}
+          onChange={(event) => {
+            // Nothing to tell the check any more: whether the row was born blank or emptied by the
+            // user, empty is empty, and the hook reads it from `value` in the same pass.
+            onEdit(id, event.target.value)
+          }}
+        />
+        {check !== 'idle' && (
+          <span
+            className={css.linkStatus}
+            // The tooltip carries the rule: an ⓘ alone does not say what failed.
+            {...check === 'invalid' ? { title: t('link.invalid') } : {}}
+          >
+            {check === 'checking' && <StateDot state="ongoing" size={14} />}
+            {check === 'valid' && <IconCheckOutlineRegular size={14} className={css.linkValid} />}
+            {check === 'invalid' && <IconInfoOutlineRegular size={14} className={css.linkInvalid} />}
+          </span>
+        )}
+      </span>
+      {/* A real `<button>`, unlike the settings card's `role="button"` spans: this one is
+        * not nested inside another button, so the native element is available. */}
+      <button
+        type="button"
+        className={css.iconButton}
+        disabled={disabled}
+        aria-label={t('link.remove', { url })}
+        onClick={() => { onRemove(id) }}
+      >
+        <IconCloseOutlineRegular size={14} />
+      </button>
+    </li>
+  )
+}
+
+/**
+ * The link list shared by the create and edit dialogs.
+ *
+ * The two dialogs render the same rows with the same rules; a second copy is where a
+ * styling or behaviour difference would appear without anyone deciding it should — the
+ * same reasoning {@link DirectoryRows} carries.
+ * @param props - the list, the editing state, and the two sinks.
+ * @returns the empty placeholder, or the list.
+ */
+function LinkRows({
+  rows, disabled, enabled, autoFocusId, onAutoFocused, onEdit, onRemove, t,
+}: {
+  rows: readonly LinkRowDraft[]
+  disabled: boolean
+  enabled: boolean
+  /**
+   * The row 「添加链接」 just created, which takes focus on mount.
+   *
+   * So the cursor lands in the new row and the user can type straight away. It no longer
+   * decides anything about the header's blank notice, which counts empty rows regardless of
+   * focus.
+   */
+  autoFocusId: string | null
+  /** Clears the marker once the focus has been taken, so a later render cannot steal it. */
+  onAutoFocused: () => void
+  onEdit: (id: string, url: string) => void
+  onRemove: (id: string) => void
+  t: WorkspaceBrowserProps['t']
+}) {
+  if (rows.length === 0) return <div className={css.linkEmpty}>{t('link.none')}</div>
+  return (
+    <ul className={css.linkList}>
+      {rows.map((row, index) => (
+        <LinkRow
+          // The row's **own** identity. Keying by index made a removal hand every later component
+          // the next row's value, so it re-checked text nobody touched and briefly showed the
+          // verdict that belonged to the value it used to hold.
+          // The row's **own** identity. Keying by index made a removal hand every later component
+          // the next row's value.
+          key={row.id}
+          id={row.id}
+          url={row.url}
+          // Position is still passed, but only to label the row: it is not an identity.
+          index={index}
+          disabled={disabled}
+          enabled={enabled}
+          autoFocus={row.id === autoFocusId}
+          onAutoFocused={onAutoFocused}
+          onEdit={onEdit}
+          onRemove={onRemove}
+          t={t}
+        />
+      ))}
+    </ul>
+  )
+}
+
+/**
+ * The link block of a project dialog: its header, its rows, and the state they share.
+ *
+ * ## Why this is a component rather than inline JSX in the dialog
+ *
+ * The header's memory must not outlive the rows it describes. Measured before this existed: the
+ * settled-count hook lived at the **dialog** component's top level, where it survives the dialog
+ * closing, while every row unmounts with the dialog. That asymmetry produced two defects, and the
+ * second is not a timing artefact at all:
+ *
+ *   - reopening the **same** project found the draft unchanged, so the header skipped the wait
+ *     and showed its count before any row had been checked;
+ *   - opening a **different** project showed the previous project's count for the whole wait —
+ *     one project's number painted on another project's dialog.
+ *
+ * The official `Modal` returns `null` while closed (read from `dsh-client-ui-primitives`), so
+ * mounting this with the dialog is enough: both halves are created and destroyed together, and
+ * there is no "remember to reset" for a later edit to forget.
+ *
+ * It also removes five hand-written resets that existed only because the state outlived the
+ * dialog, and the two `autoFocus` markers that had to be cleared from four different places.
+ * @param props - the draft, its sink, and the switch and disabled flag both dialogs share.
+ * @returns the block.
+ */
+function LinkBlock({ rows, onRowsChange, enabled, disabled, t }: {
+  rows: readonly LinkRowDraft[]
+  onRowsChange: (next: readonly LinkRowDraft[]) => void
+  enabled: boolean
+  disabled: boolean
+  t: WorkspaceBrowserProps['t']
+}) {
+  // The id-keyed snapshot of what each row has concluded; see `useSettledUrls`.
+  const settled = useSettledUrls(rows, enabled)
+  /**
+   * The row 「添加链接」 just created, which takes focus on mount.
+   *
+   * An id rather than an index: a removal shifts every later index, so an index marker could name
+   * a row the user never added.
+   */
+  const [autoFocusId, setAutoFocusId] = useState<string | null>(null)
+  return (
+    <div className={css.linkBlock}>
+      <LinkHeader
+        label={t('field.links')}
+        disabled={disabled}
+        onAdd={() => {
+          const row = newLinkRow()
+          setAutoFocusId(row.id)
+          onRowsChange([...rows, row])
+        }}
+        // Two layers, two sources, and that is the point: the blank notice is a **fact** about the
+        // live draft, so it is reported the moment it is true, while the failing count is a
+        // **judgement** and counts only rows whose current url is the one that was judged.
+        invalidCount={countInvalidLinks(rows, settled, enabled)}
+        blankCount={countBlankLinks(rows)}
+        t={t}
+      />
+      <LinkRows
+        rows={rows}
+        disabled={disabled}
+        enabled={enabled}
+        autoFocusId={autoFocusId}
+        onAutoFocused={() => { setAutoFocusId(null) }}
+        onEdit={(id, url) => {
+          // By id, not by position: the row being edited is the one the user typed in, whatever
+          // slot it currently occupies.
+          onRowsChange(rows.map(row => (row.id === id ? { ...row, url } : row)))
+        }}
+        onRemove={(id) => {
+          onRowsChange(rows.filter(row => row.id !== id))
+          // Not an index shift any more: this can only mean the row itself is gone.
+          setAutoFocusId(current => (current === id ? null : current))
+        }}
+        t={t}
+      />
     </div>
   )
 }
@@ -1158,6 +1837,8 @@ function SessionTree({
                   // is not something it renders. `?? []` because a consumer
                   // grouping by something else supplies none.
                   directories: groupingOverride?.find(source => source.key === group.key)?.directories ?? [],
+                  // Same lookup, same reason as the directories above.
+                  links: groupingOverride?.find(source => source.key === group.key)?.links ?? [],
                   // Same lookup, same reason: the spec override is data, not
                   // presentation, so it stays on the source rather than the node.
                   ...(() => {
@@ -1561,6 +2242,7 @@ export function WorkspaceBrowser({
   useInjectProjectInfo,
   useInjectProjectDoc,
   useSpecs,
+  useValidateLinks,
   renderSlot,
   t,
 }: WorkspaceBrowserProps) {
@@ -1610,6 +2292,10 @@ export function WorkspaceBrowser({
    */
   const showDocSpecRow = perProjectDocSpec && injectProjectDoc && injectProjectInfo
   const specs = useSpecs(value => value)
+  // Whether the dialogs mark links that are not `http(s)://` URLs. Independent of the
+  // three document gates above: registering a link has nothing to do with whether the
+  // project's context is injected, so this switch is read on its own.
+  const validateLinks = useValidateLinks(value => value)
   // The resolved name, not `t`, is the memo dependency: the bound seat keeps
   // its identity across a language switch.
   const defaultWorkspaceName = t('workspace.defaultName')
@@ -1947,6 +2633,8 @@ export function WorkspaceBrowser({
       readonly storedTitle: string
       /** Directories as stored, so the dirty check compares against the truth. */
       readonly storedDirectories: readonly string[]
+      /** Links as stored, so the dirty check compares against the truth. */
+      readonly storedLinks: readonly string[]
       /**
        * The spec override as stored: `'none'`, a file name, or `null` for
        * "inherit the global choice". Seeded on open so the dropdown's dirty
@@ -1960,6 +2648,8 @@ export function WorkspaceBrowser({
   // a list left from the previous edit would otherwise leak into this one, which is
   // the same trap `openCreate` resets its draft for.
   const [renameDirectories, setRenameDirectories] = useState<readonly string[]>([])
+  /** The project's link draft, reset per open for the same reason as the list above. */
+  const [renameRows, setRenameRows] = useState<readonly LinkRowDraft[]>([])
   /** The project's spec draft; `null` means "inherit the global choice". */
   const [renameDocSpec, setRenameDocSpec] = useState<string | null>(null)
   /** The create dialog's spec draft, reset per open like its directory list. */
@@ -1990,6 +2680,15 @@ export function WorkspaceBrowser({
   const renameDirectoriesChanged = renameTarget?.kind === 'project'
     && !sameStringList(renameDirectories, renameTarget.storedDirectories)
   /**
+   * The link list counts as dirty on the same rule as the directories.
+   *
+   * Omitting this is the trap the directory comparison documents above: editing only the
+   * links would leave 保存 disabled, which reads as a broken dialog rather than as "nothing
+   * changed" — the change the user just made is on screen.
+   */
+  const renameLinksChanged = renameTarget?.kind === 'project'
+    && !sameStringList(linkUrls(renameRows), renameTarget.storedLinks)
+  /**
    * The spec dropdown counts as dirty only when the feature is on.
    *
    * With the per-project row hidden the draft is never seeded from the record,
@@ -2001,7 +2700,8 @@ export function WorkspaceBrowser({
     && renameDocSpec !== renameTarget.storedDocSpec
   const renameBlocked = renaming || renameTrimmed === ''
     || renameTarget === null || renameDuplicate
-    || (renameTrimmed === renameTarget.storedTitle && !renameDirectoriesChanged && !renameDocSpecChanged)
+    || (renameTrimmed === renameTarget.storedTitle && !renameDirectoriesChanged
+      && !renameLinksChanged && !renameDocSpecChanged)
   const closeRename = () => {
     if (renaming) return
     setRenameTarget(null)
@@ -2015,7 +2715,7 @@ export function WorkspaceBrowser({
       ? renameWorkspace(renameTarget.id, renameTrimmed)
       : updateProject === undefined
         ? Promise.reject(new Error('no project model'))
-        : updateProject(renameTarget.id, renameTrimmed, renameDirectories, renameDocSpec)
+        : updateProject(renameTarget.id, renameTrimmed, renameDirectories, linkUrls(renameRows), renameDocSpec)
     commit.then(() => {
       setRenaming(false)
       setRenameTarget(null)
@@ -2053,6 +2753,8 @@ export function WorkspaceBrowser({
   const [creating, setCreating] = useState(false)
   const [createDraft, setCreateDraft] = useState('')
   const [createDirectories, setCreateDirectories] = useState<readonly string[]>([])
+  /** The create dialog's link draft, reset per open like its directory list. */
+  const [createRows, setCreateRows] = useState<readonly LinkRowDraft[]>([])
   const [pickingCreateDirectory, setPickingCreateDirectory] = useState(false)
   const [createBusy, setCreateBusy] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
@@ -2085,6 +2787,7 @@ export function WorkspaceBrowser({
     // Reset per open, like the draft above: a list left from the previous create
     // would otherwise leak into this one.
     setCreateDirectories([])
+    setCreateRows([])
     setCreateDocSpec(null)
     setCreateError(null)
     setCreating(true)
@@ -2098,7 +2801,7 @@ export function WorkspaceBrowser({
     if (createBlocked || createProject === undefined) return
     setCreateBusy(true)
     setCreateError(null)
-    createProject({ title: createTrimmed, directories: createDirectories, docSpec: createDocSpec }).then(({ projectId }) => {
+    createProject({ title: createTrimmed, directories: createDirectories, links: linkUrls(createRows), docSpec: createDocSpec }).then(({ projectId }) => {
       setCreateBusy(false)
       setCreating(false)
       // The official add-workspace flow opens a Session as part of creating the row
@@ -2433,6 +3136,8 @@ export function WorkspaceBrowser({
                       // `?? []` because the field is optional on the shared request
                       // type — the delete dialog has no directories to carry.
                       storedDirectories: row.directories ?? [],
+                      // Same `?? []`: this field is optional on the shared request type.
+                      storedLinks: row.links ?? [],
                       // `undefined` on the wire means "inherit", which the
                       // dropdown can only express as its own `null` — an absent
                       // key and "no override" are the same state, but the draft
@@ -2449,6 +3154,7 @@ export function WorkspaceBrowser({
                   // directory set left from the previous edit would otherwise leak
                   // into this one.
                   setRenameDirectories(row.kind === 'project' ? [...(row.directories ?? [])] : [])
+                  setRenameRows(row.kind === 'project' ? (row.links ?? []).map(url => newLinkRow(url)) : [])
                   setRenameDocSpec(row.kind === 'project' ? row.docSpec ?? null : null)
                   setRenameError(null)
                 }}
@@ -2527,6 +3233,21 @@ export function WorkspaceBrowser({
               t={t}
             />
           </div>
+        )}
+        {/*
+          The link block, on the same condition as the directory block above: links hang
+          off a project record, so a Workspace row has none. Rendered as one component because
+          the header's settled-count state must die with the rows it describes — see
+          {@link LinkBlock}.
+        */}
+        {renameTarget?.kind === 'project' && (
+          <LinkBlock
+            rows={renameRows}
+            onRowsChange={setRenameRows}
+            enabled={validateLinks}
+            disabled={renaming}
+            t={t}
+          />
         )}
         {/*
           The spec dropdown, present only for a project **and** only while the
@@ -2621,6 +3342,19 @@ export function WorkspaceBrowser({
               t={t}
             />
           </div>
+          {/* The link block, mirroring the edit dialog's — including being its own component,
+            * so its header state cannot outlive the rows. `open={creating}` already unmounts
+            * this subtree (the official `Modal` returns `null` while closed), and the explicit
+            * gate keeps that independence of the Modal's internals. */}
+          {creating && (
+            <LinkBlock
+              rows={createRows}
+              onRowsChange={setCreateRows}
+              enabled={validateLinks}
+              disabled={createBusy}
+              t={t}
+            />
+          )}
           {/* The per-project spec row, gated exactly as the edit dialog's is. */}
           {showDocSpecRow && (
             <DocSpecRow

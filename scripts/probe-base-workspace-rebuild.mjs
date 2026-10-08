@@ -214,7 +214,7 @@ try {
     `appeared=${String(deepRebuild.appeared)} exists=${String(existsSync(deep))}`)
 
   console.log('')
-  console.log('=== 6. default 模式：重建后被采纳为 specified，且 ＋ 落点正常 ===')
+  console.log('=== 6. default 模式：重建后仍留在 default，并记下 adoptedPath ===')
   // Breaking the official default: delete its registration. Its pointer stays set by design, so the
   // dialog appears in `'default'` mode and a mkdir-only repair could not help.
   //
@@ -236,17 +236,29 @@ try {
   const defaultRebuild = await pressRebuild()
   console.log(`  重建后设置: ${JSON.stringify(storedBase())}`)
   check('6) default 模式下弹窗出现', defaultRebuild.appeared === true)
-  check('6) 重建后被采纳为 specified', storedBase()?.mode === 'specified', JSON.stringify(storedBase()))
+  // The rebuild repairs the Workspace; it does NOT switch where Sessions land. Rewriting the mode
+  // to 'specified' is what moved the card's highlight and reported the user's own rebuild back to
+  // them as a setting change.
+  check('6) 重建后仍是 default 模式', storedBase()?.mode === 'default', JSON.stringify(storedBase()))
+  // And the plugin's own copy of the default's location is what its resolver reads from now on —
+  // the official pointer can never adopt the re-registered path (see
+  // `probe-initialize-default-after-delete.mjs`).
+  check('6) 记下了 adoptedPath', storedBase()?.adoptedPath === defaultWorkspace.path,
+    `${String(storedBase()?.adoptedPath)} vs ${String(defaultWorkspace.path)}`)
   check('6) 目录已重建', existsSync(defaultWorkspace.path))
   // The stored name belongs to the previous path (a memory survives a switch to 默认 by design), so
   // it must **not** be applied to the default directory. Found while reading this probe's own output:
   // the rebuilt setting carried `name: 'deep'` for `…default-workspace`.
   check('6) 没有沿用属于另一个路径的旧名字',
     storedBase()?.name !== 'deep', JSON.stringify(storedBase()))
-  check('6) 标题取自该目录自身',
-    storedBase()?.name === 'default-workspace', JSON.stringify(storedBase()?.name))
   const defaultRow = registry().find(row => row.path === defaultWorkspace.path)
-  check('6) 注册行的标题也来自该目录', defaultRow?.title === 'default-workspace', String(defaultRow?.title))
+  check('6) 注册行的标题来自该目录', defaultRow?.title === 'default-workspace', String(defaultRow?.title))
+  // The name is not written for the default: a taken-over default's title is derived from the
+  // directory itself and re-derived on every rebuild, so a stored one would be a second source of
+  // truth that a rename elsewhere silently falsifies. The old memory ('deep') may still sit there —
+  // that is `withDefaultMode`'s job — but the default's own title must not have been stored.
+  check('6) 没有把默认工作区的标题写进 name',
+    storedBase()?.name !== 'default-workspace', JSON.stringify(storedBase()?.name))
 
   requests.length = 0
   await newSession().click({ force: true })

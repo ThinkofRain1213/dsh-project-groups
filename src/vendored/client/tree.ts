@@ -128,6 +128,14 @@ export interface GroupSource {
    */
   directories?: readonly string[] | undefined
   /**
+   * Links associated with this caller-supplied group, in display order.
+   *
+   * Optional like `directories` above and for the same reason: a consumer that groups
+   * by something other than a project supplies none, and the edit dialog then starts
+   * from an empty list rather than failing.
+   */
+  links?: readonly string[] | undefined
+  /**
    * This group's document-spec override: `'none'`, an uploaded file name, or
    * absent to inherit the global choice.
    *

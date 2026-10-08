@@ -54,7 +54,7 @@ import {
   clientBaseWorkspace, clientCreateOpensSession, clientDocSpecFileName, clientDocSpecMode,
   clientExpansions, clientGrouping,
   clientInjectProjectDoc, clientInjectProjectInfo,
-  clientNewSessionTarget, clientOrders, clientPerProjectDocSpec, clientSpecs,
+  clientNewSessionTarget, clientOrders, clientPerProjectDocSpec, clientSpecs, clientValidateLinks,
   installProjectModel, projectModel,
 } from './grouping.ts'
 import { ProjectModel } from './projects.ts'
@@ -109,6 +109,36 @@ export interface BaseWorkspaceChooserRequest {
   readonly kind: 'pick'
 }
 
+/** The official default Workspace's probed state; see {@link refreshOfficialBase}. */
+export type OfficialBaseState = { readonly status: 'present' | 'missing' | 'unknown' }
+
+/**
+ * The official default Workspace as the Host last reported it, for the settings card.
+ *
+ * A store rather than a per-render Remote call: the card reads it through its own hook seat, and
+ * it is refreshed on a real signal instead of on every render. `'unknown'` is the starting value
+ * and the safest one — it renders as "no warning", so a probe that has not answered yet cannot
+ * produce a false alarm on a healthy install.
+ */
+const officialBase = createSnapshotStore<OfficialBaseState>({ status: 'unknown' })
+
+/**
+ * Re-probe the official default Workspace.
+ *
+ * Deliberately **not** on the `follow` path: `follow` re-sends a whole baseline per landed write,
+ * so a probe there would put a Remote round trip (and, on the creating branch, a native query) on
+ * every sidebar refresh. The Workspace registry's own snapshot is the right trigger — it changes
+ * precisely when the answer can.
+ * @param model - the live model, or undefined before its baseline lands.
+ */
+export function refreshOfficialBase(model: ProjectModel | undefined): void {
+  if (model === undefined) return
+  void model.officialDefaultWorkspace().then(status => { officialBase.set({ status }) })
+}
+
+/** The probe's observable, for the settings card. */
+export const clientOfficialBase: HostObservable<OfficialBaseState> = officialBase
+
 /**
  * The verbs the browser's row menu and drag drive.
  *
@@ -124,12 +154,12 @@ const projectActions: ProjectActions = {
   // displayed, and then silently discarded on save. The edit dialog was unaffected
   // because it goes through `updateProject`. Forwarding the whole object rather
   // than listing fields is what keeps the next added field from repeating this.
-  createProject: async ({ title, directories, docSpec }) => ({
-    projectId: await requireModel().create(title, directories, docSpec),
+  createProject: async ({ title, directories, links, docSpec }) => ({
+    projectId: await requireModel().create(title, directories, links, docSpec),
   }),
-  updateProject: async (id, title, directories, docSpec) => {
+  updateProject: async (id, title, directories, links, docSpec) => {
     const live = requireModel()
-    await live.update(id, title, directories)
+    await live.update(id, title, directories, links)
     // A separate write rather than part of `update`: the override is `optional`
     // in the schema, and clearing it means removing the key — a distinction the
     // whole-record `update` (which spreads the stored record) cannot express.
@@ -253,19 +283,32 @@ const projectActions: ProjectActions = {
     // anything is known would be a false alarm on every cold start.
     if (model === undefined) return { kind: 'official' as const }
     const setting = model.baseWorkspaceSetting()
-    if (setting.mode !== 'specified') return { kind: 'official' as const }
-    const path = setting.path ?? ''
-    // A `'specified'` setting with no path cannot be produced through the Host (it
-    // refuses that write), but a hand-edited medium could hold one. Read as "unset"
-    // rather than "missing": there is nothing to report and no id to resolve.
+    // Both modes end in the same lookup, by **path**, never by id: re-registering a
+    // directory mints a new id (measured), so a stored id would go stale while the path
+    // keeps resolving. That is also what lets a delete-and-re-add at the same path
+    // re-adopt itself.
+    //
+    // The modes differ only in where the path comes from — the Workspace the user picked,
+    // or the default Workspace this plugin took over once the official pointer went
+    // permanently unresolved. Reading `setting.path` in default mode would be wrong: it is
+    // the *memory* of the last 指定 pick, retained across a switch to 默认 by design.
+    const path = setting.mode === 'specified'
+      ? (setting.path ?? '')
+      : (setting.adoptedPath ?? '')
+    // An empty path means "unset", not "missing" — in `'specified'` because the Host refuses
+    // that write (a hand-edited medium could still hold one), and in `'default'` because no
+    // takeover has happened yet. Either way there is nothing to report and no id to resolve,
+    // so the shipped official-default flow runs.
     if (path === '') return { kind: 'official' as const }
-    // Resolved by **path**, never by id: re-registering a directory mints a new id
-    // (measured), so a stored id would go stale while the path keeps resolving. That
-    // is also what lets a delete-and-re-add at the same path re-adopt itself.
     const items = workspacesRegistry?.getSnapshot().items ?? []
     const found = items.find(item => item.path === path)
+    // `name` is only meaningful for the mode that captured one: `'specified'` stores the
+    // title the user saw, while a taken-over default's title is derived from the directory
+    // itself and re-derived on every rebuild — reporting a stored one there would be a
+    // second source of truth that a rename elsewhere would silently falsify.
+    const name = setting.mode === 'specified' ? (setting.name ?? null) : null
     return found === undefined
-      ? { kind: 'missing' as const, path, name: setting.name ?? null }
+      ? { kind: 'missing' as const, path, name }
       : { kind: 'workspace' as const, workspaceId: found.workspaceId }
   },
 }
@@ -284,13 +327,24 @@ function requireModel(): ProjectModel {
 export function apply(ctx: Context): void {
   // Read once, like the settings card does: this plugin's client inject list names the
   // Workspace controller, and `ctx.get` is the ungated lookup.
-  workspacesRegistry = (ctx.get('workspaces') as { list: WorkspaceSource } | undefined)?.list
+  const workspacesService = ctx.get('workspaces') as { list: WorkspaceSource } | undefined
+  workspacesRegistry = workspacesService?.list
   clientContext = ctx
   // Mount before registering the browser so the model's baseline can land while
   // the sidebar is still being assembled. A failure here is contained: the
   // sidebar then renders one Ungrouped bucket and the project verbs refuse
   // loudly, which is better than a dead sidebar.
-  void mountProjects(ctx)
+  void mountProjects(ctx).then(() => { refreshOfficialBase(projectModel()) })
+  // The probe follows the **Workspace registry**, not the project stream: a Workspace
+  // deletion is what makes the official default unreachable, and that is the only signal
+  // that has to be watched. It also fires when the registry's own baseline lands, which is
+  // how a cold start gets an answer without a scheduled poll.
+  if (workspacesService !== undefined) {
+    ctx.effect(
+      () => workspacesService.list.subscribe(() => { refreshOfficialBase(projectModel()) }),
+      'project-groups: official base probe',
+    )
+  }
   applyVendored(
     ctx, clientGrouping, projectActions, clientExpansions, clientOrders, clientCreateOpensSession,
     {
@@ -302,6 +356,7 @@ export function apply(ctx: Context): void {
       injectProjectDoc: clientInjectProjectDoc,
       specs: clientSpecs,
     },
+    { validateLinks: clientValidateLinks },
   )
   registerSettingsCard(ctx)
 }
@@ -349,8 +404,21 @@ function registerSettingsCard(ctx: Context): void {
         // request arrives while the card may not be mounted yet: the card reads the store on
         // first render, so a request written before it mounted is not lost.
         chooserRequest,
+        // Whether the official default Workspace still resolves. Read by the card only while
+        // the setting is `'default'` with no takeover; after one, this plugin's own path is
+        // the source of truth and this seat is ignored.
+        officialBase,
+        validateLinks: clientValidateLinks,
       },
       settleBaseWorkspaceChooser: () => { chooserRequest.set(null) },
+      // Mounting the card is the one moment a probe is definitely worth issuing: the user is
+      // looking at the setting, and `apply` may have run before the Remote namespace mounted.
+      refreshOfficialBase: () => { refreshOfficialBase(projectModel()) },
+      // The card's own 重建 action. Same Remote the missing-workspace dialog calls, so the two
+      // repairs cannot diverge.
+      rebuildBaseWorkspace: async () => {
+        await requireModel().rebuildBaseWorkspace()
+      },
       setTarget: (target: NewSessionTarget) => {
         // Not `requireModel`: the card can render before the Remote baseline
         // lands, and a click then must be a no-op rather than a thrown error out
@@ -419,6 +487,15 @@ function registerSettingsCard(ctx: Context): void {
         if (live === undefined) return
         void live.setPerProjectDocSpec(value).catch((reason: unknown) => {
           console.warn('set per-project-doc-spec rejected:', reason)
+        })
+      },
+      setValidateLinks: (value: boolean) => {
+        // Same reasoning as the other switches: a click before the baseline lands must be
+        // a no-op rather than a thrown error out of a React event handler.
+        const live = projectModel()
+        if (live === undefined) return
+        void live.setValidateLinks(value).catch((reason: unknown) => {
+          console.warn('set validate-links rejected:', reason)
         })
       },
       // The three spec-file actions surface as values rather than exceptions: a

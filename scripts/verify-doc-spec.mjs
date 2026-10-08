@@ -184,7 +184,7 @@ console.log('\n=== specSha1: content identity, not file identity ===')
 
 console.log('\n=== the drift decision (renderer contract) ===')
 {
-  const project = { title: 'P', directories: [], docPath: '', createdAt: '', updatedAt: '' }
+  const project = { title: 'P', directories: [], links: [], docPath: '', createdAt: '', updatedAt: '' }
   const DOC = 'C:\\home\\project-groups\\p.md'
   const SPEC = 'C:\\home\\project-groups\\specs\\t.md'
   // No document half at all: the document feature is off, so nothing about it
@@ -252,7 +252,7 @@ console.log('\n=== schema compatibility (the live unit must keep opening) ===')
     && globalParsed.data.docSpecFileName === ''
     && globalParsed.data.perProjectDocSpec === false)
 
-  const legacyProject = { title: 't', directories: [], docPath: '', createdAt: '', updatedAt: '' }
+  const legacyProject = { title: 't', directories: [], links: [], docPath: '', createdAt: '', updatedAt: '' }
   const projectParsed = projectRecord.safeParse(legacyProject)
   check('a project written before the spec fields still parses', projectParsed.success,
     JSON.stringify(projectParsed.error?.issues?.slice(0, 2)))

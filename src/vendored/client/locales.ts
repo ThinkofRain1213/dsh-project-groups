@@ -51,11 +51,17 @@ export const zh = {
   'edit.project': '编辑项目',
   'edit.project.title': '编辑项目',
   'save': '保存',
-  // Associated folders: the directories a project is linked to. Kept in the
+  // Associated directories: the directories a project is linked to. Kept in the
   // project block because nothing else in this dictionary has the concept.
   // 「关联」rather than 「源」: the field records what a project is tied to, not
   // where anything is read from.
-  'field.directories': '关联文件夹',
+  // 关联目录：项目所绑定的目录。**用「目录」而不是「文件夹」** —— 设置卡里的
+  // `injectInfoDesc` 早就写作「关联目录」，只有这个对话框用「文件夹」，
+  // 同一样东西两个词会让用户以为它们是两回事。英文同理，统一到 `directory`。
+  'field.directories': '关联目录',
+  // Associated links: URLs a project is tied to, typically its upstream repository. Sibling
+  // of the directories field above, and worded the same way for the same reason.
+  'field.links': '关联链接',
   'field.docSpec': '文档规范',
   // The spec dropdown. 跟随全局 is its own first row rather than a marker spread
   // across the other entries: with a global choice of 自定义-but-empty there is no
@@ -64,9 +70,25 @@ export const zh = {
   'docSpec.followGlobal': '跟随全局',
   'docSpec.none': '无',
   'docSpec.default': '默认',
-  'directory.add': '添加文件夹',
-  'directory.none': '未添加关联文件夹',
+  'directory.add': '添加目录',
+  'directory.none': '未添加关联目录',
   'directory.remove': '移除 {path}',
+  // The link list. Its own keys rather than reusing the directory ones: the two lists sit
+  // side by side in the same dialog, so a shared "添加" would leave two identical buttons
+  // with no way to tell which list each one feeds.
+  'link.add': '添加链接',
+  'link.none': '未添加关联链接',
+  'link.remove': '移除 {url}',
+  // The amber ⓘ tooltip — the only place the rule itself is stated, since the mark alone
+  // does not say what failed.
+  'link.invalid': '需以 http:// 或 https:// 开头',
+  // The header's summary, right of the label. 「条」 rather than 「行」: the counter's unit is
+  // a link, not a line of text.
+  'link.countInvalid': '{n} 条链接未通过校验',
+  // The blank-row notice: rows the user visited and left empty. Dimmed rather than amber,
+  // so it reads as "nothing to do" beside the invalid count's "fix this". Worded as the
+  // behaviour the user will observe ("ignored on save"), not as our internal data handling.
+  'link.countBlank': '{n} 行为空，保存时忽略',
   'delete.project': '删除项目',
   'delete.project.desc': '将删除项目“{name}”。其中的会话不会被删除，会回到“未分组”。',
   'delete.project.pending': '正在删除项目…',
@@ -219,14 +241,23 @@ export const en = {
   'edit.project': 'Edit project',
   'edit.project.title': 'Edit project',
   'save': 'Save',
-  'field.directories': 'Associated folders',
+  'field.directories': 'Associated directories',
+  'field.links': 'Associated links',
   'field.docSpec': 'Document spec',
   'docSpec.followGlobal': 'Follow global',
   'docSpec.none': 'None',
   'docSpec.default': 'Default',
-  'directory.add': 'Add folder',
-  'directory.none': 'No associated folders',
+  'directory.add': 'Add directory',
+  'directory.none': 'No associated directories',
   'directory.remove': 'Remove {path}',
+  'link.add': 'Add link',
+  'link.none': 'No associated links',
+  'link.remove': 'Remove {url}',
+  'link.invalid': 'Must start with http:// or https://',
+  'link.countInvalid': '{n} links failed validation',
+  // "row(s)" is deliberate: `verify-locales` checks key and placeholder parity, not English
+  // grammar, so avoiding a plural branch costs nothing and saves a second key.
+  'link.countBlank': '{n} empty row(s) ignored on save',
   'delete.project': 'Delete project',
   'delete.project.desc': 'This deletes the project “{name}”. Its sessions are not deleted; they return to Ungrouped.',
   'delete.project.pending': 'Deleting project…',

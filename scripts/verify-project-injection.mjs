@@ -28,9 +28,10 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const project = (title, directories) => ({
+const project = (title, directories, links = []) => ({
   title,
   directories,
+  links,
   docPath: '',
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
@@ -54,11 +55,11 @@ console.log('=== renderer: the block the model reads ===')
 // the implementation would make the assertion vacuous.
 const DECLARATION_TAIL = 'Project membership is classified by the plugin layer; the plugin does not modify '
   + "the official workspace system, so all projects' workspace directories fall into a single base "
-  + 'workspace. The "working directory" injected in the earlier system prompt is the official base '
+  + 'workspace — the "working directory" injected in the earlier system prompt is the official base '
   + 'workspace directory, and has no substantive relation to the project this session belongs to '
   + 'under this plugin.'
 const decl = (segments) => 'This section is injected by the `project-groups` plugin. It provides '
-  + `context information about the session's ${segments}. ${DECLARATION_TAIL}`
+  + `context information set by the user about the session's ${segments}. ${DECLARATION_TAIL}`
 
 // The unfiled case states that there is no project. It is a sentence, not the
 // filed template with an empty slot: `project name "none (ungrouped)"` would
@@ -125,9 +126,9 @@ const BUILT_IN = 'C:\\pkg\\spec\\PROJECT-SPEC.md'
 const withDoc = (document) => renderProjectInjection({ project: project('项目一', ['C:\\a']), document })
 
 // The declaration names each segment only while it can be rendered, so it never
-// promises a field the block does not carry. `related links` is reserved for a
-// feature that does not exist yet, so announcing it would send the model looking
-// for a value that is always absent.
+// promises a field the block does not carry. `related links` is now a real segment, but
+// it is announced **only when the project actually has links** — a project with none must
+// not send the model looking for a value that is always absent.
 {
   const unfiled = render(undefined)
   check('unfiled announces only the owning project',
@@ -142,9 +143,92 @@ const withDoc = (document) => renderProjectInjection({ project: project('项目�
     documented.includes(decl('`owning project` `relevant directories` `work document`')),
     JSON.stringify(documented))
 
-  check('a reserved segment is never announced',
+  // A project WITH links announces them, and the segment sits between the directories and
+  // the document — the order the block itself renders in.
+  const linked = render(project('项目一', ['C:\\a'], ['https://example.com/x']))
+  check('links add their segment to the declaration',
+    linked.includes(decl('`owning project` `relevant directories` `related links`')),
+    JSON.stringify(linked))
+  check('...and it precedes the document segment',
+    renderProjectInjection({
+      project: project('项目一', ['C:\\a'], ['https://example.com/x']),
+      document: { docPath: DOC, specMode: 'none' },
+    }).includes(
+      decl('`owning project` `relevant directories` `related links` `work document`'),
+    ))
+
+  check('a project with no links never announces the segment',
     !filed.includes('related links') && !documented.includes('related links'),
     JSON.stringify(filed))
+}
+
+console.log('\n=== renderer: the link lines ===')
+
+// No links, no line at all — unlike the directory block, which states its unset case.
+// A project with no links is the normal state, so a placeholder would put a line about an
+// absent thing into every request.
+{
+  const text = render(project('项目一', ['C:\\a']))
+  check('a project with no links renders no link line',
+    !text.includes('Related link'), JSON.stringify(text))
+}
+
+// The label follows the count, the same rule the directory lines use.
+{
+  const one = render(project('项目一', ['C:\\a'], ['https://example.com/x']))
+  check('one link uses the singular label',
+    one.includes('Related link: https://example.com/x'), JSON.stringify(one))
+  check('...and renders no list',
+    !one.includes('Related links:'), JSON.stringify(one))
+
+  const many = render(project('项目一', ['C:\\a'], ['https://example.com/x', 'https://example.com/y']))
+  check('several links use the plural label',
+    many.includes('Related links:'), JSON.stringify(many))
+  check('...and list every one in order',
+    many.includes('- https://example.com/x\n- https://example.com/y'), JSON.stringify(many))
+}
+
+// The lines sit together with the directory lines, not in their own section: a blank line
+// between them would read as a second group answering a different question.
+{
+  const text = render(project('项目一', ['C:\\a'], ['https://example.com/x']))
+  check('the link line follows the directory line with no blank line between',
+    text.includes('Relevant directory: C:\\a\nRelated link: https://example.com/x'),
+    JSON.stringify(text))
+}
+
+// Blank entries never reach the model, and the declaration agrees about it.
+//
+// The renderer filters rather than trusting the store, because records written before the
+// Host dropped blanks do exist — one of them produced a bare `- ` in this session's own
+// runtime context. The consistency half matters as much as the filtering: a declaration that
+// announced `related links` while rendering nothing would promise a field the block does not
+// carry, which is the one thing `declaredSegments` exists to prevent.
+{
+  const allBlank = render(project('项目一', ['C:\\a'], ['', '   ', '\t']))
+  check('an all-blank list renders no link line',
+    !allBlank.includes('Related link'), JSON.stringify(allBlank))
+  check('...and the block carries no bare dash line',
+    !allBlank.includes('\n- '), JSON.stringify(allBlank))
+  check('...and the declaration does NOT announce the segment',
+    !allBlank.includes('`related links`'), JSON.stringify(allBlank))
+  check('...while the directories segment is still announced',
+    allBlank.includes(decl('`owning project` `relevant directories`')), JSON.stringify(allBlank))
+
+  // Mixed: the blanks vanish, the real link stays, and the segment is announced — because
+  // after filtering there IS something to announce.
+  const mixed = render(project('项目一', ['C:\\a'], ['', 'https://example.com/only', '  ']))
+  check('a mixed list keeps only the real link',
+    mixed.includes('Related link: https://example.com/only') && !mixed.includes('Related links:'),
+    JSON.stringify(mixed))
+  check('...and DOES announce the segment',
+    mixed.includes(decl('`owning project` `relevant directories` `related links`')),
+    JSON.stringify(mixed))
+
+  // Content is not trimmed on the way through: only blanks are dropped.
+  const padded = render(project('项目一', ['C:\\a'], ['  https://example.com/padded  ']))
+  check('a padded link keeps its spelling in the block',
+    padded.includes('Related link:   https://example.com/padded  '), JSON.stringify(padded))
 }
 
 // The frame is what bounds a block that now carries user-supplied names and paths.

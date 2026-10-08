@@ -162,11 +162,15 @@ function bench() {
     projectId: project.projectId,
     title: 'after',
     directories: ['D:\\new', 'E:\\also'],
+    links: ['https://example.com/a'],
   })
   check('update returns the new title', updated.project.title === 'after')
   check('update returns the new directories',
     updated.project.directories.join('|') === 'D:\\new|E:\\also',
     updated.project.directories.join('|'))
+  check('update returns the new links',
+    updated.project.links.join('|') === 'https://example.com/a',
+    updated.project.links.join('|'))
   check('update keeps the id', updated.project.projectId === project.projectId)
   check('update keeps the creation instant', updated.project.createdAt === project.createdAt)
   check('update advances updatedAt', updated.project.updatedAt >= project.updatedAt)
@@ -177,7 +181,7 @@ function bench() {
 
   let message = ''
   try {
-    await controller.update({ projectId: 'nope', title: 'x', directories: [] })
+    await controller.update({ projectId: 'nope', title: 'x', directories: [], links: [] })
     message = '(no throw)'
   } catch (error) {
     message = error instanceof Error ? error.message : String(error)
@@ -209,7 +213,7 @@ function bench() {
   const { project: other } = await controller.create({ title: 'other' })
   message = ''
   try {
-    await controller.update({ projectId: other.projectId, title: 'shared', directories: [] })
+    await controller.update({ projectId: other.projectId, title: 'shared', directories: [], links: [] })
     message = '(no throw)'
   } catch (error) {
     message = error instanceof Error ? error.message : String(error)
@@ -224,6 +228,7 @@ function bench() {
     projectId: first.projectId,
     title: 'shared',
     directories: [],
+    links: [],
   })
   check('update to its own current title is allowed', kept.project.title === 'shared')
 
@@ -777,6 +782,79 @@ function bench() {
   ws = (await controller.baseline()).baseWorkspace
   check('switching back to default KEEPS the memory',
     ws.mode === 'default' && ws.path === SECOND && ws.name === 'two', JSON.stringify(ws))
+}
+
+// The taken-over default Workspace must survive a mode switch, exactly like the memory above.
+//
+// 默认 → 指定 → 默认 has to come back to the Workspace this plugin took over. Losing `adoptedPath`
+// on the way through `withDefaultMode` would silently send the resolution back to the official
+// pointer, which is permanently dead after the deletion that caused the takeover — so the user's
+// repaired Workspace would stop being used with no visible cause.
+{
+  const { controller } = bench()
+  const ADOPTED = 'C:\\taken-over-default'
+
+  // Simulate a rebuild's write directly: the Remote needs a real registry and a real directory,
+  // which this in-memory bench does not have. The field is what is under test here.
+  await controller.setBaseWorkspace({ mode: 'default' })
+  check('a fresh default has no takeover',
+    (await controller.baseline()).baseWorkspace.adoptedPath === undefined)
+
+  // The rebuild path, as `rebuildBaseWorkspace` writes it.
+  const domain = await controller.ready()
+  await controller.setGlobal(domain, {
+    baseWorkspace: { mode: 'default', adoptedPath: ADOPTED },
+  })
+  let ws = (await controller.baseline()).baseWorkspace
+  check('a takeover is visible in the baseline', ws.adoptedPath === ADOPTED, JSON.stringify(ws))
+
+  // Through specified and back: the takeover must still be there.
+  await controller.setBaseWorkspace({ mode: 'specified', path: 'C:\\picked', name: 'picked' })
+  check('specified does not clear the takeover',
+    (await controller.baseline()).baseWorkspace.adoptedPath === ADOPTED)
+  await controller.setBaseWorkspace({ mode: 'default' })
+  ws = (await controller.baseline()).baseWorkspace
+  check('switching back to default KEEPS the takeover',
+    ws.mode === 'default' && ws.adoptedPath === ADOPTED, JSON.stringify(ws))
+  // ...and the memory is retained independently, which is what keeps 默认 → 指定 working.
+  check('...and the memory survives beside it',
+    ws.path === 'C:\\picked' && ws.name === 'picked', JSON.stringify(ws))
+
+  // A plain `'default'` write with no requested memory must not fabricate one.
+  await controller.setBaseWorkspace({ mode: 'default' })
+  ws = (await controller.baseline()).baseWorkspace
+  check('a takeover write never fabricates a memory',
+    ws.path === 'C:\\picked' && ws.adoptedPath === ADOPTED, JSON.stringify(ws))
+}
+
+// `officialDefaultWorkspace` must be provably read-only, and must answer three states.
+//
+// The probe passes a throwing directory resolver so the branch that would `mkdir` and register
+// aborts before touching the filesystem. What is asserted here is the two answers that need no
+// registry: a composition without one reports `unknown` rather than throwing, and the method
+// exists as a Remote.
+{
+  const { controller } = bench()
+  const value = await controller.officialDefaultWorkspace()
+  check('the probe answers a known status without a registry',
+    value.status === 'unknown', JSON.stringify(value))
+  check('the probe never throws',
+    typeof controller.officialDefaultWorkspace === 'function')
+}
+
+// The probe's refusal must leave the registry's mutation queue usable.
+//
+// `initializeDefault` runs inside `enqueueOperation`, whose tail swallows each rejection. If the
+// refusal poisoned the queue, every later Workspace write would hang or reject — so this asserts a
+// later operation still lands.
+{
+  const { controller } = bench()
+  await controller.officialDefaultWorkspace()
+  const after = await controller.create({ title: 'after-probe' })
+  check('project writes still work after a probe',
+    after.project.title === 'after-probe')
+  check('...and the probe remains safe to repeat',
+    (await controller.officialDefaultWorkspace()).status === 'unknown')
 }
 
 // Both docSpec write paths must accept and refuse the SAME values.

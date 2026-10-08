@@ -769,6 +769,176 @@
   color: var(--dsw-alias-state-error-primary);
 }
 
+/*
+ * The link list, and its own styles rather than a reuse of the directory ones above.
+ *
+ * The two lists sit in the same dialog and answer the same shape of question, but they
+ * differ in one way that reaches the CSS: a directory row is read-only text, while a link
+ * row contains a real input. Sharing `.directoryRow`'s 32px fixed height would crop the
+ * input's own padding, so the row sizes to its content instead.
+ *
+ * The look follows the official `ModelRow` (`dsh-client-ui-settings-models`) — a rounded
+ * field with its verdict at the right edge — because that is the established shape for a
+ * typed, repeatable entry in this shell.
+ */
+.linkBlock {
+  margin-top: 16px;
+}
+
+/*
+ * Label group left, add control right — the alignment lives on the **container**, the same
+ * way `.directoryHeader` does it.
+ *
+ * The first version of this rule omitted `justify-content` and instead pushed the button
+ * right with `margin-right: auto` on the count. That made the button's position depend on
+ * the count existing: with nothing to report, the button collapsed against the label
+ * (measured — only the warning state looked right). Two ends, so the container lays out
+ * both ends.
+ */
+.linkHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/*
+ * The label and its count as one group, which is what keeps the count beside the label
+ * rather than centred between the two ends of the header.
+ */
+.linkHeading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.linkLabel {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* Amber, like the settings card's own "remembered but not in effect" lines. */
+.linkInvalidCount {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+/*
+ * The blank-row notice: rows the user visited and left empty.
+ *
+ * ## Not amber, and not `label-dimmed` either
+ *
+ * Not amber: the invalid count asks the user to act — go fix a link — while this one asks for
+ * nothing, because the row is dropped on save either way. One colour for both would flatten
+ * "needs attention" and "nothing to do" into a single signal.
+ *
+ * Not `label-dimmed`, which is what this started as and what shipped broken: measured on the
+ * dialog surface, dimmed is **1.45** against dark and **1.26** against light — invisible in
+ * both. The token's whole meaning is the reason: of its 14 uses in the installed DSH, every
+ * one is either `:disabled` or `::placeholder`. It says "this is not interactive", not
+ * "this is quiet", so using it for a sentence the user is meant to read contradicts it.
+ *
+ * `tertiary` is what the official styles use for quiet *explanatory* text — 367 uses against
+ * dimmed's 14 — and it measures **6.53** dark / **3.71** light, the same tier as the amber
+ * count beside it. Chosen deliberately over `secondary` (9.25 / 5.80, which does meet AA in
+ * both themes) because that one is the link label's own colour and would read as a second
+ * label rather than as a note beside one. The light-theme figure is below AA for 12px text —
+ * accepted, since the failure mode the user actually hit was "invisible in dark", and
+ * `tertiary` is legible in both.
+ *
+ * And no `margin-right: auto`: that is exactly what broke this header once, when the add
+ * button's position depended on a child element's margin. Both notices sit inside
+ * `.linkHeading` now, so neither can move the button.
+ */
+.linkBlankCount {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.linkEmpty {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+.linkList {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.linkRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/*
+ * The field and its verdict share one positioned box, which is what lets the verdict sit
+ * **inside** the input's right edge. The official `Input` offers only a leading `icon`, so
+ * this wrapper is the whole reason the trailing slot exists; `padding-right` on the input
+ * keeps typed text from running under the mark.
+ */
+.linkField {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.linkInput {
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  /* Room for the trailing mark, so a long URL never slides underneath it. */
+  padding: 0 28px 0 10px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.linkInput:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+}
+
+.linkInput:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Absolutely placed inside `.linkField`, vertically centred against the 32px input. */
+.linkStatus {
+  position: absolute;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  pointer-events: none;
+}
+
+/* Green: the row is a usable URL. */
+.linkValid {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+/* Amber, matching the header's count — the same fact, stated twice. */
+.linkInvalid {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
 .deleteStatus {
   font-size: 12px;
   line-height: 18px;

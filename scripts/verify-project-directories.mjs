@@ -244,5 +244,129 @@ function bench() {
     (await controller.baseline()).injectProjectInfo === true)
 }
 
+// 12. `links`: the same compatibility contract as `directories`, asserted separately
+//     because a field with its own default is its own rejection risk. A record written
+//     before the field existed must read back as `[]` rather than failing the domain open,
+//     which would take every project with it.
+{
+  const legacy = {
+    title: 'pre-links',
+    directories: [],
+    docPath: '',
+    createdAt: '2026-09-30T03:45:15.911Z',
+    updatedAt: '2026-09-30T03:45:15.911Z',
+  }
+  const parsed = projectRecord.parse(legacy)
+  check('a pre-links record parses', parsed.title === 'pre-links')
+  check('and reads back links as []',
+    Array.isArray(parsed.links) && parsed.links.length === 0, JSON.stringify(parsed.links))
+}
+
+// 13. `links` round-trips through create, update and the baseline, in display order.
+//     Order is part of the value here as much as it is for directories: the injection
+//     prints the list in the order stored.
+{
+  const { controller } = bench()
+  const created = await controller.create({
+    title: 'linked',
+    links: ['https://github.com/a/b', 'https://example.com/c'],
+  })
+  check('create stores the links in order',
+    created.project.links.join('|') === 'https://github.com/a/b|https://example.com/c',
+    JSON.stringify(created.project.links))
+
+  // A list the Host never validated: the switch only governs the editor's marking, so a
+  // non-URL must be storable. Asserting this here is what stops a later change from
+  // quietly turning the marking into a refusal.
+  const withFreeText = await controller.create({ title: 'free', links: ['not a url'] })
+  check('a non-URL link is stored verbatim',
+    withFreeText.project.links.join('|') === 'not a url',
+    JSON.stringify(withFreeText.project.links))
+
+  const updated = await controller.update({
+    projectId: created.project.projectId,
+    title: 'linked',
+    directories: [],
+    links: ['https://example.com/only'],
+  })
+  check('update replaces the list whole',
+    updated.project.links.join('|') === 'https://example.com/only',
+    JSON.stringify(updated.project.links))
+  check('and an empty list is a real value',
+    (await controller.update({
+      projectId: created.project.projectId,
+      title: 'linked',
+      directories: [],
+      links: [],
+    })).project.links.length === 0)
+
+  // Blank rows are dropped on **both** write paths, from one shared rule.
+  //
+  // This is the defect that prompted the check: the design said "drop blanks when storing"
+  // and the implementation dropped nothing, so an empty row became a real link — a bare
+  // `- ` in the injected block and a ghost row in the next dialog that then read as
+  // "unchanged", leaving 保存 disabled. Both halves are asserted here because a rule written
+  // twice is a rule that eventually disagrees with itself (`docSpec` in Z-3 was exactly that).
+  const blanks = ['', '   ', '\t']
+  const viaCreate = await controller.create({ title: 'blanks-create', links: [...blanks, 'https://x'] })
+  check('create drops blank rows and keeps the rest',
+    viaCreate.project.links.join('|') === 'https://x',
+    JSON.stringify(viaCreate.project.links))
+
+  const viaUpdate = await controller.create({ title: 'blanks-update', links: ['https://keep'] })
+  check('update drops blank rows too',
+    (await controller.update({
+      projectId: viaUpdate.project.projectId,
+      title: 'blanks-update',
+      directories: [],
+      links: [...blanks, 'https://kept'],
+    })).project.links.join('|') === 'https://kept')
+  check('an all-blank list stores as empty',
+    (await controller.update({
+      projectId: viaUpdate.project.projectId,
+      title: 'blanks-update',
+      directories: [],
+      links: [...blanks],
+    })).project.links.length === 0)
+
+  // The other half of "marking, not a refusal": a non-blank value that fails the URL check
+  // must survive the filter. Dropping it would turn marking into the gate the design
+  // rejected, and this is the assertion that stops a later "tidy-up" from doing so.
+  const keptUnusable = await controller.create({ title: 'unusable', links: ['', 'not a url'] })
+  check('a blank-only drop does not touch an unusable non-blank link',
+    keptUnusable.project.links.join('|') === 'not a url',
+    JSON.stringify(keptUnusable.project.links))
+
+  // Content is not trimmed: only blanks are removed, so a padded URL keeps its spelling.
+  const padded = await controller.create({ title: 'padded', links: ['  https://x  '] })
+  check('a padded link is kept verbatim, not trimmed',
+    padded.project.links.join('|') === '  https://x  ',
+    JSON.stringify(padded.project.links))
+
+  const baseline = await controller.baseline()
+  check('the baseline carries links for every project',
+    baseline.projects.every(project => Array.isArray(project.links)),
+    JSON.stringify(baseline.projects.map(project => project.links)))
+}
+
+// 14. `validateLinks` round-trips and preserves the rest of the global.
+{
+  const { controller, backend } = bench()
+  const created = await controller.create({ title: 'order keeper' })
+  check('a fresh install marks by default',
+    (await controller.baseline()).validateLinks === true)
+  check('setValidateLinks answers with the stored value',
+    (await controller.setValidateLinks({ value: false })).value === false)
+  const baseline = await controller.baseline()
+  check('the switch stuck', baseline.validateLinks === false)
+  check('the project order survived the write',
+    baseline.projectIds.join(',') === created.project.projectId)
+  const storedGlobal = backend.units.get(PROJECT_DOMAIN_NAME).global
+  check('nothing else in the global was dropped',
+    Array.isArray(storedGlobal.projectIds) && storedGlobal.projectIds.length === 1
+    && storedGlobal.injectProjectInfo === true,
+    JSON.stringify(storedGlobal))
+}
+
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)
 process.exit(failures.length === 0 ? 0 : 1)

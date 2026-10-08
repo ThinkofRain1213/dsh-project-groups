@@ -140,6 +140,23 @@ export interface DocSpecHooks {
 }
 
 /**
+ * The link-validation facts the project dialogs read.
+ *
+ * Its own argument rather than a member of {@link DocSpecHooks}: the two features are
+ * independent (a composition may mark links without having any document model), and
+ * folding them would force every caller to supply both or neither.
+ */
+export interface LinkHooks {
+  /**
+   * Whether the dialogs mark links that are not `http(s)://` URLs.
+   *
+   * A composition without the setting omits this, and the dialogs then mark nothing —
+   * the honest reading, since nothing behind them computes a verdict.
+   */
+  readonly validateLinks: HostObservable<boolean>
+}
+
+/**
  * The caller's project verbs, threaded into the browsing region's inject face.
  * Absent, the region keeps the shipped directory flow and a caller-supplied
  * group renders with no row menu or drag target.
@@ -152,15 +169,26 @@ export interface ProjectActions {
    * the official add-workspace flow creates the row and then opens a Session in it,
    * and filing that Session under the new project needs the id.
    */
-  createProject: (input: { title: string; directories: readonly string[]; docSpec: string | null }) => Promise<{ projectId: string }>
+  createProject: (input: {
+    title: string
+    directories: readonly string[]
+    links: readonly string[]
+    docSpec: string | null
+  }) => Promise<{ projectId: string }>
   /**
-   * Replace one project's title and directories in one commit.
+   * Replace one project's title, directories and links in one commit.
    *
-   * One verb rather than a retitle plus a directory write: the edit dialog
-   * commits both fields with one button, and splitting them would expose a
+   * One verb rather than a retitle plus separate list writes: the edit dialog
+   * commits every field with one button, and splitting them would expose a
    * retitled-but-stale state the user never asked for.
    */
-  updateProject: (id: string, title: string, directories: readonly string[], docSpec: string | null) => Promise<void>
+  updateProject: (
+    id: string,
+    title: string,
+    directories: readonly string[],
+    links: readonly string[],
+    docSpec: string | null,
+  ) => Promise<void>
   /**
    * Store one uploaded document spec.
    *
@@ -299,6 +327,9 @@ export interface UnscopedPlacement {
  * @param docSpecHooks - optional document-spec facts for the project dialogs'
  * spec row. A composition without a document model omits this, and the row then
  * renders disabled — there is nothing to configure.
+ * @param linkHooks - optional link-validation fact for the project dialogs' link
+ * rows. A composition without the setting omits this, and the dialogs then mark
+ * nothing — the honest reading, since no verdict is being computed.
  */
 export function apply(
   ctx: Context,
@@ -308,6 +339,7 @@ export function apply(
   ordersOverride?: HostObservable<Readonly<Record<string, readonly string[]>>>,
   createOpensSessionOverride?: HostObservable<boolean>,
   docSpecHooks?: DocSpecHooks,
+  linkHooks?: LinkHooks,
 ): void {
   const sessions = ctx.get('sessions') as ISessions
   const workspaces = ctx.get('workspaces') as IWorkspaces
@@ -435,6 +467,18 @@ export function apply(
   }
   const specs: HostObservable<readonly string[]> = docSpecHooks?.specs ?? {
     getSnapshot: () => EMPTY_SPECS,
+    subscribe: () => () => {},
+  }
+  // Answering `false` in a composition without the switch, the same shape and the same
+  // reasoning as the document facts above: no verdict is being computed, so the dialog
+  // marks nothing rather than drawing a check nobody produced.
+  //
+  // Note this is the **opposite** direction from the Client model's own `?? true`. That
+  // one answers "which behaviour is this install about to get" for a Host that has no
+  // opinion; this one answers "is anything computing a verdict here at all". The two
+  // questions differ, so the two defaults legitimately do too.
+  const validateLinks: HostObservable<boolean> = linkHooks?.validateLinks ?? {
+    getSnapshot: () => false,
     subscribe: () => () => {},
   }
   const hostInfo: HostObservable<RemoteHostFacts> = {
@@ -595,6 +639,7 @@ export function apply(
       injectProjectInfo,
       injectProjectDoc,
       specs,
+      validateLinks,
     },
   })
   const pickerInjected = (): WorkspacePickerInjected => ({

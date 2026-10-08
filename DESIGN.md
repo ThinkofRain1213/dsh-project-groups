@@ -2124,6 +2124,11 @@ if (mode === 'default') {
 **修正**：只有 `specified` 模式才传 stored name（那个名字是**为该路径**捕获的）；
 `default` 模式不传，让 registry 从目录推导。实测变为 `name: 'default-workspace'`。
 
+> ⚠️ **本节记录的是当时（3b）的行为，后被 Z-5 推翻**：`default` 模式此后
+> **不再被采纳为 `specified`**，而是写入插件自己的 `baseWorkspace.adoptedPath`
+> 并**保留 `mode`**（卡片高亮不再移动）。见下方 Z-5。
+> 下面清单里的第 6 条已按新语义改写（"重建后仍是 default 且记下了 adoptedPath"）。
+
 **验收（`probe-base-workspace-rebuild.mjs`，全绿）**：
 
 ```
@@ -2132,7 +2137,7 @@ if (mode === 'default') {
 3) 标题是用户起的名字，不是 basename
 4) 目录已存在时重建幂等（该路径仍只有一条）
 5) 父目录也不存在 ⇒ mkdir -p 一路建上去
-6) default 模式被采纳为 specified + ＋ 落点正常 + 未沿用旧名字
+6) default 模式重建后仍是 default + 记下 adoptedPath + ＋ 落点正常 + 未沿用旧名字
 7) 弹窗提示将创建目录
 ```
 
@@ -3198,100 +3203,1253 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
       `AnimatedRows` 的判定能看到"该行是被移除后重新出现"还是"用户搬动"，
       或让删除路径换一个不改变行键的中转。
       **需先定：是要"两个行为都对"，还是接受其中一边与官方不同。**
-  - [ ] **Z-5 默认工作区缺失时的三处界面改动**（2026-10-06 用户定案，待实施）
+  - [x] **Z-5 默认工作区缺失：警告 + 重建（已实施，2026-10-07）**
         **背景（已核实，决定了文案怎么写）**：
-        - `workspace/workspace/src/index.ts:256` `initializeDefault()`：
-          **只在 `defaultWorkspaceId === undefined` 且注册表与会话历史皆空时**才创建。
-        - 该字段**一经写入就不再清空**：`deleteKnown()`（同文件 `:583`）
-          只从 `workspaceIds` 里过滤，**不动 `defaultWorkspaceId`**；
-          本机注册表实测 `defaultWorkspaceId = c22b8419…` 持久存在。
-        - ⇒ 删掉默认工作区后，`initializeDefault` 拿到 `undefined` ⇒ **不创建**，
-          走的是**「底层工作区缺失」对话框**。
-        **⇒ 所以文案不能说"会自动创建"，只能说"会弹窗确认是否重建"**（用户已采纳）。
+        - `dsh-workspace` 的 `initializeDefault()`（asar 内 `lib/index.js:423-437`）只有三条分支：
+          ① `defaultWorkspaceId` 已设 ⇒ **立即** `entities.get(id)` 返回（纯读）；
+          ② 指针未设但注册表/归档集/会话历史非空 ⇒ `undefined`（纯读）；
+          ③ **全空** ⇒ `mkdir` + 注册（**写**）。
+        - 该字段**一经写入就不再清空**：`deleteKnown()`（同文件 `:703`）只从 `workspaceIds`
+          过滤，**不动 `defaultWorkspaceId`**；而它**全仓库只有一处可写**
+          —— `createCanonical` 的 `firstUse` 分支（`:684`），只有 `initializeDefault` 会传；
+          公开 `create()` 不传（`:406-410`）。存储域又被 `reserved` 挡着不让第二个 opener 打开
+          （`dsh-storage-domain/lib/index.js:356`）。
+        - ⇒ **删掉默认工作区的注册后，官方那条路永久死掉，且没有任何公共 API 能改写它。**
+          这正是"文案不能说会自动创建"的根据，也是本插件必须**自己另开一条道**的原因。
 
-        **① 卡片描述文案（`settings-card.tsx` 的「默认工作区」卡片）**
-        缺失时第二行改文案 + **橙色警告**（复用现有的
-        `${css.cubePath} ${css.cubeNotice}` 写法，与「自定义规范未选」同款；
-        `.cubeWarn` 与它颜色相同，见下方"共同待定"）。
-        文案大意：**默认工作区缺失，新建会话时会弹窗确认是否重建**。
+        #### 定案的模型：两条路径 + 单向切换
 
-        **② 卡片上加一个小按钮「重建默认工作区」**（与「更换…」同款 `css.cubeAction` 的
-        `role="button"` span）；**点击走二次确认弹窗**（即复用
-        `BaseWorkspaceMissing` 的两段式 `stage: 'report' | 'confirm'`，或直接调
-        `rebuildBaseWorkspace` 前先确认）。
-        可用的现成件：
-        - Host Remote `rebuildBaseWorkspace`（`src/index.ts:1568`）已做
-          `mkdir -p` + `registry.create`，并把 `'default'` 模式改写为
-          `'specified'` + 新路径（`:1601-1605`）。
-        - 客户端的 `rebuildBaseWorkspace` 已接线（`src/client/index.ts:220`）。
-        - ⚠️ **注意**：它会**把模式从 `默认` 改成 `指定`**（因为
-          `defaultWorkspaceId` 指针不改写、无法让官方重新接管，见 `:1560-1565`）。
-          ⇒ 卡片高亮会**移到「指定工作区」**。用户需确认这是否可接受。
+        ```
+        mode === 'specified'  → 查 baseWorkspace.path（原有逻辑，未动）
 
-        **③ 新建会话时底层工作区缺失的对话框加一个选项**
-        目标：**直接选一个工作区**，而不是只能"重建 / 重新指定"。
-        **⚠️ 第三个选项已存在**：现有对话框的「重新指定底层工作区」
-        （`baseMissing.respecify`）**做的就是这件事** —— 关掉弹窗 →
-        `pluginNavigation.openBundle` 跳到本插件详情页 → 自动弹出选择工作区列表
-        （`BaseWorkspacePicker`）。有探针钉住整条链：
-        `probe-base-workspace-respecify.mjs`（**12 项断言**，含"弹窗关闭/跳转成功/
-        选择器自动打开/取消后可再次打开"）。
-        **⇒ 要定的**：用户想要的是
-        (a) **改标签措辞**让它更像"选择一个工作区"，
-        (b) **在同一弹窗内直接列工作区**（不跳页），
-        还是 (c) 上述之一但**保留跳页**？
-        (b) 与现有设计冲突（选择器服务挂在 Plugins 页的 slot 里，见
-        `src/client/index.ts:226-247` 的注释），需另开实现路径。
+        mode === 'default'
+          ├ baseWorkspace.adoptedPath 未设 → 第1段：交给官方那条路
+          │                                   官方有 → 用它新建；undefined → 弹窗
+          └ baseWorkspace.adoptedPath 已设 → 第2段：查该 path
+                                              命中 → 用它新建；未命中 → 弹窗
+          重建（任一段）→ 写 adoptedPath、mode 不变 → 此后只走第2段，官方那条不再看
+        ```
 
-        **三处共同的待定**：
-        - **怎么判定"默认工作区不存在"**——卡片的 `workspaceSnapshot` 读的是
-          **注册表快照**，而默认工作区的目录是 **Host 派生的、不在注册表里**
-          （卡片注释 `settings-card.tsx:510-513`）。已有 Remote
-          `projectGroups/defaultWorkspacePath` 能拿**路径**，
-          但**没有"是否存在"**的查询 ⇒ 可能要新增一个 Remote（返回布尔值）。
-          这是①②的前置。
-        - **`.cubeNotice` 还是 `.cubeWarn`**——两者**颜色完全相同**
-          （都是 `var(--dsw-alias-state-warn-primary)`，`settings-card.module.css:237` 与 `:252`），
-          只是用在两处：`.cubeNotice` 给「自定义规范未选」，`.cubeWarn` 给
-          「指定工作区已不存在」。**⇒ 视觉上无区别，任选其一即可**，
-          但建议明确保留两个名字的语义，或合并成一个。
-        - **默认工作区缺失时是否也把卡片高亮留在「默认工作区」**：
-          重建会把模式改成 `'specified'`（见②的警告）⇒ 高亮会移走。
+        **⇒ 「覆盖官方」发生在插件自己的字段里，不是去改官方闩锁**（上面已证改不了）。
+        切换是**单向**的：翻过去就不回头。
 
-  - [ ] **Z-6 新建/编辑项目支持关联链接（上游仓库）**（2026-10-06 用户提出）
+        #### ① 存储：`baseWorkspace.adoptedPath`（`src/spec.ts`）
+        新可选字段，与 `path` **分开**：`path` 是"上次**指定**选的记忆"（`mode === 'default'`
+        时被刻意忽略，见 `spec.ts:199-204`），`adoptedPath` 是"默认工作区被接管后的位置"
+        （`mode === 'specified'` 时被忽略）。一个字段载不了两者，否则
+        默认 → 指定 → 默认 会丢掉用户的指定记忆 —— 那正是 `withDefaultMode` 存在的理由。
+        **`.optional()`，不 bump version**（`single` 布局会因版本不符拒绝打开整份文件）。
+
+        #### ② 判定"默认工作区不存在"：新增 Host Remote `officialDefaultWorkspace`
+        客户端**看不到**闩锁、归档集、stored headers，所以**做不出正确的门控**；
+        而直接调 `IWorkspaces.initializeDefault` 在第③支会**建目录**——
+        渲染一个设置页不得写盘。
+        ⇒ 判定放在 Host：**传一个"抛错的目录 resolver"**。它只会在第③支被调用，
+        而第③支的调用点在 `mkdir` **之前**，于是任何分支都不可能产生写入。
+        返回三态 `{ status: 'present' | 'missing' | 'unknown' }`；被自己的拒绝捕获时答
+        `'unknown'`（"判不了"，不是"缺失"）。
+        - 队列不受损：`enqueueOperation` 的尾部 `result.then(() => {}, () => {})` 吞掉本次拒绝
+          （asar `:937-942`）。
+        - 第②支答 `'missing'` 是诚实的：官方永不再建默认工作区，点新建会话**必然**弹窗，
+          卡片告警与点击结果由此**结构性一致**。
+
+        #### ③ 卡片（`settings-card.tsx` 的「默认工作区」卡片）
+        - 缺失时第二行改文案 + **橙色警告**，复用 `${css.cubePath} ${css.cubeWarn}`
+          （与「指定工作区已不存在」同款；`.cubeWarn` 与 `.cubeNotice` 颜色相同，
+          见 `settings-card.module.css:237`/`:252`，此处按语义选 `.cubeWarn`）。
+        - 文案：**「默认工作区缺失，新建会话时会弹窗确认是否重建」**
+          —— 说"会弹窗"，不说"会自动创建"。
+        - 同卡片上出现小按钮**「重建默认工作区」**：与「更换…」同款 `css.cubeAction`
+          的 `role="button"` span（**不能是真 `<button>`**，嵌套会报 `validateDOMNesting`，
+          多个探针把 console error 当失败；且**必须 `stopPropagation`**，
+          否则同时触发模式切换），点击走**二次确认 `Modal`**（与弹窗内的同名动作共用
+          同一个 `rebuildBaseWorkspace` Remote）。
+        - 两段的判法不同、语义同一个：**第1段**读 Host 探测结果；
+          **第2段**在注册表快照里按 `adoptedPath` 精确查表（同步，与指定卡片同款）。
+
+        #### ④ 重建：保留 mode（`src/index.ts` 的 `rebuildBaseWorkspace`）
+        - **删掉**原来把 `mode` 改写成 `'specified'` 的那段。**保留 `mode: 'default'`**，
+          只写 `{ ...stored, mode: 'default', adoptedPath: entity.path }`。
+        - ⇒ **卡片高亮不再移动**。用户点的是"重建默认工作区"，得到的就是这个，
+          而不是被告知"你的设置被改成了指定工作区"——那就是这条待办的原始报告。
+        - 重算路径的顺序：`specified` 用存的 path；`default` **先看 `adoptedPath`**
+          （已接管时缺的就是它，重算官方位置会去修另一个目录、留原目录仍解析不到），
+          未接管才走官方推导。
+        - `withDefaultMode`（`protocol.ts`）与 `setBaseWorkspace` 的 `'specified'` 分支
+          都必须**带上 `adoptedPath`**，否则一次模式切换就把接管丢掉（已由
+          `verify-project-host.mjs` 的接管断言钉住）。
+
+        #### ⑤ 新建会话弹窗的第三个选项：**已存在，不改**
+        现有对话框的「重新指定底层工作区」（`baseMissing.respecify`）做的就是"直接选一个
+        工作区"：关弹窗 → `pluginNavigation.openBundle` 跳到本插件详情页 →
+        自动弹出 `BaseWorkspacePicker`。`probe-base-workspace-respecify.mjs`
+        （**12 项断言**）钉住整条链。**⇒ 定案保留（即原 (c) 中的"保留跳页"）**：
+        选择器服务挂在 Plugins 页的 slot 里（`src/client/index.ts:226-247`），
+        同弹窗内直接列工作区需要另开实现路径，收益不抵复杂度。
+
+        #### 验收
+        - `scripts/probe-default-workspace-takeover.mjs`（新增，**27 条断言**）：
+          起点无告警/无按钮 → 删注册 → 出橙警告 + 出按钮（文案含"弹窗"、不含"自动创建"）
+          → 点重建只弹确认、**确认前不写盘** → 确认后写 `adoptedPath`、**`mode` 仍 `default`**、
+          高亮仍在「默认工作区」→ 告警与按钮消失、＋ 落点正常且不再弹窗、页面零 console 错误。
+        - `scripts/probe-official-default-probe.mjs`（新增，**18 条断言**）：
+          证明探测**零副作用** —— 健康时答 `present`、删注册后答 `missing`，
+          且两种情况下**注册表字节完全未变**、指针未被改写、**目录未被重新创建**；
+          可重复，且探测的拒绝没有毒化注册表的重启队列。
+        - `verify-project-host.mjs` 新增接管断言：`adoptedPath` 经 baseline 可见、
+          穿过 默认 → 指定 → 默认 仍在、且不会被凭空捏造。
+        - `probe-base-workspace-rebuild.mjs` 第 6 节语义反转：由"重建后被采纳为 specified"
+          改为"重建后仍是 default 且记下了 adoptedPath"。
+        - 已知局限：`adoptedPath` 只由重建写，**首次捕获**不需要单独动作；
+          `officialDefaultWorkspace` 只服务卡片告警，弹窗仍由
+          `navigation.ts:331-343` 的实时 `initializeDefault` 驱动（比探测更新）。
+
+
+  - [x] **Z-6 新建/编辑项目支持关联链接（上游仓库）** ✅ **已实施并结案（2026-10-08 实施 / 2026-10-09 结案）**（2026-10-06 用户提出）
         **目标**：给项目登记**关联链接**，用于把项目联系到**上游仓库**（GitHub 等）。
-        **要定的**：
-        - 领域字段——新增 `links`（复数？还是单个 `upstream`？），以及
-          单条链接的形状（只存 URL，还是 `{label, url}` 对）
-        - 数量——一个项目只连一个上游，还是可连多个（多个则要列表 UI + 排序）
-        - 呈现——项目行/hover 卡是否显示；**注入文本是否带上**（带上就等于
-          每次注入多几行，且官方 `Relevant directory` 的语域会被拉宽）
-        - 校验——是否要求 `http(s)://`；是否允许非 URL 的自由文本
-        - 与文档的关系——`PROJECT-SPEC.md` 的「关联资产」一节**已经**在文档里记链接，
-          需要说清两者分工（文档里是叙述，这里是结构化字段）
-        **已定（2026-10-07 用户）**：字段是 **`links` 数组，每条只存 URL**，
-        注入标签**随数量**（1 条 `Related link:`，≥2 条 `Related links:` + 平铺列表），
-        与 `directories` 的同名规则一致。
-        **实现照 `directories` 的完整链路做**（它是同构参照，四处一一对应）：
+
+        #### 一、数据（定案）
+        - `projectRecord.links: z.array(z.string()).default([])`，**每条只存 URL**。
+        - **不与 Z-8 合并形状**（用户 2026-10-08：Z-8 是「目录 + 链接」一起加 note，**先不做**）。
+          将来 Z-8 落地时 `string[]` → `{ url, note }[]`，那是一次独立形状变更。
+        - **两个硬约束（照 `directories`，不可省）**：
+          - `.default([])` 是**兼容性刚需**（`src/spec.ts:58-72`）：域打开时逐条校验，
+            缺字段会让**整个文件打不开、连累所有项目**。
+          - **不能 bump version**（`single` 布局会因版本不符拒绝打开）。
+
+        #### 二、校验开关（定案）
+        - 详情页新增 **「开启http(s)://校验」**（en：`Validate http(s)://`），**默认开**。
+        - 域里存一个布尔字段，带 `.default(true)` ⇒ 老数据读成"开"，**不 bump version**。
+        - **关掉 = 整套消失**：转圈、绿勾、橙 ⓘ、标题行计数**全部没有**，填什么存什么。
+          **关联链接本身仍然可用**（登记、编辑、注入都不依赖这个开关）。
+        - **开启 = 标记，不拦截**：保存照常成功。这是关键取舍 ——
+          否则一条早就存进去的旧值会**卡死整个对话框**（连改标题都提交不了）。
+        - **校验规则：严格，不自动补全。** 必须以 `http://` 或 `https://` 开头。
+          用户 2026-10-08 明确否掉了自动补全：实时校验 + 0.5s 防抖的组合下，
+          "输入框里的字被无声改掉"比"多打几个字符"更糟。**输入框永不改用户打的字。**
+          **判定是两步**：① 前缀必须是 `http://` / `https://`；② 其余部分必须能被
+          `new URL()` 解析。
+          **不额外要求 hostname 含点**（用户 2026-10-08 定案）：
+          `https://a` 会通过，但**内网主机名**（`https://gitlab`、`https://nas`）
+          是真实合法地址，为拦一个 `https://a` 而误伤它们不划算。
+          这条校验的定位是"**形状像网址**"，不是"这个网站能用" ——
+          我们**验证不了可达性，也不假装能**。
+        - **两条纪律（2026-10-08 按探查修正）**：
+          - **Host 零校验**。`create` / `update` **不判、不抛错、一律存下去** ——
+            校验的产出是**客户端本地算出的标记**，不参与写入。
+            （初版写的是"校验只在写入侧"，那是把它当成了拦截；探查后确认
+            "标记而非拦截"就该让 Host 完全不参与，否则不合规的旧值会卡死保存。）
+          - 校验规则**绝不进域 schema** —— 否则开关一关，已存的自由文本会让
+            整个文件打不开（`directories` 的教训）。
+          - 开关**只管 `links`**，不动 `directories`。
+
+        #### 三、实时校验交互（定案）
         ```
-        领域   projectRecord.links: z.array(z.string()).default([])
-        协议   ProjectCreateRequest.links? / ProjectUpdateRequest.links
-        Remote create（可带）/ update（整份替换）/ setLinks（单独替换）
-        UI     照 DirectoryHeader + DirectoryRows 做 LinkHeader + LinkRows
+        输入框内容变化
+          ├ 有变化（正在输入）→ 转圈圈        ← 常驻，直到停手
+          └ 停止变化 0.5s      → 校验
+               ├ 通过 → 绿勾（仅聚焦时显示；失焦即消失）
+               └ 不通过 → 橙 ⓘ（常驻，失焦也显示）
         ```
-        **两个必须照抄的细节**：
-        - `.default([])` 是**兼容性刚需**（同 `directories`，见 `src/spec.ts:58-72`）：
-          域打开时逐条校验，缺字段会让**整个文件打不开、连累所有项目**；
-          且**不能 bump version**（`single` 布局会因版本不符拒绝打开）。
-        - `setDirectories` 是**独立 Remote** 而非塞进 `update`（`update` 是整份替换），
-          `links` 需要同样的独立动词。
-        **注入侧零改动即可接通**：§25.3.4 已把 `related links` 定为预留段，
+        - **转圈 / 绿勾 / 橙 ⓘ 三态共用「输入框内右侧」同一个位置。**
+        - **空输入框** → 什么都不显示（没有内容就没有可校验的东西）。
+        - **失焦后重新聚焦** → **重新校验一次**（转圈 → 出结果）。
+          **用户 2026-10-08 定案**，推翻先前"用缓存、绿勾立刻出现"的设计。
+          代价只是 0.5s 的圈，换来的是**代码里不需要任何依赖豁免**：
+          "是否聚焦"可以正常进 `useEffect` 的依赖数组。
+          （先前方案必须把 `focused` 排除在依赖外才能让勾立刻出现，那是本设计
+          唯一的 React 反模式；此决定把它整个消掉。实现时
+          **不保留值缓存,也不豁免依赖**。）
+        - **标题行计数**：`N 条链接未通过校验`（en：`N links failed validation`），
+          **橙色**，位置在「关联链接」标签右边同行，与行内校验**同一数据源、实时联动**。
+          （用「条」不用「行」：链接的量词是条。）
+          **（2026-10-08 用户定案）不要在设计阶段推演"会不会挤压 + 添加链接"** ——
+          宽度、换行、对齐一律**实现后实测**，不臆造缺陷。
+        - **关开关时，正在跑的 0.5s 一并取消。**
+        - 行内 ⓘ 的 hover 说明：需以 `http://` 或 `https://` 开头。
+
+        #### 四、可用的官方件（**均已从安装版 asar 核实存在**）
+        | 需要的 | 用什么 |
+        |---|---|
+        | 绿勾 | `IconCheckOutlineRegular` |
+        | 转圈圈 | **`StateDot state="ongoing"`** —— 官方现成的双圆环 SVG + CSS 旋转 |
+        | 橙 ⓘ | `IconInfoOutlineRegular` |
+        | 行容器 | 官方 `ModelRow` 先例：圆角卡片 + grid |
+        | 输入框 | `Input`（`radius-md` / `height:32` / `bg-layer-1`） |
+        | 图标按钮 | 官方 `iconButton`：28×28，`border:none; background:0 0`，hover 变底色 |
+
+        **`StateDot` 还内含 `syncSpinner`**：把 CSS 动画的 `startTime` 钉到文档时间零点，
+        让所有可见转圈**同相位**（各自挂载时刻不同会转得错位）。自己写会漏掉这个细节。
+
+        #### 五、唯一要自己做的：输入框内右侧插槽
+        官方 `Input` **只有左侧 `icon`**（源码：`function Input({ icon, className, ...rest })`），
+        **没有 `suffix`**。
+        ⇒ 自包一层：`position:relative` 容器 + 绝对定位的右侧图标 + `input` 加 `padding-right`。
+        **不改官方 `Input`**（改了以后 vendor 重同步会冲突）。
+
+        #### 六、官方 UI 先例：`ModelRow`（`dsh-client-ui-settings-models`）
+        ```
+        div.modelEntry                    ← 圆角卡片（border-l4 / radius-lg / padding 6px）
+          └ div.modelRow                  ← grid，align-items:center，gap 6px
+              ├ input.input               ← 输入框（radius-md / height 32）
+              ├ button.iconButton         ← 28×28 裸图标按钮
+              └ button.iconButtonDanger   ← IconTrashOutlineRegular size 14，hover 才变红
+        ```
+        **关键区别：`links` 不是照 `DirectoryRows` 做。**
+        `directories` 靠**原生目录选择器**选路径 ⇒ 只读行 + 「添加文件夹」；
+        链接是**手打**的，没有原生选择器 ⇒ **必须能内联编辑** ⇒ 照 `ModelRow`。
+        多行列表的 `aria-label` **带序号**（官方写法 `` `${label} ${position}` ``）。
+
+        #### 七、协议与 Remote（**已按探查修正**）
+        ```
+        ProjectCreateRequest.links?     创建时可带
+        ProjectUpdateRequest.links      编辑时整份替换
+        Remote setLinks                 ❌ 不加 —— 见九-B4 与 L 组
+        ```
+        **为什么最初写"照 setDirectories 做独立动词"是错的**：穷举后确认
+        `setDirectories` **全仓库没有任何调用方**（`create` 直接带 `directories`、
+        `update` 一次提交全部字段），它自己就是死动词。再加一个 `setLinks`
+        只会多一份要维护的协议面、测试面与 Remote 描述符。
+        将来若真出现"单独改链接"的界面，再补 —— 那是**加**，不改协议。
+
+        #### 八、注入（渲染逻辑**零设计改动**，但测试要同步）
+        **"零改动即可接通"说的是渲染路径**：§25.3.4 已把 `related links` 定为预留段，
         `src/injection.ts` 的 `declaredSegments` 留了注释锚点
-        （`// related links belongs here once the project record carries it.`），
+        （`// related links belongs here once the project record carries it.`）。
         实现时打开那一行 `if`，声明段与段清单**自动通**。
-        **未定**：是否强制 `http(s)://`（我倾向强制——注入会把它给模型读，
-        自由文本会被当成 URL）；若需要非 URL 的关联（如 Jira 单号），
-        则要改存 `{label, url}` 而非纯 URL。
+        - 1 条：`Related link: {url}`
+        - ≥2 条：`Related links:` + 逐项 `- {url}`
+
+        ⚠️ **但"零改动"不等于不动任何东西**：`verify-project-injection.mjs`
+        有**硬编码行数断言**（`6/6/6/8/5`）与**声明段精确文本断言**，
+        加段后必红 —— 见九-K1/K2。**渲染代码不用改，测试必须同步。**
+
+        #### 九、落点清单（**逐项核实，53 项**）
+
+        来源：穷举 `directories` 的**全部 124 处引用**（12 个文件），逐类判定 `links`
+        是否需要对应项。**不是"想到哪查到哪"** —— 三轮自由探查分别得到 18 / 33 / 53 项，
+        每次都新增，说明只有穷举法才靠得住。
+
+        **A 组 · 数据与协议（5 加 / 2 不加）**
+        | # | 落点 | 判定 |
+        |---|---|---|
+        | A1 | `spec.ts:82` 后 `links: z.array(z.string()).default([])` | ✅ |
+        | A2 | `protocol.ts:90` 后 `readonly links: readonly string[]`（**必填**） | ✅ |
+        | A3 | `protocol.ts:228` 后 `readonly links?: readonly string[]` | ✅ |
+        | A4 | `protocol.ts:257` 后 `readonly links: readonly string[]` | ✅ |
+        | A5 | `ProjectSetDirectoriesRequest/Value` | ❌ **不加**（`setDirectories` 是死代码） |
+        | A6 | `globalRecord` 加 `validateLinks: z.boolean().default(true)`，`initialGlobal` 同步 | ✅ |
+
+        **B 组 · Host（3 加 / 3 不加）**
+        | # | 落点 | 判定 |
+        |---|---|---|
+        | B1 | `index.ts:686` 后 `links: [...record.links]`（**复制，不可别名**） | ✅ |
+        | B2 | `index.ts:1000` + `:1012` create 写入 | ✅ |
+        | B3 | `index.ts:1072` update 写入（`next` 是展开式，**不写会保留旧值**） | ✅ |
+        | B4 | `setLinks` Remote | ❌ **不加**（无调用方） |
+        | B5/B6 | 协议类型导入 / `remote.ts` 描述符 | ❌ 不需要 |
+
+        **C 组 · 客户端模型（7 加 / 2 不加）**
+        | # | 落点 | 判定 |
+        |---|---|---|
+        | C1/C2 | `projects.ts:66/69` Remote 类型 | ✅ |
+        | C4/C5 | `:540`/`:558` 调用 | ✅ |
+        | C6 | `:1114` 后 `links: Object.freeze([...(project.links ?? [])])` | ✅ |
+        | C7 | `:1213` 后 `groupingSnapshot` | ✅ |
+        | C8 | `:1240` 后 `sameStringList(project.links ?? [], other.links ?? [])` | ✅ |
+        | C3/C9 | `setDirectories` 相关 | ❌ 不加 |
+
+        **D 组 · 漏斗类型（5 加）** —— **同名类型在两个文件里，都要改**
+        `vendored/client/index.ts:155/163` 的 `ProjectActions`；
+        `contract/slots.ts:325/336`；`client/index.ts:157-162` 转发。
+
+        **E 组 · tree / 请求类型（5 加）**
+        `tree.ts:129`（可选，同 `directories`）；
+        `WorkspaceBrowser.tsx:275` `RowRequest`；
+        `:1949` `RenameTarget.storedLinks`；
+        **`:1160` 行菜单查表构造**；
+        **`:2435` 播种 + `:2451`**。
+        ⚠️ `RowRequest` 与 `RenameTarget` 是**两个不同类型**，都要加。
+
+        **F 组 · UI state 与逻辑（8 加）**
+        `:1962`/`:2055` state；`:1991` `renameLinksChanged`；
+        **`:2004` 脏检查**；`:2018`/`:2101` 提交；`:2087` `openCreate` 重置；`:2451` 播种。
+        ⚠️ 漏 `:2004` ⇒ **只改链接时保存按钮是灰的**（`docSpecChanged` 就是为同一原因加的）。
+
+        **G 组 · UI 组件（3）**
+        `LinkHeader` 照 `DirectoryHeader:354`；
+        **`LinkRows` 不照 `DirectoryRows`**（链接可编辑，照官方 `ModelRow`）；
+        两处插入 `:2608`（create）、`:2513`（edit）。
+
+        **H 组 · 样式 / locale（3）**
+        新增 link 类；**删除按钮复用已有 `.iconButton`**（`:17`，28×28）；
+        `locales.ts:58/222` 加 `field.links` 与 `link.*`。
+
+        **I 组 · 注入（3）**
+        `injection.ts:277` 后渲染；`:306` 打开锚点；新增 `renderLinkLines`（照 `:348-351`）。
+        `ProjectInjectionInput.project` 是 `ProjectRecord`（`:219`），`.default([])` 保证有值
+        ⇒ **注入侧不需要 `?? []`**。
+
+        **J 组 · 架构：开关怎么进 vendored 树（3）**
+        **已核实完整转发链**（照 `DocSpecHooks` 的先例）：
+        ```
+        client/index.ts:348 applyVendored(..., { perProjectDocSpec, … })
+          → vendored/client/index.ts:310 apply(..., docSpecHooks?: DocSpecHooks)
+          → :421-439 docSpecHooks?.perProjectDocSpec ?? { 兜底 observable }
+          → :594 塞进 WorkspaceBrowserInjected 的 hooks
+          → WorkspaceBrowser.tsx:1560-1563 解构 usePerProjectDocSpec…
+          → :1599-1612 useXxx(value => value)
+        ```
+        ⇒ 新增 `LinkHooks { readonly validateLinks: HostObservable<boolean> }`，
+        `apply` 加**第 8 个参数**（现为 7 个）；`grouping.ts` 加 `clientValidateLinks` seat；
+        卡片 inject face 加 `validateLinks` hook + `setValidateLinks`。
+
+        **K 组 · 测试（8）**
+        - **K1** `verify-project-injection.mjs:334-339` **硬编码行数 6/6/6/8/5** 必须改
+        - **K2** `:161` 声明段精确文本要加 `` `related links` ``
+        - **K3** `verify-doc-spec.mjs` **已查：无行数断言** ✅
+        - **K4** `verify-locales.mjs` 自动（两侧都加键）
+        - **K5** `verify-project-host.mjs` 加 `links` 往返
+        - **K6** **6 处内联 `ProjectValue` 字面量**要补 `links: []`
+          （`verify-project-injection.mjs:34`、`verify-doc-spec.mjs:187/255`、
+          `verify-project-directories.mjs:90`、`verify-projects.mjs:116/862`）
+        - **K7** `verify-projects.mjs:110/123` 的 **fake remote** 要加 `links`，否则静默不测
+        - **K8** `verify-project-directories.mjs`（29 条）需**同构一套** links 断言
+
+        **L 组 · 明确不做**：`setLinks` Remote、`remote.ts` 新描述符、
+        `ProjectSetLinksRequest/Value`、域 version bump。
+
+        #### 十、已裁定的两个问题
+        - **`ProjectValue.links` 用「必填」**（`readonly links: readonly string[]`），
+          与 `directories` 一致：`ProjectValue` 是 Host 产出，Host 必然带；
+          老 Host 兼容由 `accept()` 的 `?? []` 兜。代价是 K6 的 6 处测试字面量补一次。
+          **注意：这与"用户能不能不填"无关 —— 空数组 `[]` 一直是合法值，
+          正如现在的「关联文件夹」可以一个都不加。**
+        - **空行过滤**：空串/仅空白的条目**不进计数、不标 ⓘ**（与"空输入框什么都不显示"一致）；
+          存储时**一并过滤掉**。
+
+        #### 十一、设计层的验证结果（2026-10-08，四项）
+        | # | 项 | 结果 |
+        |---|---|---|
+        | 1 | `protocol.ts` 加共享纯函数是否会破客户端 bundle 纯度 | ✅ **已验证**。临时加 `export function …` ⇒ `pnpm build` + **`pnpm verify:bundle` 全绿**，external 列表未变 |
+        | 2 | `DocSpecHooks` 的兜底写法 | ✅ **已读全**（`vendored/client/index.ts:418-439`）。四者一个模式：`getSnapshot: () => 兜底值`、`subscribe: () => () => {}`。`validateLinks` 兜底取 `true` |
+        | 3 | 官方是否已有"防抖 + 输入框 + 校验"先例 | ❌ **没有**。全量扫官方所有 `.js`（含 `dsh-web-frontend`），判据"防抖 + `<input>` + 校验语义"命中 2 个候选，细读 `setTimeout` 上下文后**全部无关** |
+        | 4 | 计数放在标签右边会不会挤压 | ⏳ **不做纸面推演**（用户 2026-10-08 定案）—— **实现后实测** |
+
+        **第 3 项的后果（重要）**：这套实时校验交互**没有任何官方先例可抄**，
+        是 §0「界面与官方 1:1」的一处**有意偏离**，实现后必须登记进
+        `src/vendored/README.md` 的 patch 表。
+
+        **仍无法在纸面解决、只能实现后实测的两项**：
+        - 输入框内右侧插槽在 **480px 对话框 + 官方 dialog CSS** 下是否排得下
+          （`WorkspaceBrowser.module.css:616` 实测宽度 480px）
+        **仍无法在纸面解决、只能实现后实测的一项**：
+        - 输入框内右侧插槽在 **480px 对话框 + 官方 dialog CSS** 下是否排得下
+          （`WorkspaceBrowser.module.css:616` 实测宽度 480px）
+
+        已定（用户 2026-10-08）：**删除按钮用真 `<button>`** ——
+        它在输入框**外**，不像设置卡里那种嵌套按钮必须用 `role="button"` span。
+
+        **三项交互裁定（用户 2026-10-08）**：
+        1. `isValidLink` **不要求 hostname 含点**（内网主机名合法）
+        2. 失焦后重新聚焦 → **重新校验**（不缓存、不豁免 React 依赖）
+        3. 删除按钮 → **真 `<button>`**
+
+        **已知真空，用户已接受（2026-10-08）**：对话框关掉后，"这条不合规"就看不见了，
+        只有下次打开编辑对话框才再看到 ⓘ。**不做额外提示**（不在项目行上加标记、不加别处提示）。
+        理由：不合规只是"这条不像网址"，**不是错误状态** —— 数据照样存下、照样注入，
+        下次编辑时标记自然回来。为一个非错误状态在侧栏常驻一个警告，代价大于收益。
+
+        #### 实施记录（2026-10-08 完成）
+
+        **落点：53 项 → 实际 55 项。** 实施前的最后一遍探查又发现**两处清单漏项**，
+        都源自同一盲区：**清单是照 `directories` 推的，而 `directories` 没有开关**，
+        所以"开关的协议面"整条链不在参照物里。
+
+        | # | 漏项 | 漏了会怎样 |
+        |---|---|---|
+        | 1 | `setValidateLinks` Remote | 开关**没有写入动词**，卡片点了不生效 |
+        | 2 | `baseline.validateLinks` | 客户端**永远读不到开关值**（baseline 是逐字段列的，不是整份透传） |
+
+        **实测验证（全部通过）**：
+        - `pnpm check` **706 PASS / 0 FAIL**（基线 667，净增 39）
+        - 新增 `scripts/probe-project-links.mjs`（**26 条断言**，真实浏览器）：
+          防抖三态、聚焦规则、失焦后 ⓘ 常驻 / 绿勾消失、标题行计数 1→2、
+          **不合规照存**、重开读已存值、删行后 Host 收到短列表、关开关整套消失、零 console 错误
+        - `verify-project-directories.mjs` 新增 12 条 links/开关断言（含"非 URL 原样存储"）
+        - `verify-project-injection.mjs` 新增 links 段断言
+        - `verify-locales.mjs`：设置卡 58/58、浏览器 151/151
+
+        **⚠️ 探针抓到一个真实缺陷（已修）**：初版把 `focused` 放进 `useEffect` 依赖，
+        于是**失焦也会重新校验** —— 失焦后那一行会显示 0.5s 转圈，
+        **把规格要求"失焦仍常驻"的橙 ⓘ 顶掉了**。
+        先前的设计推演（"`focused` 进依赖没有副作用"）是**错的**，只有真跑浏览器才暴露。
+        修法：依赖改成**只在聚焦时自增的计数器**，聚焦状态由 hook 自己持有。
+
+        **已登记**：`src/vendored/README.md` 的 patch 表新增 9 行，
+        并在"刻意的行为偏离"里加第 **16** 条（实时校验无官方先例，
+        是 §0「界面与官方 1:1」的一处有意偏离）。
+
+        #### 实施后修复（2026-10-08，用户从截图发现）
+
+        **现象**：「+ 添加链接」**只在出现计数时才在右端**；没有计数时贴在「关联链接」右边。
+
+        **根因（我自己的 CSS 写错）**：`.linkHeader` 是 flex 但**漏了
+        `justify-content: space-between`**，改用 `.linkInvalidCount` 的
+        `margin-right: auto` 来把按钮顶到右端。
+        ⇒ **按钮位置依赖于"计数存在"**：计数一消失，那个 `auto` 也没了，按钮塌回左边。
+
+        **为什么与参照物不同**：`directoryHeader` 用 `justify-content: space-between`
+        （**在容器上**做两端对齐），而它**只有两个子元素**，所以效果正好；
+        `linkHeader` 有**三个**子元素，照抄 `space-between` 会让计数跑到中间。
+
+        **修法（用户定案「乙」）**：内层加 `.linkHeading` 把「标签 + 计数」包成一组，
+        外层容器做 `space-between`。⇒ 计数贴标签、按钮恒在右端，两个诉求同时满足。
+
+        **🔴 测试盲区（已补）**：原有 26 条断言**没有一条测位置** ——
+        计数文本在不在、标记对不对都测了，唯独没测"按钮在哪"，
+        所以这个缺陷一路通过了探针。新增 3 条位置断言：
+        - 无计数时按钮已在右端
+        - 有计数时按钮位置**没变**（768 → 768）
+        - 计数**紧贴标签**（不是被推到中间）
+
+        **反向对照（证明断言有效）**：把 CSS 还原成旧写法后，那 3 条里
+        **恰好 2 条失败**（`button.x=484`、`484 → 597.8`），其余 24 条全过 ——
+        与用户截图的现象一致。
+
+        #### 实施后修复 2（2026-10-08，用户报告"空链接"）
+
+        **现象（用户原话）**："一个空链接无法保存，两个及以上空连接又可以保存了"，
+        随后自己定性："**就是没有改导致的保存禁用，我原来就有一行空行了**"。
+
+        **根因：设计里写了"存储时过滤空行"，实现只做了一半。**
+
+        [本节第十节](#)原文是**两句话**：
+        > 空串/仅空白的条目**不进计数、不标 ⓘ**；**存储时一并过滤掉**。
+
+        前半句做了（`countInvalidLinks` 与 `useLinkCheck` 都跳过空值），
+        **后半句完全没写** —— Host 的 `create` / `update` 原样收下 `[""]` 就存了。
+
+        **因果链**：
+        ```
+        空行被存下（Host 无过滤）
+          → 注入侧 renderLinkLines 不过滤 ⇒ 模型收到「Related links:」+ 空项目符号
+          → 对话框播种把 [""] 读成一行空输入框
+          → 用户不动它 ⇒ sameStringList 相等 ⇒ 判定"没改" ⇒ 保存禁用
+        ```
+        **⇒ "1 个不能存、2 个能存"不是矛盾，是同一 bug 的两个面**：
+        两种操作其实**都算改了**（长度不同），差异来自更早一次操作留下的状态。
+
+        **实际危害（有证据，不只是视觉）**：本会话此前的运行时上下文确实以
+        `Related links:` + 两个空 `- ` 结尾 —— **模型收到了两个空的项目符号**。
+
+        **修复（用户定案"保存时过滤 + 注入时过滤"两层，共四处）**：
+
+        | # | 位置 | 改动 |
+        |---|---|---|
+        | 1 | `protocol.ts` | **新增共享纯函数 `nonBlankLinks`**（与 `isValidLink` 并列） |
+        | 2 | `index.ts` `create` | `nonBlankLinks(request.links ?? [])` |
+        | 3 | `index.ts` `update` | `nonBlankLinks(request.links)` |
+        | 4 | `injection.ts` `renderLinkLines` **与 `declaredSegments`** | 各自调用同一函数 |
+
+        **为什么第 4 处是两行而不是一行**：`declaredSegments` 若只看 `links.length`，
+        全空列表会**公告 `related links` 段却不输出任何行** —— 违反"声明段与实际渲染段
+        必须一致"这条有测试钉着的约束。两处**各自调用同一个纯函数**，天然一致；
+        不做"传递过滤后的列表"是因为传参多一处可漏。
+
+        **为什么共享而非各写**（用户选"乙"）：这条规则本已散在 **6 处**
+        （对话框 2、Host 写入 2、注入 2）。**本次 bug 本身就是这种分散的产物**。
+        `injection.ts → protocol.ts` 是纯函数 + type-only，**无循环、不破 bundle 纯度**
+        （`protocol.ts` 只有 type 导入，已核实）。
+
+        **边界（刻意的）**：
+        - **只丢空值，不 trim 内容**：`"  https://x  "` 原样保留（与 `directories` 一致，
+          也与"不做自动补全"同一条原则：不静默改写用户输入）。
+        - **只丢空值，不按合规性过滤**：`"not a url"` 必须保留 —— 丢掉它就把"标记"
+          变成了设计明确否决的"拦截"。
+
+        **测试补充（本次盲区）**：原有 29 条链接断言**无一条喂空值**
+        （计数与标记恰好也忽略空值，所以看起来测过了）。新增 12 条：
+        - `verify-project-directories.mjs`：两条写入路径都丢空行、全空存成 `[]`、
+          **非空不合规的必须保留**、空格内容不被 trim
+        - `verify-project-injection.mjs`：全空不输出且**声明段不公告**、混合只留真链接
+          且**声明段公告**、带空格的原样保留
+        - `probe-project-links.mjs` 第 7b 节：真实浏览器里"加空行 + 改标题 + 保存"，
+          断言库里**不新增空链接**、重开后**无幽灵行**
+
+        **反向对照（证明断言有效）**：撤掉 Host `update` 的过滤后重跑探针，
+        **恰好 2 条失败**，且报错内容与用户描述逐一对应：
+        ```
+        FAIL  7b) 空行没有被存进去 — bad one|        ← 存成了 ["bad one",""]
+        FAIL  7b) 重开后没有幽灵空行 — rows=2         ← 幽灵行回来了
+        ```
+
+        **验收**：`pnpm check` **718 PASS / 0 FAIL**（本次修复前 706，净增 12）。
+        `probe-project-links.mjs` **33 条断言全绿**（原 29 + 位置 3 + 空行 1 + 幽灵行 1）。
+
+        #### 实施后新增 3（2026-10-08，用户提出"空行提示"）
+
+        **用户定案的形式**：**条件显示**（不是常驻）；**失焦时出现**；**弱化色**。
+
+        **为什么不做常驻**：常驻讲的是"我们的数据处理方式"（"将会自动过滤空行"），
+        而用户的心智是"这行空的到底算不算问题"。改成条件显示后，
+        它从**信息**变成**安心** —— 只在真有空行时说"这行不用管"。
+        文案也相应改成行为描述：`{n} 行为空，保存时忽略`。
+
+        **为什么用失焦而不是"为空"作判据**：只按"为空"，提示会在按下「添加链接」的
+        **那一瞬间**就出现 —— 用户还没来得及打字，读起来像对话框在抱怨他刚建的行。
+
+        **🔴 由此暴露一个真实缺口（不只是探针写错）**：
+
+        按"失焦"作判据，**前提是"新行会被聚焦"—— 而当时没有任何代码让它聚焦**。
+        `onAdd` 只做 `setRenameLinks(list => [...list, ''])`。
+        于是最常见的那条路径：
+
+        ```
+        点「添加链接」→ 新行出现，但焦点在按钮上
+          → 输入框从未聚焦 → onBlur 永不触发 → onBlank 永不调用
+          → 提示永不出现        ← 判据的前提不成立
+        ```
+
+        **修法**：点「添加链接」时自动聚焦新行（`LinkRow.contentRef` + `autoFocus` +
+        父级用完即清的标记）。这既让判据成立，本身也是更好的交互 —— 点添加后直接就能打字。
+
+        **一个实现细节**：`setRenameAutoFocus(renameLinks.length)` 必须写在
+        `setRenameLinks` 的 updater **外面**。updater 必须是纯函数，StrictMode 会调用两次，
+        在里面 set 另一个 state 是错误写法。
+
+        **带副作用的清理点**（漏一处就是幽灵提示）：
+        | 时机 | 处理 |
+        |---|---|
+        | 打字 `onEdit` | 从集合删掉该下标 |
+        | 删行 `onRemove` | 集合**整体清空**（后面的下标全移位了） |
+        | 打开对话框 | 集合与自动聚焦标记一起重置 |
+
+        **实测（不做纸面推演）**：
+        - **颜色确实不同**：琥珀 `rgb(245,158,11)` vs 空行提示 `rgb(225,229,238)`
+        - **两个提示同时在场的头行不溢出**：`{"scroll":432,"client":432}`
+          —— 此前我推演"三个小字可能挤"，**实测是满宽不溢出**（推演又错了一次）
+        - 关掉「开启http(s)://校验」后**空行提示仍在**（它不依赖校验，已加断言）
+
+        **验收**：`probe-project-links.mjs` **41 PASS / 0 FAIL**（33 → 41，新增 8 条）；
+        `pnpm check` **718 PASS / 0 FAIL**。
+
+        #### 实施后修复 3（2026-10-08，用户从截图发现"删一行空行后提示就不见了"）
+
+        **现象**：截图里 5 行空行，**提示一行都没有**。用户原话：
+        "只要删了一行空行就不显示提示了"。
+
+        **根因：模型选错 —— 用"累加集合"，而不是"推导当前值"。**
+
+        旧实现维护一个 `Set<number>`，行**失焦时把自己加进去**。删行时我写：
+
+        ```
+        setRenameBlanks(new Set())   // 当时的注释：
+        // every later row's index moved, and
+        // renumbering a set of positions buys nothing the next blur will not redo.
+        ```
+
+        **"下一次失焦会重新算出来"这句话是错的。**
+        `onBlank` 只在**真实的失焦事件**里被调用；删行后焦点在删除按钮上，
+        **没有任何新的 blur 事件发生**：
+
+        ```
+        删行 → 集合清空 → 剩余空行全部失去"已失焦"身份
+             → 焦点在删除按钮，不产生新的 blur
+             → 集合永远为空 → 提示永久消失
+        ```
+
+        **更深的问题：累加模型本身易腐。** 它必须在**三处**打补丁
+        （打字时删下标、删行时清空、开框时重置）—— **补丁越多越说明模型选错了**。
+
+        **修法（用户定案"改"）：不存集合，只存"当前聚焦的行下标"，计数推导。**
+
+        ```tsx
+        const [renameFocused, setRenameFocused] = useState<number | null>(null)
+
+        function countBlankLinks(links, focused) {
+          return links.filter((l, i) => l.trim() === '' && i !== focused).length
+        }
+        ```
+
+        | | 集合模型（旧） | 单值模型（新） |
+        |---|---|---|
+        | 判据 | "失焦事件发生过" | "现在没聚焦" ← **与规则字面一致** |
+        | 删行 | 要清空/平移 | **自动正确** |
+        | 打字 | 要手动删下标 | **自动正确** |
+        | 开框 | 要重置 | **自动正确** |
+        | 状态漂移 | 会 | **不可能** |
+
+        **三处补丁全部消失** —— 这正是模型选对的标志。改动**净减少代码**
+        （`blankRowToggler` 整个删除）。
+
+        **🔴 测试盲区（第四次同类）**：7c 测的是"加行 → 点标题 → 提示出现"，
+        **没有一条测"删行之后"**。与我前三次的盲区完全同型：
+        **只测了自己写的那条路径，没测状态会被打断的路径。**
+
+        **新增 7d 节（5 条断言）**：三个空行→提示 3；删一行→**仍在且为 2**；
+        再删→为 1；填上最后一个→消失。
+
+        **反向对照（证明断言有效）**：注入一个"删行后清空且不自愈"的哨兵
+        （等价于旧模型），**恰好 2 条失败**，报错与用户截图一致：
+        ```
+        FAIL  7d) 删掉一行后提示仍在，且为 2 — ...（提示整条不见了）
+        FAIL  7d) 再删一行后提示为 1 — ...（提示整条不见了）
+        ```
+
+        **验收**：`probe-project-links.mjs` **46 PASS / 0 FAIL**（41 → 46）；
+        `pnpm check` **718 PASS / 0 FAIL**。
+
+        > **⚠️ 以下两条已被「实施后修复 4」推翻，保留作决策轨迹**：
+        > - 「**失焦时出现**」的判据 → 改为**实时（只看空，与焦点无关）**；
+        > - `countBlankLinks(links, focused)` 的 `focused` 入参 → **整条焦点上报链已删除**。
+        > 代码与探针以「实施后修复 4」为准，本节文字仅记录当时的推理。
+
+        #### 实施后修复 4（2026-10-08，用户报告"清空后行内 ⓘ 先消失、头行计数滞后"）
+
+        **本段同时记录两次改动**，它们同源：两个消费者（行内标记 / 头行计数）
+        对**同一次草稿变化**用了**不同的时间基准**，于是往两个方向各错了一次。
+
+        **（一）空行提示改实时**（用户定案："不排除聚焦，只要是空就算，
+        输入文字非空就不算"）
+
+        原判据是「空 **且** 未聚焦」，为它建了一整套焦点上报链
+        （`FocusedRow` 类型 + 两个 state + 两处重置 + 两处透传 + 两个事件绑定）。
+        判据收窄成「空」之后，**整条链失去存在理由，全部删除** —— 改动净减少代码。
+
+        ```tsx
+        // 修复 3 的单值模型            →  本次
+        function countBlankLinks(links, focused) {   →  function countBlankLinks(links: readonly string[]) {
+          return links.filter((l, i) =>                return links.filter(link => link.trim() === '').length
+            l.trim() === '' && i !== focused).length   }
+        }
+        ```
+
+        **必须保留、不要连带删掉的两样**（它们管别的事）：
+        - `useLinkCheck` 的 `onFocus` / `onBlur` —— 管"绿勾只在聚焦时显示"与"聚焦重跑校验"，
+          有 3 条断言钉着；
+        - 新行**自动聚焦**（`autoFocus` + `onAutoFocused`）—— 管"点添加后光标就在新行"，
+          不再以提示为依据。
+
+        **行为差异**：`点回该行提示消失` 这条断言**从此不再成立**（点回去它还是空的，
+        提示应仍在），7c 已按新规则重写为 8 条。
+
+        **（二）头行计数不再滞后**（用户报告的真问题）
+
+        `useSettledInvalidCount` 原先对**任何**草稿变化都等 500ms。但行内**不是**：
+        `useLinkCheck` 有一条**空值快速通道** —— `trimmed === ''` 直接 `idle`，因为没东西可校验。
+
+        ```
+        清空一行：
+          行内   0ms  → idle             （空值快速通道）
+          头行   500ms 才归零            （统一防抖）
+        ```
+
+        **⇒ 这是同一个缺口的两端**：上次修的是"头行**领先**"（0ms 出结论 vs 行内 500ms），
+        本次是"头行**滞后**"。两次的根因都是"两边基准不同"。
+
+        **修法**：等待的条件从"草稿变了"改成"**有行会转圈**"，即按行内自己的规则重建：
+
+        ```tsx
+        const restarted = !before.enabled                       // 开关刚打开：所有非空行都要重判
+        const spins = restarted || links.some((link, at) =>
+          link !== before.links[at] && link.trim() !== '')      // 改成非空 ⇒ 该行会转圈
+        if (!spins) { setDisplay(countInvalidLinks(links, enabled)); return }   // 清空走这里，立即
+        ```
+
+        **按下标对齐**是刻意的：列表按 index 键控，删行会把后面每一行的值移到上一行，
+        那些行**确实**会重判 —— 与真正存在的那些组件一致。
+
+        **验证（不做纸面推演）**：
+
+        | | |
+        |---|---|
+        | 修复后采样 | `[invalid/1, none/null, none/null, …]` —— 行内与头行**同一拍**归零 |
+        | 反向对照 | 改回"一律等 500ms"后**恰好 2 条失败**，头行多持有 **7 拍（≈420ms）** |
+        | `probe-project-links.mjs` | **61 PASS / 0 FAIL**（本轮新增 7e/7f；**注**：本节早前记的 41 / 46 与现今全量计数对不上，疑为当时只数了部分节，未能复原，以实测为准） |
+        | `pnpm check` | **718 PASS / 0 FAIL / 退出码 0** |
+
+        **反向对照的失败信息（与用户描述一致）**：
+        ```
+        FAIL  7f) 行内消失的那一拍，头行计数也同时为 null（不滞后） — {"mark":"none","count":"1 条链接未通过校验"}
+        FAIL  7f) 之后头行不再单独持有计数 — ["1 条链接未通过校验" ×7, null ×7]
+        ```
+
+        **探针本身的一个坑（写的时候踩到）**：`fill('')` 之后**同一 tick** 采样会读到
+        **提交前**的 DOM（输入框已空、旧标记仍在）。所以断言不能写成"每个采样都已消失"，
+        那是把"读得太早"也算成缺陷。改为**配对断言**：**行内转 none 的那一拍，头行必须同时为 null**。
+        采样窗口取 14 × 60ms ≈ 840ms，**刻意长于 500ms 防抖** —— 否则可能靠时序侥幸通过。
+
+        **🔴 测试盲区（第五次同型）**：7e 测的是「非空 → 另一个非空」，
+        **没有一条测「清空」**。而这个分支差别**静态就能看出来**（空值快速通道写在代码里）。
+        与前四次盲区完全同型：**只测了自己写的那条路径。**
+
+        **另发现（同型、方向相反，本次未处理）**：挂载时头行被 **seed 成当前草稿的值**，
+        而行内要在 500ms 后才出结论 ⇒ 打开对话框的那一瞬间是**"头行领先"**方向的不同步。
+        触发条件是"库里有不合规链接的对话框被打开"，**未修**，留作已知项。
+
+        #### 实施后修复 5（2026-10-08，用户报告"非法→空时一行两段同时渲染一下"）
+
+        **现象**（用户原话，并明确排除了折行："不是两行，是一行两段同时渲染一下"）：
+        清空一行时，头行有**一帧**同时显示 `1 条链接未通过校验` 与 `1 行为空，保存时忽略`。
+
+        **根因：两个提示的数据来源性质不同 —— 一个渲染期推导，一个来自 state。**
+
+        ```tsx
+        blankCount={countBlankLinks(renameLinks)}      // 渲染期推导 ⇒ 同一次渲染就变
+        invalidCount={settledRenameInvalidCount}       // 来自 useState ⇒ effect 里 setState，
+                                                       //   落后一轮渲染
+        ```
+
+        ```
+        onChange → setRenameLinks([''])
+          ├─ 渲染 N（上屏）：blankCount=1（立刻）   invalidCount=1（state，旧的）
+          │                   ⇒ 一行两段同时渲染        ★ 用户看到的那一帧
+          └─ effect：!spins → setDisplay(0)
+               └─ 渲染 N+1：invalidCount=0
+        ```
+
+        **这是同一个根因的第三次表现**，三次都是「两个消费者不一致」：
+
+        | 次序 | 症状 | 不一致之处 |
+        |---|---|---|
+        | 修复 4（一） | 计数**抢先**（0ms vs 行内 500ms） | 时间基准 |
+        | 修复 4（二） | 计数**滞后**（500ms vs 行内 0ms） | 时间基准 |
+        | **修复 5** | 两个提示**差一轮渲染** | **数据来源（推导 vs state）** |
+
+        **实测**（一次性度量脚本，`MutationObserver` 亚帧 + `rAF` 逐帧分开采样；
+        诊断结论已固化为 7g 的 3 条断言，脚本本身已删）：
+
+        ```
+        非法 → 空（单条）              非法 → 空（9 条）
+           0  1 条未通过  —                0  9 条未通过  —
+          17  1 条未通过  1 行为空         5  9 条未通过  1 行为空   ← 两段同场
+          35  —           1 行为空        37  8 条未通过  1 行为空   ← 两段同场
+        ⇒ 中间态上屏 1 帧                ⇒ 上屏 2 帧
+        ```
+
+        **折行假设已排除**：头行高度**恒 28**、`scroll === client`（432/432）、
+        按钮 x 恒 768、列表顶不变 —— 与用户"不是两行"的判断一致。
+        **`rAF` 与 `MutationObserver` 必须分开采样**：后者是微任务、早于绘制，
+        "DOM 里存在过"不等于"用户看见过"。
+
+        **范围收窄（顺带测出，重要）**：防抖落定那一瞬（行内 `invalid→valid`、头行 9→8）
+        实测**同帧**（`行内转为最终态: 第 2 帧；头行计数变化: 第 2 帧`）⇒
+        **定时器那条路已由修复 4 对齐，唯一没对齐的是"同步变化"这条**。
+
+        **修法（用户定案"按根因"）**：
+
+        1. **提取纯函数 `linksWillSpin(before, after, beforeEnabled, enabled)`** ——
+           把 `useLinkCheck` 的"会不会转圈"规则写成一处，供渲染期与 effect **共用**。
+           两者若不一致，就是屏幕上一帧错误的文字。
+        2. **`useSettledInvalidCount` 的返回行改为 `spins ? display : countInvalidLinks(...)`** ——
+           state 的唯一职责是"**等待期间保持旧值**"；不等待时它没有职责，
+           就在渲染期直接推导，与 `blankCount` **同一拍**。
+
+        **最关键的实现约束（最容易写错的一点）**：`concluded` ref **只在**「不转圈」
+        与「定时器落定」两处写入，**绝不在进入等待时写**。
+        否则等待期间一次无关渲染（hover、父组件更新）会让 `linksWillSpin` 把草稿与自己比较，
+        得出"没有行在转圈"，头行就会在行内还在转圈时抢先报数 —— **把修复 4（一）的 bug 重新引入**。
+
+        **为什么不做"排先后"（用户最初的方案）**：能消除重叠，但会换成一个**反向空档**
+        （`[计数+空行] → [] → [空行]`，宽度先缩后扩 = 抖动）；且若实现成
+        "`invalidCount > 0` 时不显示 `blankCount`"，会**破坏稳态并列** ——
+        而"1 条不合规 + 1 条空行同场"是用户明确要的形态（7c 有断言、还测过不溢出）。
+
+        **验证**：
+
+        | | |
+        |---|---|
+        | 修复后（单条） | `两段同场 rAF 帧 0/3`，且**无过时并列** —— 计数与空行提示同一拍切换 |
+        | 修复后（9 条） | 直接 `9 条未通过` → `8 条未通过 + 1 行为空`，一步到位 |
+        | **反向对照**（返回行改回 `return display`） | **恰好 1 条失败**，报错即并列帧：`[{"inv":"1 条链接未通过校验","blk":"1 行为空，保存时忽略"}, …]` |
+        | `probe-project-links.mjs` | **64 PASS / 0 FAIL**（7g 新增 3 条） |
+        | `pnpm check` | **718 PASS / 0 FAIL / 退出码 0** |
+
+        **新增 7g 节（3 条断言）**，断言用的是**单条不合规**场景 —— 它让判据干净：
+        清空后**唯一正确**的终态就是"无计数 + 空行提示"，任何一帧两者并存都是缺陷，
+        **不需要知道哪个数字是过时的**。
+
+        **探针写法上的两个坑（都踩到并修了）**：
+        - **不能用 `evaluate` 轮询**：坏帧只存在一次提交，往返之间会漏采 ——
+          7g 改为**在页面内装 `requestAnimationFrame` 记录器**，与 7f 的轮询式采样不同。
+        - **判据不能用"两段同场"**：稳态下两段本就该同场（1 条不合规 + 1 条空行），
+          真正的瞬态特征是计数**过时**（说的还是变化之前那个数）。
+
+        **🔴 测试盲区（第六次同型）**：7f 测的是"清空后**最终**是否归零"，
+        **没有一条测"中间有没有并列帧"**。与前五次完全同型：
+        测了自己写的那条路径（终态），没测**过程**。
+
+        #### 设计变更 1：校验时间线统一（2026-10-08，用户多轮讨论后定案）
+
+        **一句话**：**0.5s 防抖只属于「编辑」**；打开、新增、删除、聚焦一律立即，
+        且行内与头行**同一拍**。
+
+        **为什么不是又一处补丁**：修复 4（一）/4（二）/5 三次都栽在"**两个消费者**"上 ——
+        计数领先、计数滞后、两个提示差一轮渲染。它们的共同前提是
+        **行内与头行各有一条时间线、各有一个数据来源**。这次把前提去掉了。
+
+        ##### 决策表（每条都注明出处）
+
+        | # | 决策 | 出自 |
+        |---|---|---|
+        | 1 | 空/通过/不通过**共用一次** 0.5s 防抖 | 用户：「万一用户是连续输入呢」「这正是和有内容是修改一样的逻辑」 |
+        | 2 | **聚焦不重复校验**（②） | 用户：「聚焦时不再次校验：已经校验好」 |
+        | 3 | **打开时同步校验一次**，头行跟着等（③） | 用户：「打开时正常同步校验」 |
+        | 4 | **新增不转圈**：出生即空不是判定 | 用户：「新增行默认就是空的…用户看再校验一次就会很怪」 |
+        | 5 | **新增立即计入顶部**（撤销 latch） | 用户：「失焦才显示太麻烦了，还是实时显示吧」 |
+        | 6 | 头行记忆与对话框**同生命周期** | 用户：「上面怎么复用旧信息了」＋ 采纳抽子组件 |
+        | 7 | **绿勾行为不改**（仍仅聚焦时显示） | 用户：「算了，绿勾要不然不改，就②，③就够」 |
+
+        ##### 模型
+
+        ```
+        唯一的时间机制：值被编辑后 0.5s 防抖
+              │
+              ├─ 行内：checking → 空 / 通过 / 不通过
+              └─ 头行：等待期间显示**上一份落定快照**，
+                       落定时与行内**同一拍**翻新
+
+        不等待的场合：
+          打开对话框 → 行内校验一次，头行**跟着等**（③）
+          新增一行   → 行内不校验（出生即空），头行**立即**计入
+          删除一行   → **立即**（用户明确意图）
+          聚焦       → 不重新校验（②）；绿勾仍仅聚焦时显示
+        ```
+
+        ##### 两处结构性例外，以及它们的理由
+
+        - **出生即空 vs 被编辑成空**：`''` 作为**默认值**没有可判的东西，所以新增行不转圈；
+          `''` 作为**编辑结果**（用户删掉刚打的字）必须等 ——
+          这正是"删空 → 再输"不闪烁的机制：计时器被下一次输入推翻，提示从未出现。
+          实现是 `useLinkCheck` 里一个 per-row 的 `edited` ref，**从 change handler 置位**
+          （不用 effect：StrictMode 双跑会误标新行）。
+        - **新增/删除不等，编辑等**：`headerShouldWait` 里 `after.length !== before.length → false`。
+          新增是"出生即空"，删除是用户明确意图，两者都不产生需要等待的检验。
+
+        ##### 根因（用户报的"上面复用旧信息"）
+
+        **头行的记忆活得比对话框长。**
+
+        ```
+        :2482  useSettledInvalidCount(...)   ← 对话框组件顶层：开关都在
+        :3079  {renameTarget?.kind === 'project' && <linkBlock>}  ← 行只开着时挂载
+        closeRename() { setRenameTarget(null) }                    ← 不重置 renameLinks
+        ```
+
+        | | 打开时 | 关闭时 |
+        |---|---|---|
+        | 行 | 全新挂载 → 转圈 | **卸载** |
+        | 头行 hook | 沿用上次 `display`/`concluded` | **不卸载、不重置** |
+
+        两个后果：
+        - **重开同一项目**：`links` 值相同 ⇒ 判"没变" ⇒ 头行 t=0 出数，行才刚开始转圈；
+        - **换一个项目**：等待期间 `held` 还是旧值 ⇒ **A 的数字画在 B 的界面上**。
+
+        **修法：抽 `LinkBlock`**，让头行与行**同生同死**。依据是**从官方 asar 读出的原文**：
+
+        ```js
+        function Modal({ open, onClose, ... }) {
+          const dialog = useRef(null);
+          useModalLayer(dialog, open, onClose);
+          if (!open) return null;          // ← 关闭即卸载子树
+          return createPortal(...)
+        }
+        ```
+
+        ⇒ 不需要任何"记得重置"。顺带删掉**五处手动重置**与**两个 `autoFocus` state**
+        （它们存在的唯一理由就是"状态活得比对话框长"）。
+
+        ##### 行为一览（改后）
+
+        | 场景 | 行内 | 头行 |
+        |---|---|---|
+        | 打开对话框（有值） | 转圈 0.5s → 结论 | 同时等，之后一起出 |
+        | 点「添加链接」 | **不转圈** | **立即**计入 |
+        | 打字 | 转圈 0.5s → 结论 | 保持旧快照 → 同一拍翻新 |
+        | 清空一行 | **转圈 0.5s** → 无标记 | 同上 |
+        | 删空后 0.5s 内再输入 | 计时器被推翻 ⇒ **提示从未出现** | 同 |
+        | 删除一行 | 后续行转圈（index 键控） | **立即** |
+        | 聚焦 | **不重校验**；绿勾（仅聚焦显示）零延迟出现 | 不变 |
+
+        ##### 验证
+
+        | | |
+        |---|---|
+        | `probe-project-links.mjs` | **78 PASS / 0 FAIL**（64 → 78） |
+        | `pnpm check` | **718 PASS / 0 FAIL / 退出码 0** |
+
+        **7h 逐帧实录**（打开一个含不合规链接的对话框）：
+        ```
+        [{"mark":"none","count":null}, {"mark":"checking","count":null},
+         {"mark":"invalid","count":"1 条链接未通过校验"}]
+        ⇒ firstMarked=1 firstCount=2：**转圈在前，报数在后**，头行不领先
+        ```
+
+        **反向对照（三向，全部命中）**：
+
+        | 哨兵 | 失败项 | 报错 |
+        |---|---|---|
+        | `headerShouldWait` 恒 true | 3 条 | `7d) 删除立即生效 — 仍显示 3 行为空` |
+        | `headerShouldWait` 恒 false | 3 条 | `7e) 转圈期间头行不抢先报新数`（正是修复 4 的缺陷） |
+        | hook 放回对话框顶层 | **1 条** | `7i) 打开全合法的项目时头行从不显示旧计数 — [{"count":"1 条链接未通过校验"}, …]` |
+
+        第 3 向的帧数据就是你报的现象：
+        ```
+        打开 clean（全合法）期间:
+          {"mark":"none",     "count":"1 条链接未通过校验"}   ← linked 的旧数画在 clean 上
+          {"mark":"checking", "count":"1 条链接未通过校验"}   ← 行在转圈，头行还是旧数
+          {"mark":"none",     "count":null}                  ← 落定后才对
+        ```
+
+        **🔴 探针取样错误（本轮我自己犯的，两次同型）**：
+        `7h` 与 `7i` 初版都在 `openEditDialog` **返回之后**才装记录器，
+        而该辅助函数内部有 `waitForTimeout(900)` —— 比 500ms 防抖长，
+        于是**永远看不到要观察的那一瞬**。7i 初版因此**在缺陷存在时也通过**（77 PASS 假绿）。
+        修法：新增 `openEditDialogRecorded`，**在点击菜单项之前**装 `requestAnimationFrame`
+        记录器。**这与前六次盲区同型：测了自己写的那条路径，没测"记录器什么时候开始"。**
+        另：反向对照 3 的第一版用**模块级缓存**模拟旧结构，**不忠实**（对照未失败）——
+        必须用真实的"hook 挂在对话框顶层"才能复现，因为成因是"hook 活得比行久"。
+
+        #### 设计变更 2：行身份用稳定 id（2026-10-08，用户报告"删除会导致其他行重新校验"）
+
+        **现象**（用户原话）：「目前删除会导致其他全部/部分重新校验。目前我不确定所有触发条件。」
+
+        ##### 根因：组件身份用「位置」，数据身份用「值」
+
+        ```tsx
+        // 行按**位置**键控 ⇒ 组件实例认的是"第几个"
+        {links.map((url, index) => <LinkRow key={index} ... />)}
+
+        // 校验按**值**触发 ⇒ 结论认的是"什么内容"
+        }, [value, enabled])
+        ```
+
+        删除下标 `i` 时，后面的组件实例**位置没动、却被塞进了别人的值**：
+
+        ```
+        删除前 [A, B, C, D] → 删除 i=1 → [A, C, D]
+          下标 1 的**同一个实例**（原持有 B 的 state）现在收到 C
+            ⇒ value 变 ⇒ effect 重跑 ⇒ 转圈 0.5s
+        ```
+
+        ##### 两个后果，第二个才是真病
+
+        **① 多余重校验**（实测九场景，**H2 值驱动**被证实）：
+
+        | 场景 | 转圈行 | 说明 |
+        |---|---|---|
+        | 删下标 0（4 行） | `[0,1,2]` | 其余**全部** |
+        | 删下标 1（4 行） | `[1,2]` | 其后各行 |
+        | 删**末行** | `[]` | 无行受影响 |
+        | **删下标 0（`same,same,tail`）** | **`[1]`** | **判定性证据** —— 上移那行值没变，未重校验 ⇒ 不是"删除就全刷" |
+        | 删下标 0（三行全合法） | `[0,1]` | **全合法时也转圈** |
+        | 只改标题 | `[]` | 不触发 |
+
+        **② 🔴 结论错配**（真病）：
+
+        ```
+        场景 5：删下标 0（合法, 不合规 → 只留不合规）
+          动作前: ["none","invalid"]
+              0ms  ["none","invalid"]
+             15ms  ["none"]        ← 上移那行显示 **none**（继承了"合法"的结论）
+             32ms  ["checking"]
+            515ms  ["invalid"]     ← 落定才对
+        ```
+
+        **⇒ 那 17ms 里屏幕上显示"合法"，而它的值是 `not a url`。**
+        与「A 的计数画在 B 的对话框上」（设计变更 1 的跨项目泄漏）**是同一类错误**：
+        **一个东西的结论画在另一个东西上**。四行全 `invalid` 时看不见，
+        **只有相邻两行结论不同才暴露**。
+
+        ##### 修法：给行一个与值、与位置都无关的 id
+
+        ```tsx
+        interface LinkRowDraft { readonly id: string; readonly url: string }
+        {rows.map(row => <LinkRow key={row.id} ... />)}
+        ```
+
+        删除后，其余行的 **id 不变** ⇒ React 复用同一批实例（C 只是换了位置）
+        ⇒ `value` 与 `state` 始终配对 ⇒ **零重校验、零错配**。
+
+        **`key={url}` 已实测否决**（反向对照 2，**7 条失败**）：
+        ```
+        FAIL  2) 输入后立刻是转圈 — none        ← 打字即重挂载，state 归零
+        FAIL  2) 停手后变成绿勾 — none
+        FAIL  3) 聚焦时是绿勾 — none
+        ```
+
+        ##### id 只活在客户端草稿里
+
+        `linkUrls(rows)` 是**唯一**丢弃 id 的地方，只在两处提交调用
+        ⇒ **协议、Host、存储格式一行不改**（`links` 仍是 `string[]`）。
+
+        **连带简化**：`autoFocusIndex` → `autoFocusId`，
+        `onRemove(index)` → `onRemove(id)` —— 顺带消掉"删行后下标移位可能指错行"的隐患。
+
+        ##### 修后实测
+
+        | 场景 | 修复前 | 修复后 |
+        |---|---|---|
+        | 删首行 | `checking` × 3 行 | **零转圈** |
+        | 删中间行 | `checking` × 2 行 | **零转圈** |
+        | 删末行 | 零 | 零 |
+        | **错配（场景 5）** | `["none"]` 持续 17ms | **从不出现**：`["none","invalid"] → ["invalid"]` |
+        | 编辑一行 | 只该行 | 只该行（未修过头） |
+        | 新增一行 | 不牵连 | 不牵连 |
+
+        ##### 验证
+
+        | | |
+        |---|---|
+        | `probe-project-links.mjs` | **86 PASS / 0 FAIL**（78 → 86，新增 7k–7n 共 8 条） |
+        | `pnpm check` | **718 PASS / 0 FAIL / 退出码 0** |
+        | 现有 78 条 | **全部继续通过**（探针按位置定位 DOM，与 id 无关） |
+
+        **新增 7k–7n**：四种删除位置零转圈、**错配帧不出现**（`7l` 钉的就是真病）、
+        编辑仍只重校验该行（防修过头）、新增不牵连。
+
+        **反向对照（两向，全部命中）**：
+
+        | 哨兵 | 失败项 | 关键报错 |
+        |---|---|---|
+        | `key` 改回 `index` | **4 条** | `7l` 抓到错配：`["none","invalid"] → ["none"] → ["checking"]` |
+        | `key` 改成 `url` | **7 条** | `2) 输入后立刻是转圈 — none`（打字即重挂载） |
+
+        **🔴 探针自身两个缺陷（本轮发现并修）**：
+        - **`storedProjects()` 不返回 `projectId`** —— 它是表的**键**，不是记录的字段。
+          探针里三处 `storedProjects().find(...).projectId` 因此**一直是 `undefined`**，
+          对应的 `update` 被 Host 拒绝，**静默无效**。此前无害只是因为那三处要设的状态
+          "恰好已经在位"。新增 `projectIdOf(title)` + `setStoredLinks(title, links)`
+          （带 `ok` 断言），三处一并修正。
+        - **7k 段污染了共享状态**：它把 `linked` 依次改成 4/3 行等，
+          跑完没还原 ⇒ 下游 11 条失败。修法：段末 `setStoredLinks('linked', ['bad one'])`。
+
+        #### 设计变更 3：三层模型 —— 事实即时 / 判定延迟 / 纠正自动（2026-10-09）
+
+        **用户原话**：「非空和空立即吧，有内容才校验，删空马上变空，输入内容马上变成非空，
+        然后转圈圈转完了在加到非法。」随后确认：「清空是一个很明确的动作：
+        清空后未通过也马上消失。」
+
+        ##### 业界先例（用户要求核实，确有）
+
+        | 模式 | 出处 | 与本设计的关系 |
+        |---|---|---|
+        | **Reward Early, Punish Late** | Mihael Konjević，被 Smashing / UX Planet / a11y 指南反复引用 | 清空即时撤销 = reward early |
+        | **Remove Error Messages as Soon as the Field Is Corrected** | Baymard「3 Critical Details」第 2 条（2024-01-09） | 本设计的核心诉求 |
+        | **Avoid Premature Validation** | Baymard / NN/g | 出生即空不转圈早已符合 |
+        | **Validate Empty Fields Only On Submit** | Smashing《A Complete Guide To Live Validation UX》第 3 节 | 空值不参与实时**判定** |
+        | 实测用户原话 | Baymard | *"Why are you telling me my email address is wrong, I haven't had a chance to fill it all out yet!"* |
+
+        Baymard 另有一条**实测结论**直接支持本设计：错误消息在用户**改好之后**仍留着，
+        会让用户
+
+        > **misinterpret their newly corrected, and now valid, input to still contain an error**
+
+        ⇒ 这正是本文件此前反复修的「结论比它的值活得久」，而它是**实测出的用户误解**，
+        不是审美偏好。
+
+        ##### 根因：三层被压成一层
+
+        改动前是**单层**：空、通过、不通过**共用一条 500ms 时间线**。
+
+        ```tsx
+        // 旧：三者共用一个时钟
+        if (trimmed === '' && !edited.current) { setState('idle'); return }  // 唯一即时分支
+        setState('checking')
+        const timer = setTimeout(() => {
+          setState(trimmed === '' ? 'idle' : (isValidLink(trimmed) ? 'valid' : 'invalid'))
+        }, 500)
+        ```
+
+        **性质根本不同**：
+
+        | | 空 / 非空 | 通过 / 不通过 |
+        |---|---|---|
+        | 需要计算？ | **否** | 是 |
+        | 会算错？ | **不可能** | 可能（用户还在打字） |
+        | 该等吗？ | **不该** | 该 |
+        | 性质 | **事实** | **判定** |
+
+        ⇒ **把事实塞进判定的时钟，就是这个文件历次缺陷的共同来源。**
+        此前修的四条（计数抢先、计数滞后、差一轮渲染、删除错配）都是它在一个消费者上的表现。
+
+        ##### 不变量：一个结论只对产生它的那个值有效
+
+        这条不变量同时是**层 3 的全部实现** —— 值一变，结论**自动**失效，不需要写代码。
+
+        ```tsx
+        // 旧：只存标记 —— 换值后必然有一帧画着旧结论
+        const [state, setState] = useState<LinkCheck>('idle')
+
+        // 新：存「标记 + 它属于哪个值」，渲染期比对
+        const [verdict, setVerdict] = useState<{ url: string; mark: LinkCheck } | null>(null)
+        ```
+
+        ```tsx
+        const settled: LinkCheck = !enabled || isBlankLink(value)
+          ? 'idle'                                     // 层 1：事实
+          : verdict !== null && verdict.url === value
+            ? verdict.mark                             // 层 2：已落定
+            : 'checking'                               // 层 2：判定中（层 3 也走这里）
+        ```
+
+        ##### 头行：`useSettledLinks` → `useSettledUrls`，按 id 配对
+
+        ```tsx
+        // 旧：持整个上一份快照 + 一个决定"要不要等"的函数
+        function useSettledLinks(links, enabled): readonly string[] | null
+        function headerShouldWait(before, after, beforeEnabled, enabled): boolean
+
+        // 新：只记「哪一行在哪个值上有了结论」，整体替换
+        function useSettledUrls(rows, enabled): ReadonlyMap<string, string>
+        ```
+
+        **删除了整个 `headerShouldWait`** —— 它存在的理由是"要不要整表等待"，
+        而新模型下**每一行各自与自己的值配对**，那个问题不存在了。
+
+        **两个计数走两条不同规则**（这是分层最直接的体现）：
+
+        ```tsx
+        countBlankLinks(rows)                            // 事实层：吃 live，即时
+        countInvalidLinks(rows, settled, enabled)        // 判定层：
+          settled.get(row.id) === row.url                //   配对成立才计
+          && !isBlankLink(row.url)
+          && !isValidLink(row.url.trim())
+        ```
+
+        **⇒ 一条配对判据同时挡住三个历史缺陷**：
+
+        | 缺陷 | 为什么挡住 |
+        |---|---|
+        | 计数**抢先** | 新值未被判定过 ⇒ 配对不成立 ⇒ 不计 |
+        | 计数**滞后** | 清空 ⇒ 立即不成立 ⇒ **当拍出局** |
+        | 两提示**差一轮渲染** | 两者都渲染期推导 ⇒ 天然同拍 |
+
+        **`settled` 必须按 id 键** —— 按下标会在删除后读到别的行的结论，
+        即设计变更 2 修掉的那个错配。**设计变更 2 是本变更的前提。**
+
+        ##### 行为对照
+
+        | 动作 | 改前 | 改后 | 业界 |
+        |---|---|---|---|
+        | 清空一行 | ⓘ 转圈 500ms → 无 | **当帧无标记** | reward early ✅ |
+        | 清空（头行计数） | 500ms 后 −1 | **当帧 −1** | ✅ |
+        | 清空（空行提示） | 500ms 后 +1 | **当帧 +1** | 空值不判定 ✅ |
+        | 输入内容 | 转圈 | 转圈（不变） | punish late ✅ |
+        | 输入（头行计数） | **保持旧数 500ms** | **当帧移出**，落定后按结论归位 | ✅ |
+        | 新增行 | 不转圈、立即计入空行 | 同（不变） | ✅ |
+        | 删除行 | 立即 | 同（不变） | ✅ |
+        | 打开对话框 | 转圈 500ms | 同（不变） | blur/late ✅ |
+
+        **反转的既往前决定**（必须记录，因为是用户当时的明确选择）：
+
+        | 原决定 | 新模型 | 理由 |
+        |---|---|---|
+        | 「不更新，保持旧数字」（hold） | **整个删除** | 有配对后没有陈旧数字可保持；持有等于描述用户已替换掉的值 |
+        | 空行提示随判定延迟 | **改回即时** | 空是事实；为"与判定同步"而延迟一个事实是本末倒置 |
+        | 「空/通过/不通过共用一次 0.5s 防抖」（设计变更 1 决策 1） | **反转** | 三者性质不同，共用时钟是根因 |
+
+        **保留不变**：决策 2（聚焦不重跑）、决策 3（打开时校验）、决策 4（新增不转圈）、
+        决策 5（新增立即计入）、决策 6（`LinkBlock` 同生命周期）、决策 7（绿勾规则）、
+        设计变更 2（稳定 id）。**唯一保留的偏离**：用固定 500ms 防抖而非业界标准的 blur
+        —— 业界说 "late" 是下限不是上限，不违反，但不是标准做法。
+
+        ##### 净简化
+
+        | 删除 | 换成 |
+        |---|---|
+        | `headerShouldWait` 整个函数（14 行） | |
+        | `useLinkCheck` 的 `edited` ref + `onEdit` 返回值 | |
+        | `useSettledLinks` 的 `held` / `null` 三态 / 渲染期判据（~15 行） | `useSettledUrls`（~20 行） |
+        | `LinkBlock` 的 `urls` memo | 两个渲染期派生 |
+        | **合计：~40 行机制** | **~25 行** |
+
+        **`isBlankLink` 提取到 `protocol.ts`** —— 让 `nonBlankLinks`（存储侧）、
+        `countBlankLinks`（事实层）、`useLinkCheck`（行内）**共用同一个判据**，
+        三者不可能对"空"给出不同答案。**判据唯一化后，`trim() === ''` 全仓库只剩一处。**
+
+        ##### 🔴 实施中自己引入并修掉的回归
+
+        **`enabled=false` 时永远转圈**：推导写成 `isBlankLink(value) ? 'idle' : ...`，
+        开关关闭时 effect 把 `verdict` 清空，非空行于是落到 `'checking'` —— **永不落定的转圈**。
+        旧代码在 effect 里 `setState('idle')` 覆盖了它，改成渲染期推导后这个覆盖消失了。
+        **由既有断言 `8) 关掉后不出标记 — checking` 当场抓住。**
+        修法：推导里也判 `!enabled`（注释写明不是冗余）。
+        **这是"把状态改成推导"这一类改动的典型风险 —— 原先靠 effect 兜住的边界要重新显式表达。**
+
+        ##### 验证
+
+        | | |
+        |---|---|
+        | `probe-project-links.mjs` | **99 PASS / 0 FAIL**（86 → 99） |
+        | `pnpm check` | **718 PASS / 0 FAIL / 退出码 0** |
+        | 既有断言 | 5 条**按预期翻转**，其余全部继续通过 |
+
+        **翻转的 5 条**（旧断言测的正是本次要改掉的行为）：
+
+        | 旧断言 | 新断言 |
+        |---|---|
+        | `7c) 输入后 0.5s 内提示保持（不闪）` | 输入后空行提示**立即**消失 |
+        | `7c) 清空后 0.5s 内提示不出现` | 清空后空行提示**立即**出现 |
+        | `7c) 清空后行内在转圈` | 清空后行内**不**转圈 |
+        | `7e) 转圈期间头行不抢先报新数`（期望保持 2） | 编辑中的行**立即移出**计数（2 → 1） |
+        | `7f) 清空后行内在转圈（空是被编辑出来的，要判定）` | 清空后**不**转圈 |
+
+        **新增 7o（13 条断言）** —— 钉住「同一帧」：
+
+        逐帧记录器扩展为**每帧同时带两个提示**，于是"三个消费者同拍"变成可测而非推断
+        （两次 `evaluate` 调用会跨过 commit，恰好掩盖要测的那种不一致）。
+
+        ```
+        清空逐帧:
+          t:0    {"marks":["invalid","invalid"],"invalid":"2 条链接未通过校验","blank":null}
+          t:933  {"marks":["none","invalid"],   "invalid":"1 条链接未通过校验","blank":"1 行为空，保存时忽略"}
+        ```
+        ⇒ **一帧之内**：行内标记消失 + 计数 2→1 + 空行提示出现，**且全程无一行转圈**。
+
+        **反向对照（两向，全部命中）**：
+
+        | 哨兵 | 失败项 | 关键报错 |
+        |---|---|---|
+        | 空值也走判定层（退回单层） | **6 条** | `7o) 清空全程没有任何一行转圈` — 逐帧显示 `t:921` 三消费者同拍后 **`t:938` 行内又变 checking**：单层模型下空值也要转圈 |
+        | 去掉配对判据 | **2 条** | `7o) 输入当拍：该行移出计数` — `"2 条链接未通过校验"`（**正是"抢先"**） |
+
+        **反向对照 2 的一个发现**：`7e` **没有**失败，因为它把行编辑成**合法**值 ——
+        即使缺配对，用新值算也恰好得"合法"。而 `7o` 把行编辑成**不合规**值就暴露了
+        （旧值不合规 + 新值也不合规 ⇒ 缺配对时会把新值算成不合规，抢先报数）。
+        **两条互补，7o 是必需的。**
+
+        #### 结案（2026-10-09，用户：「z6 就这样吧，暂时结案 z6」）
+
+        **功能状态**：关联链接（登记 / 编辑 / 注入）已实施并全绿。
+
+        | 验收 | 结果 |
+        |---|---|
+        | `pnpm check` | **718 PASS / 0 FAIL / 退出码 0** |
+        | `probe-project-links.mjs` | **99 PASS / 0 FAIL** |
+        | 数据形状 | `links: z.array(z.string()).default([])`，**每条只存 URL** |
+        | 版本 | **未 bump**（`single` 布局的硬约束，已守住） |
+
+        **本项目期间共修掉 10 个真缺陷**（全部有实测证据与反向对照）：
+        计数抢先 · 计数滞后 · 两提示差一轮渲染 · 跨对话框泄漏 · 删除致他人重校验 ·
+        删除结论错配（17ms）· 空值被并入判定时钟 · 提示随判定延迟 · 头行持陈旧数字 ·
+        `enabled` 关闭时永不落定的转圈。
+
+        **三次设计变更**（均记录在案）：
+        1. **校验时间线统一**（2026-10-08）—— 后由设计变更 3 部分反转；
+        2. **行身份用稳定 id**（2026-10-08）—— 治本 `key={index}` 与 `value` 的身份错配；
+        3. **三层模型**（2026-10-09）—— 事实即时 / 判定延迟 / 纠正自动，**是设计变更 1 的反转与终点**。
+
+        **暂时性说明**：本次结案为**功能结案**，不代表设计冻结。
+        已知可继续打磨、但**用户明确不再追**的一点：判定层的触发用**固定 500ms 防抖**
+        而非业界主流的 `onBlur` / `onTouched`。这不违反业界（Smashing 引用的原 Medium 文
+        即建议"短暂无交互后"，且有来源主张过），但**不是主流库的默认**。
+        我们与业界标准的**前提差异**是：标准模式假设"填完一行就走"（填表），
+        而本功能是"盯着一个已存在的值改"（修列表），没有那个自然节点。
+        ⇒ **保留现状**，理由已在偏离 #16 记录。
+
+        #### 未决（无）
   - [ ] **Z-7 项目行显示会话数**（2026-10-07 用户提出）
         **要做的**：项目行上显示该项目的会话数。
         **已核实的前提**：
@@ -3315,6 +4473,115 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
         - **未分组桶**是否同样显示。
         - 与 `containsCurrent`（当前会话所在组的染色）在视觉上会不会打架。
         **未动代码。**
+  - [ ] **Z-8 相关目录 / 关联链接支持备注**（2026-10-07 用户提出）
+        **与 Z-6 是同一批改动**：两者都是给项目的列表字段附加一个说明性字段，
+        字段形状、兼容约束、实现路径完全同构。
+        ⚠️ **措辞更正（2026-10-09，Z-6 结案时）**：本条原写「应**与 Z-6 一起定、一起做**」
+        且「与 Z-6 **直接耦合，必须先理清**」——**该耦合已经解开**。
+        Z-6 已按 `links: string[]`（每条**只存 URL**）**落定并结案**，
+        所以不再是"要么连 Z-6 一起改形状、要么分两期"的两难，而是：
+        **备注明确作为第二期**，`string[]` → `{ url, note }[]` 是一次**独立的形状变更**，
+        由本条自行承担（用户 2026-10-08 亦已表态 Z-8「先不做」）。
+        当前已知范围：
+        - `directories` 每项加备注（`string[]` → `{ path, note }[]`）
+        - `links` 每项加备注（`string[]` → `{ url, note }[]`）
+        **目标**：给项目的「相关目录」和「关联链接」各加一条**备注 / 注释**。
+        **Z-6 结案后本条要自己承担的部分**：
+        - `directories` 现为 `string[]`，加备注后同样要变 `{ path, note }[]`，
+          于是**同样触到两条硬约束**（同 Z-6）：`.default([])` 的兼容性刚需，
+          以及 **`single` 布局不允许 bump version**。
+        - `links` 的 `string[]` → `{ url, note }[]` 是**第二次**形状变更，
+          与 Z-6 那次（`undefined` → `[]`）不同：这次是**已有数据换类型**，
+          迁移必须让旧的裸字符串被读成 `{ url, note: '' }`，**且不能 bump version**
+          ⇒ 需先验证 zod schema 能否靠 union/coerce 在**不删数据**的前提下做到。
+        **要定的**：
+        - 备注的编辑入口（对话框行内输入 / hover 卡 / 展开区）
+        - 注入侧是否带上备注（带上则每个目录、每条链接各多一行，语域变化）
+        - 是否必填、空备注显示与否
+        - 与文档的关系：`PROJECT-SPEC.md` 已经在叙述层记这些信息，需说清分工
+        - **迁移**：已存的 `string[]` 记录要能被读成 `{ …, note: '' }`，且
+          `single` 布局不能 bump version ⇒ 只能靠 `.default([])` +
+          union/coerce，需先验证 schema 能否在**不删数据**的前提下做到
+        **未定，未动代码。**
+  - [ ] **Z-9 详情页展示"当前注入文案"**（2026-10-07 用户提出）
+        **目标**：在本插件的插件详情页（设置卡所在页）显示**当前会话实际会被注入的那段
+        文本**，让用户直接看到模型收到了什么，而不必自己去翻会话日志。
+        **为什么不是简单的静态预览**：注入块**随会话而变**，至少依赖
+        - 该项目是否存在（未归属 ⇒ 整块只有 `owning project` 一段）
+        - `directories` 的条数（0/1/≥2 三种句式）
+        - `injectProjectInfo` / `injectProjectDoc` 两个开关
+        - 项目文档是否绑定、以及**规范漂移**是否触发那一段
+        ⇒ 详情页**没有"当前会话"这个上下文**（它是个独立页面），所以第一件要定的是：
+        - (a) 以**某个选定项目**为样本渲染（列出项目让用户选）
+        - (b) 以**当前会话**为样本（需从 Host 拿到 main 会话 id，页面可能根本没有）
+        - (c) 渲染一个**穷举的状态表**（各状态各一份），而不是一份"当前"文本
+        **可复用的现成件**：`src/injection.ts` 的 `renderProjectInjection(input)`
+        是**纯函数**，直接可在浏览器侧调用 —— 但要注意它属于 `src/`（Host 半边），
+        客户端 bundle 是否允许引入需先核实（`tsdown.config.ts` 的入口划分）。
+        另一条路是新增一个 Remote，由 Host 渲染好整段文本下发。
+        **要定的**：样本来源（上面 a/b/c）、只读还是可复制、是否显示档位/换行、
+        以及**多语言**问题（注入文案是英文、刻意不做本地化，
+        而详情页 UI 是中文 ⇒ 展示时应保持英文原文并说明原因）。
+        **未定，未动代码。**
+  - [x] **Z-10 改注入文案：声明段（已实施，2026-10-07）**
+        **不是做功能，是改文案本身** —— 用户直接给出新文本，逐字替换并同步断言。
+        **本次改动（仅声明段，两处）**：
+
+        | # | 原文 | 改动后 |
+        |---|---|---|
+        | 1 | `It provides context information about the session's …` | `It provides context information **set by the user** about the session's …` |
+        | 2 | `… fall into a single base workspace**.** The "working directory" injected …` | `… fall into a single base workspace **—** the "working directory" injected …`（破折号后 `The` 改小写 `the`，并入同句） |
+
+        **改动后全文（`src/injection.ts` 的 `renderDeclaration`）**：
+        ```
+        This section is injected by the `project-groups` plugin. It provides context information set
+        by the user about the session's `owning project` `relevant directories`. Project membership is
+        classified by the plugin layer; the plugin does not modify the official workspace system, so
+        all projects' workspace directories fall into a single base workspace — the "working directory"
+        injected in the earlier system prompt is the official base workspace directory, and has no
+        substantive relation to the project this session belongs to under this plugin.
+        ```
+        （显示折行；实际注入仍是**单行**。）
+
+        **中文对照**：本节由 `project-groups` 插件注入，提供**由用户设置的**关于该会话的
+        「所属项目」「相关目录」的上下文信息。项目归属由插件层自行分类；该插件不修改官方
+        的工作区系统，因此所有项目的工作区目录都落入同一个底层工作区**——**前面系统提示里
+        注入的「工作目录」是官方底层工作区目录，与本次会话在本插件下所属的项目没有实质关系。
+
+        **连带改动**：`scripts/verify-project-injection.mjs:55-61` 的**手写**期望文本
+        （`DECLARATION_TAIL` + `decl()`，刻意不从实现推导）已同步。
+        全仓库无第三份副本（已 grep 确认）。
+
+        **本次未动**：句 3 的实质内容保留 —— 它解决"模型把工作目录当成项目"的实测歧义
+        （codearts 会话因此纠结 27 个 step），只是**从独立句子并入前句**，语义未减。
+        **验收**：`pnpm check` 全绿（typecheck + 全部校验脚本 + 探针）。
+
+        **其余段落的改文案需求仍可能后续追加**（未归属/已归属/目录行/文档行/规范行/漂移段），
+        改造时连同各自的**动态段名**与**漂移段逐字匹配约束**一并处理。
+  - [ ] **Z-11 可编辑注入文案（做功能）**（2026-10-07 用户提出）
+        **目标**：让用户**自己改写注入文案**，而不是只能开关它。
+        **与 Z-9 / Z-10 的关系**：Z-10 是**我们**改文案，Z-11 是**让用户**能改；
+        Z-9（能看到当前文案）是 Z-11 的前置 —— 先能看，才能改。
+        **必须守住的既有约束**：
+        - **`<project-context>` 框架必须保留**：模型靠它识别这一段；
+          去掉框架会让注入块与官方运行时上下文混在一起。
+        - **声明段（`declaredSegments`）与实际渲染的段必须一致**：
+          它按"能不能渲染"动态列名，且 `related links` 是实现后才列入的预留位；
+          用户改写后若声明与实际不符，就会出现"承诺了却没有"的段。
+        - **变量占位**：文案里嵌着项目名、路径、文档路径、规范路径等**运行时值**，
+          所以"改写"实质是**模板**，而不是一段静态文字 ⇒ 需要一套占位符语法
+          （如 `{project}` / `{directories}`），并定义**未知占位符**与
+          **占位符缺失**时的行为。
+        - **不本地化**：注入内容刻意保持英文（用户既有决定
+          "插件注入内容不做本地化，仅选项和问题本地化"），可编辑功能不应把它变成中文。
+        **要定的**：
+        - 存放位置（进插件自有领域，还是像规范那样作为**可上传文件**）
+        - 是**整段替换**还是**只改固定句、保留自动段**（后者更安全，前者更自由）
+        - 编辑面（详情页文本框 / 上传文件 / 恢复默认按钮）
+        - **校验**：保存时是否强制框架与占位符合法，非法时拒绝还是警告
+        - 与 `injectProjectInfo` 开关的关系：关掉开关时自定义文案是否保留
+        - **恢复默认**：内置文案是包内常量，用户改写后需要一个"复原"入口
+        **未定，未动代码。**
 
 ### 通用
 - [x] 构建配置（tsdown + `cordis.patch.yml`）

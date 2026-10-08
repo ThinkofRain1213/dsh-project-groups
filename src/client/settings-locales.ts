@@ -87,11 +87,28 @@ export const zh = {
   perProjectSpecTitle: '为每项目单独调整文档规范',
   perProjectSpecDesc: '开启后，新建与编辑项目对话框会多出一行规范选择',
   perProjectSpecGated: '由「注入项目文档」控制，现已关闭',
+  // The link-validation switch. Its own row rather than a member of the spec group: a
+  // project's links are registered whether or not anything about its document is injected.
+  //
+  // The description states what the switch does NOT do — a save is never refused — because
+  // 「校验」 alone reads as a gate, and a user who expected one would read an accepted
+  // non-URL as the rule having been applied and passed.
+  validateLinksTitle: '开启http(s)://校验',
+  validateLinksDesc: '标记不以 http:// 或 https:// 开头的关联链接；只作标记，不阻止保存',
   confirm: '确认',
   // The base workspace: the directory every New Session lands in.
   baseTitle: '底层工作区',
   baseModeDefault: '默认工作区',
   baseDefaultHint: '官方首次创建的工作区',
+  // Shown instead of `baseDefaultHint` while the default Workspace cannot be resolved.
+  //
+  // 「会弹窗确认是否重建」, never 「会自动创建」: the official flow does not rebuild itself once
+  // its pointer dangles, and a New Session click really does raise the confirmation dialog.
+  baseDefaultMissing: '默认工作区缺失，新建会话时会弹窗确认是否重建',
+  baseRebuild: '重建默认工作区',
+  baseRebuildConfirmTitle: '确认重建默认工作区',
+  baseRebuildConfirmBody: '将在默认位置创建目录并注册为工作区；若该目录已存在，其内容不会被修改。',
+  baseRebuildBusy: '正在重建…',
   baseModeSpecified: '指定工作区',
   baseNotChosen: '未选择',
   baseGone: '{name}（已不存在）',
@@ -146,9 +163,16 @@ export const en: Record<ProjectGroupsSettingsKey, string> = {
   perProjectSpecTitle: 'Adjust the document spec per project',
   perProjectSpecDesc: 'Adds a spec row to the create and edit project dialogs',
   perProjectSpecGated: 'Controlled by "Inject project document"; currently off',
+  validateLinksTitle: 'Validate http(s)://',
+  validateLinksDesc: 'Mark associated links that do not start with http:// or https://. Marks only; never blocks saving.',
   baseTitle: 'Base workspace',
   baseModeDefault: 'Default workspace',
   baseDefaultHint: 'the workspace created on first use',
+  baseDefaultMissing: 'The default workspace is missing; a New Session will ask whether to rebuild it',
+  baseRebuild: 'Rebuild default workspace',
+  baseRebuildConfirmTitle: 'Rebuild the default workspace?',
+  baseRebuildConfirmBody: 'The directory will be created at the default location and registered as a workspace. An existing directory is left untouched.',
+  baseRebuildBusy: 'Rebuilding…',
   baseModeSpecified: 'Specific workspace',
   baseNotChosen: 'none chosen',
   baseGone: '{name} (no longer exists)',

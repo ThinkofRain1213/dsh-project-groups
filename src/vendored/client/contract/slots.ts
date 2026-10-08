@@ -308,6 +308,14 @@ export type WorkspaceBrowserInjected = {
      * asking the Host per open: the list is small and changes rarely.
      */
     specs: HostObservable<readonly string[]>
+    /**
+     * Whether the dialogs mark links that are not `http(s)://` URLs.
+     *
+     * Independent of the three document gates above: a composition may mark links
+     * without injecting anything. Answering `false` when the caller supplies no
+     * setting keeps the dialogs from drawing a verdict nobody computed.
+     */
+    validateLinks: HostObservable<boolean>
   }
   /** Open the browser search and focus its input. */
   requestSearch: () => void
@@ -323,17 +331,24 @@ export type WorkspaceBrowserInjected = {
   createProject?: ((input: {
     title: string
     directories: readonly string[]
+    links: readonly string[]
     /** Spec override to store; `null` inherits the global choice. */
     docSpec: string | null
   }) => Promise<{ projectId: string }>) | undefined
   /**
-   * Replace one caller-supplied project's title and directories in one commit.
+   * Replace one caller-supplied project's title, directories and links in one commit.
    *
-   * One verb rather than a retitle plus a directory write: the edit dialog
-   * commits both fields with one button, and splitting them would expose a
+   * One verb rather than a retitle plus separate list writes: the edit dialog
+   * commits every field with one button, and splitting them would expose a
    * retitled-but-stale state. Absent, a project row opens no edit dialog.
    */
-  updateProject?: ((id: string, title: string, directories: readonly string[], docSpec: string | null) => Promise<void>) | undefined
+  updateProject?: ((
+    id: string,
+    title: string,
+    directories: readonly string[],
+    links: readonly string[],
+    docSpec: string | null,
+  ) => Promise<void>) | undefined
   /** Stores one uploaded document spec; resolves false when the name is taken. */
   uploadSpec?: ((name: string, content: string) => Promise<boolean>) | undefined
   /** Deletes one uploaded document spec; resolves false when nothing was removed. */

@@ -82,6 +82,7 @@
     "probe:project-drop-marker": "node scripts/probe-project-drop-marker.mjs",
     "probe:project-duplicate-name": "node scripts/probe-project-duplicate-name.mjs",
     "probe:project-directories-dialog": "node scripts/probe-project-directories-dialog.mjs",
+    "probe:project-links": "node scripts/probe-project-links.mjs",
     "probe:settings-injection-switches": "node scripts/probe-settings-injection-switches.mjs",
     "probe:dialog-width": "node scripts/probe-dialog-width.mjs",
     "probe:doc-spec": "node scripts/probe-doc-spec.mjs",
@@ -107,6 +108,8 @@
     "probe:base-workspace-rebuild": "node scripts/probe-base-workspace-rebuild.mjs",
     "probe:base-workspace-confirm": "node scripts/probe-base-workspace-confirm.mjs",
     "probe:rebuild-default-mode": "node scripts/probe-rebuild-default-mode.mjs",
+    "probe:default-workspace-takeover": "node scripts/probe-default-workspace-takeover.mjs",
+    "probe:official-default-probe": "node scripts/probe-official-default-probe.mjs",
     "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:project-directories && pnpm verify:project-injection && pnpm verify:doc-spec && pnpm verify:locales && pnpm verify:release && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {

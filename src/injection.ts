@@ -46,6 +46,9 @@
  * @module dsh-project-groups/src/injection
  */
 import type { ProjectRecord } from './spec.ts'
+// The blank-drop rule, shared rather than reimplemented: the Host's write path applies the
+// same function, so "what the editor may store" and "what the model is shown" cannot drift.
+import { nonBlankLinks } from './protocol.ts'
 
 /** The frame this plugin's block is wrapped in. */
 export const PROJECT_CONTEXT_OPEN = '<project-context>'
@@ -275,6 +278,7 @@ export function renderProjectInjection(input: ProjectInjectionInput): string {
     body.push('Owning project: You are currently working on this project, '
       + `project name "${project.title}"`)
     body.push(...renderDirectoryLines(project.directories))
+    body.push(...renderLinkLines(project.links))
 
     if (document !== undefined) {
       // A blank line, not a contiguous run: the document half answers a different
@@ -304,7 +308,15 @@ export function renderProjectInjection(input: ProjectInjectionInput): string {
 function declaredSegments(input: ProjectInjectionInput): string {
   const segments = ['`owning project`']
   if (input.project !== undefined) segments.push('`relevant directories`')
-  // `related links` belongs here once the project record carries it.
+  // Already conditional on the project existing: a Session in no project has no record to
+  // hang links off. The **same filter `renderLinkLines` applies** is applied here, and the
+  // two call it independently rather than passing a filtered list around — one shared
+  // function called twice cannot disagree with itself, whereas a threaded parameter can be
+  // dropped at either end. Without it, a list of blank entries would announce the segment
+  // while rendering nothing: a declaration promising a field the block does not carry.
+  if (input.project !== undefined && nonBlankLinks(input.project.links).length > 0) {
+    segments.push('`related links`')
+  }
   if (input.document !== undefined) segments.push('`work document`')
   return segments.join(' ')
 }
@@ -312,19 +324,25 @@ function declaredSegments(input: ProjectInjectionInput): string {
 /**
  * The constant opening paragraph.
  *
- * The closing sentence rules out the one reading that was measured to cost turns:
- * that the working directory indicates which project is being worked on. It does
- * not — every project shares a single base workspace by construction — and saying
- * so is what lets the model skip reconciling two unqualified statements.
+ * "set by the user" qualifies what the injected context is: the project name and the
+ * directories are the user's own labels, not something the plugin inferred. Without it the
+ * paragraph reads as if the plugin had derived the membership itself.
+ *
+ * The closing clause rules out the one reading that was measured to cost turns: that the
+ * working directory indicates which project is being worked on. It does not — every project
+ * shares a single base workspace by construction — and saying so is what lets the model skip
+ * reconciling two unqualified statements. It is joined to the preceding sentence with an em
+ * dash rather than a full stop, so the two read as one qualification of the same fact rather
+ * than as three separate assertions.
  * @param input - the same input the block is rendered from.
  * @returns the paragraph as one line, matching the node's other state lines.
  */
 function renderDeclaration(input: ProjectInjectionInput): string {
   return 'This section is injected by the `project-groups` plugin. It provides context '
-    + `information about the session's ${declaredSegments(input)}. `
+    + `information set by the user about the session's ${declaredSegments(input)}. `
     + 'Project membership is classified by the plugin layer; the plugin does not modify '
     + "the official workspace system, so all projects' workspace directories fall into "
-    + 'a single base workspace. The "working directory" injected in the earlier system '
+    + 'a single base workspace — the "working directory" injected in the earlier system '
     + 'prompt is the official base workspace directory, and has no substantive relation '
     + 'to the project this session belongs to under this plugin.'
 }
@@ -343,6 +361,30 @@ function renderDirectoryLines(directories: readonly string[]): string[] {
   if (directories.length === 0) return [`Relevant directory: ${DIRECTORY_UNSET}`]
   if (directories.length === 1) return [`Relevant directory: ${directories[0]}`]
   return ['Relevant directories:', ...directories.map(directory => `- ${directory}`)]
+}
+
+/**
+ * The link lines, whose label follows the count on the same rule as the directories.
+ *
+ * A project with no links contributes **nothing at all** — no heading, no placeholder.
+ * That asymmetry with the directory block is deliberate: an unset directory is a state
+ * the user can act on in «编辑项目», so naming it is useful, whereas "no links" is the
+ * normal state of a project and stating it would put a line about an absent thing into
+ * every request for no benefit.
+ *
+ * Joined to the directory lines rather than separated by a blank line: both describe the
+ * same project at the same level, and a blank line would read as a second section.
+ * @param links - the project's associated links, in display order.
+ * @returns one or more lines, or none.
+ */
+function renderLinkLines(links: readonly string[]): string[] {
+  // Filtered here rather than trusting the caller: the injected block must never depend on
+  // the store being clean. Records written before the Host dropped blanks do exist — one of
+  // them put a bare `- ` in this session's own runtime context.
+  const present = nonBlankLinks(links)
+  if (present.length === 0) return []
+  if (present.length === 1) return [`Related link: ${present[0]}`]
+  return ['Related links:', ...present.map(link => `- ${link}`)]
 }
 
 

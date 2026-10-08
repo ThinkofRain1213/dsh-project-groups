@@ -13,15 +13,15 @@
  * ignores `form` in favour of its `configure` Remote.
  */
 import { useEffect, useState } from 'react'
-import { Button, IconChevronDownOutlineRegular, Menu, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconChevronDownOutlineRegular, Menu, Modal, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { WorkspaceSource } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { HostObservable, InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { BaseWorkspaceSetting, DocSpecMode, NewSessionTarget } from '../protocol.ts'
-import type { BaseWorkspaceChooserRequest } from './index.ts'
+import type { BaseWorkspaceChooserRequest, OfficialBaseState } from './index.ts'
 import type {
   clientBaseWorkspace, clientCreateOpensSession, clientDocSpecFileName, clientDocSpecMode,
   clientInjectProjectDoc, clientInjectProjectInfo, clientNewSessionTarget, clientPerProjectDocSpec,
-  clientSpecs,
+  clientSpecs, clientValidateLinks,
 } from './grouping.ts'
 import type { SETTINGS_NS } from './settings-locales.ts'
 import { BaseWorkspacePicker } from './base-workspace-picker.tsx'
@@ -86,9 +86,39 @@ export interface ProjectGroupsCardInjected {
      * survive the card not being mounted when the request was raised.
      */
     chooserRequest: HostObservable<BaseWorkspaceChooserRequest | null>
+    /**
+     * Whether the official default Workspace still resolves, as the Host last reported.
+     *
+     * Read only while the setting is `'default'` with no takeover: after one, the plugin's
+     * own recorded path is the source of truth and this seat is ignored. `'unknown'` renders
+     * as "no warning", so a probe that has not answered yet cannot raise a false alarm.
+     */
+    officialBase: HostObservable<OfficialBaseState>
+    /**
+     * Whether the project dialogs mark links that are not `http(s)://` URLs.
+     *
+     * The same observable the vendored dialogs read, so this switch and the marking they
+     * perform can never disagree about what is on.
+     */
+    validateLinks: typeof clientValidateLinks
   }
   /** Consume the chooser request so a repeat is a new value rather than a silent no-op. */
   settleBaseWorkspaceChooser: () => void
+  /**
+   * Re-probe the official default Workspace.
+   *
+   * Called on mount: the probe may not have run yet when the card first renders (the
+   * plugin's `apply` can precede the Remote namespace mounting), and the user is looking
+   * straight at the answer.
+   */
+  refreshOfficialBase: () => void
+  /**
+   * Re-create the base Workspace: make its directory, then register it.
+   *
+   * The same verb the missing-workspace dialog calls, so the two repairs cannot diverge. It
+   * rejects on failure, and the card keeps the dialog open to show why.
+   */
+  rebuildBaseWorkspace: () => Promise<void>
   /** Persist one destination. Resolves after the Host accepts it. */
   setTarget: (target: NewSessionTarget) => void
   /** Persist the base-workspace choice. Resolves after the Host accepts it. */
@@ -105,6 +135,8 @@ export interface ProjectGroupsCardInjected {
   setDocSpecFileName: (name: string) => void
   /** Persist whether the project dialogs expose a per-project spec row. */
   setPerProjectDocSpec: (value: boolean) => void
+  /** Persist whether the project dialogs mark non-URL links. */
+  setValidateLinks: (value: boolean) => void
   /** Store one uploaded spec; resolves false when the name is taken. */
   uploadSpec: (name: string, content: string) => Promise<boolean>
   /** Delete one uploaded spec; resolves false when nothing was removed. */
@@ -126,13 +158,15 @@ export type ProjectGroupsCardProps =
  */
 export function ProjectGroupsCard({
   useTarget, setTarget, useBaseWorkspace, setBaseWorkspace, useWorkspaces,
-  useChooserRequest, settleBaseWorkspaceChooser,
+  useChooserRequest, settleBaseWorkspaceChooser, useOfficialBase, refreshOfficialBase,
+  rebuildBaseWorkspace,
   useCreateOpensSession, setCreateOpensSession,
   useInjectProjectInfo, setInjectProjectInfo,
   useInjectProjectDoc, setInjectProjectDoc,
   useDocSpecMode, setDocSpecMode,
   useDocSpecFileName, setDocSpecFileName,
   usePerProjectDocSpec, setPerProjectDocSpec,
+  useValidateLinks, setValidateLinks,
   useSpecs, uploadSpec, deleteSpec, specsUsedBy, t,
 }: ProjectGroupsCardProps) {
   const target = useTarget(value => value)
@@ -149,6 +183,7 @@ export function ProjectGroupsCard({
   const docSpecMode = useDocSpecMode(value => value)
   const docSpecFileName = useDocSpecFileName(value => value)
   const perProjectSpec = usePerProjectDocSpec(value => value)
+  const validateLinksOn = useValidateLinks(value => value)
   const specs = useSpecs(value => value)
   /**
    * Whether `'custom'` currently names a spec that exists on disk.
@@ -174,6 +209,18 @@ export function ProjectGroupsCard({
   const workspaceSnapshot = useWorkspaces === undefined ? undefined : useWorkspaces(value => value)
   const workspaces = workspaceSnapshot?.items ?? []
   const [picking, setPicking] = useState(false)
+  // The two states of the card's own 重建 action: whether the confirmation is showing, and
+  // whether the write is in flight. Kept beside `picking` so the base-workspace group owns one
+  // set of dialog states.
+  const [rebuilding, setRebuilding] = useState(false)
+  const [rebuildBusy, setRebuildBusy] = useState(false)
+  const [rebuildError, setRebuildError] = useState<string | null>(null)
+  const probe = useOfficialBase(value => value)
+
+  // Ask once on mount. The plugin's `apply` issues a probe too, but it can run before the
+  // Remote namespace has mounted, so without this the card could sit on `'unknown'` — and
+  // therefore silent — for a Workspace that is genuinely gone.
+  useEffect(() => { refreshOfficialBase() }, [refreshOfficialBase])
 
   // A request from the missing-workspace dialog. Read on mount as well as on change, which is
   // what makes it survive the ordering 3a creates: the request is written as the dialog
@@ -211,6 +258,18 @@ export function ProjectGroupsCard({
     : gone
       ? t('baseGone', { name: base.name ?? base.path })
       : (base.name ?? base.path)
+
+  // Whether the **default** Workspace is missing, which is what raises the warning and the 重建
+  // action on that card.
+  //
+  // Two sub-states, one flag, because to the user they are one fact. With no takeover the
+  // official flow still governs and only the Host can say whether it resolves — hence the probe.
+  // After a takeover this plugin's own recorded path governs, and the registry snapshot answers
+  // directly, exactly as it does for the 指定 card above.
+  const adoptedPath = base.adoptedPath
+  const defaultGone = adoptedPath === undefined || adoptedPath === ''
+    ? probe.status === 'missing'
+    : workspaces.find(item => item.path === adoptedPath) === undefined
 
   return (
     <>
@@ -454,6 +513,24 @@ export function ProjectGroupsCard({
         </div>
       </div>
 
+      {/*
+        The link-validation switch. Its own row OUTSIDE the spec group above, and
+        deliberately not gated on the injection switches: a project's links are registered
+        and injected whether or not anything about its document is, so tying this to those
+        would disable a control whose feature is still in force.
+      */}
+      <div className={css.row}>
+        <div className={css.rowText}>
+          <div className={css.title}>{t('validateLinksTitle')}</div>
+          <div className={css.desc}>{t('validateLinksDesc')}</div>
+        </div>
+        <Switch
+          checked={validateLinksOn}
+          onChange={setValidateLinks}
+          label={t('validateLinksTitle')}
+        />
+      </div>
+
       {pickingSpec && (
         <SpecPicker
           specs={specs}
@@ -510,8 +587,38 @@ export function ProjectGroupsCard({
             {/* The official default Workspace's directory is derived on the Host and
               * is not part of the registry snapshot, so a card cannot name it without
               * an extra round trip. It says what the mode means instead; the path
-              * appears where it is actionable — the missing-workspace dialog. */}
-            <span className={css.cubePath}>{t('baseDefaultHint')}</span>
+              * appears where it is actionable — the missing-workspace dialog.
+              *
+              * Missing instead: amber, saying a click will ASK before anything is
+              * created. Never "will be created automatically" — the official flow does
+              * not rebuild itself once its pointer dangles (see `spec.ts` on
+              * `adoptedPath`), and the click really does raise the confirmation dialog. */}
+            <span className={defaultGone ? `${css.cubePath} ${css.cubeWarn}` : css.cubePath}>
+              {defaultGone ? t('baseDefaultMissing') : t('baseDefaultHint')}
+            </span>
+            {defaultGone && (
+              /*
+                The 重建 affordance. Same shape as the 更换… span below, and for the same
+                two measured reasons: a real <button> nested in this card's <button> makes
+                React log validateDOMNesting (several probes fail on console errors), and
+                without `stopPropagation` this click also re-selects the mode.
+              */
+              <span
+                role="button"
+                tabIndex={0}
+                className={css.cubeAction}
+                aria-label={t('baseRebuild')}
+                onClick={(event) => { event.stopPropagation(); setRebuilding(true) }}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return
+                  event.preventDefault()
+                  event.stopPropagation()
+                  setRebuilding(true)
+                }}
+              >
+                {t('baseRebuild')}
+              </span>
+            )}
           </button>
 
           <button
@@ -589,6 +696,54 @@ export function ProjectGroupsCard({
           }}
           t={t}
         />
+      )}
+
+      {rebuilding && (
+        /*
+          The confirmation. The rebuild writes to the disk — a directory, and in the
+          pre-takeover case at the official default's own location — so it asks first, the
+          same as the missing-workspace dialog's confirm stage does. Kept as one dialog with
+          a busy and error state rather than a second Modal, because a second Modal would sit
+          at the same z-index and install its own Escape and Tab handlers.
+        */
+        <Modal
+          open
+          onClose={() => { if (!rebuildBusy) setRebuilding(false) }}
+          closeLabel={t('close')}
+          title={t('baseRebuildConfirmTitle')}
+          footer={(
+            <>
+              <Button
+                variant="outline"
+                disabled={rebuildBusy}
+                onClick={() => { setRebuilding(false); setRebuildError(null) }}
+              >
+                {t('cancel')}
+              </Button>
+              <Button
+                variant="primary"
+                disabled={rebuildBusy}
+                onClick={() => {
+                  setRebuildBusy(true)
+                  setRebuildError(null)
+                  rebuildBaseWorkspace()
+                    // Only a completed repair closes the dialog. Closing on a failure
+                    // would leave the user where they started with no explanation.
+                    .then(() => { setRebuilding(false) })
+                    .catch((reason: unknown) => {
+                      setRebuildError(reason instanceof Error ? reason.message : String(reason))
+                    })
+                    .finally(() => { setRebuildBusy(false) })
+                }}
+              >
+                {rebuildBusy ? t('baseRebuildBusy') : t('confirm')}
+              </Button>
+            </>
+          )}
+        >
+          <p className={css.groupTitle}>{t('baseRebuildConfirmBody')}</p>
+          {rebuildError !== null && <div className={css.specError} role="alert">{rebuildError}</div>}
+        </Modal>
       )}
     </>
   )

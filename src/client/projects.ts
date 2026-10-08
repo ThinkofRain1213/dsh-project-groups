@@ -64,9 +64,15 @@ export interface ProjectRemote {
   create(request: {
     title: string
     directories?: readonly string[]
+    links?: readonly string[]
     docSpec?: string | null
   }): Promise<RemoteOutcome<unknown>>
-  update(request: { projectId: string; title: string; directories: readonly string[] }): Promise<RemoteOutcome<unknown>>
+  update(request: {
+    projectId: string
+    title: string
+    directories: readonly string[]
+    links: readonly string[]
+  }): Promise<RemoteOutcome<unknown>>
   delete(request: { projectId: string }): Promise<RemoteOutcome<unknown>>
   reorder(request: { projectId: string; beforeId?: string }): Promise<RemoteOutcome<unknown>>
   assign(request: { sessionId: string; projectId: string }): Promise<RemoteOutcome<unknown>>
@@ -81,6 +87,7 @@ export interface ProjectRemote {
   setDocSpecMode(request: { mode: DocSpecMode }): Promise<RemoteOutcome<unknown>>
   setDocSpecFileName(request: { name: string }): Promise<RemoteOutcome<unknown>>
   setPerProjectDocSpec(request: { value: boolean }): Promise<RemoteOutcome<unknown>>
+  setValidateLinks(request: { value: boolean }): Promise<RemoteOutcome<unknown>>
   setProjectDocSpec(request: { projectId: string; spec: DocSpecMode | string | null }): Promise<RemoteOutcome<unknown>>
   uploadSpec(request: { name: string; content: string }): Promise<RemoteOutcome<unknown>>
   deleteSpec(request: { name: string }): Promise<RemoteOutcome<unknown>>
@@ -88,6 +95,7 @@ export interface ProjectRemote {
   readSpec(request: { name: string }): Promise<RemoteOutcome<unknown>>
   setBaseWorkspace(request: BaseWorkspaceSetting): Promise<RemoteOutcome<unknown>>
   defaultWorkspacePath(): Promise<RemoteOutcome<{ path: string | null }>>
+  officialDefaultWorkspace(): Promise<RemoteOutcome<{ status: 'present' | 'missing' | 'unknown' }>>
   rebuildBaseWorkspace(): Promise<RemoteOutcome<unknown>>
 }
 
@@ -149,6 +157,13 @@ interface ProjectState {
   readonly docSpecFileName: string
   /** Whether the project dialogs expose a per-project spec row. */
   readonly perProjectDocSpec: boolean
+  /**
+   * Whether the project dialogs mark `links` that are not `http(s)://` URLs.
+   *
+   * Read only by the vendored dialogs, where the marking happens. Never a gate on the
+   * write: see `spec.ts` on why refusing was designed and rejected.
+   */
+  readonly validateLinks: boolean
   /** Every uploaded spec's file name, sorted. */
   readonly specs: readonly string[]
 }
@@ -169,6 +184,8 @@ const EMPTY_STATE: ProjectState = Object.freeze({
   docSpecMode: 'default',
   docSpecFileName: '',
   perProjectDocSpec: false,
+  // Matches the schema's own default: marking is on unless the user turns it off.
+  validateLinks: true,
   specs: Object.freeze([]),
 })
 
@@ -187,6 +204,11 @@ function sameBaseWorkspace(left: BaseWorkspaceSetting, right: BaseWorkspaceSetti
   return left.mode === right.mode
     && (left.path ?? '') === (right.path ?? '')
     && (left.name ?? '') === (right.name ?? '')
+    // The takeover is part of the setting, so it has to be part of the comparison. Omitting
+    // it would judge a rebuild that changed only this field as "unchanged": the frame would
+    // be dropped and the card would never leave its warning, which is exactly the class of
+    // bug this guard exists to prevent.
+    && (left.adoptedPath ?? '') === (right.adoptedPath ?? '')
 }
 
 /** Unwrap one Remote outcome, turning a failure into a thrown error. */
@@ -398,6 +420,21 @@ export class ProjectModel {
   }
 
   /**
+   * Whether the project dialogs mark links that are not `http(s)://` URLs.
+   *
+   * Handed to the vendored tree, like {@link perProjectDocSpec$}: the marking happens in
+   * the dialog, which cannot read this plugin's own model, and the settings card reads the
+   * same observable so one switch drives the behaviour the user then sees.
+   */
+  readonly validateLinks$: HostObservable<boolean> = {
+    getSnapshot: () => this.state.validateLinks,
+    subscribe: (listener) => {
+      this.listeners.add(listener)
+      return () => { this.listeners.delete(listener) }
+    },
+  }
+
+  /**
    * Every uploaded spec's file name, sorted.
    *
    * A new frozen array per snapshot rather than the stored one, so a React
@@ -424,6 +461,11 @@ export class ProjectModel {
   /** @returns whether the project dialogs expose a per-project spec row. */
   perProjectDocSpecValue(): boolean {
     return this.state.perProjectDocSpec
+  }
+
+  /** @returns whether the project dialogs mark links that are not `http(s)://` URLs. */
+  validateLinksValue(): boolean {
+    return this.state.validateLinks
   }
 
   /** @returns the uploaded spec names, sorted. */
@@ -522,23 +564,30 @@ export class ProjectModel {
    * protocol's four-state table.
    * @param title - display title; surrounding whitespace is trimmed.
    * @param directories - directories to associate at creation time.
+   * @param links - links to associate at creation time.
    * @param docSpec - spec override to store; `null` inherits the global choice.
    * @returns the created project's id.
    */
   async create(
     title: string,
     directories: readonly string[] = [],
+    links: readonly string[] = [],
     docSpec: string | null = null,
   ): Promise<string> {
     const value = unwrap(
-      await this.remote.create({ title: title.trim(), directories: [...directories], docSpec }),
+      await this.remote.create({
+        title: title.trim(),
+        directories: [...directories],
+        links: [...links],
+        docSpec,
+      }),
       'create project',
     )
     return (value as { project: { projectId: string } }).project.projectId
   }
 
   /**
-   * Replace a project's title and directories in one commit.
+   * Replace a project's title, directories and links in one commit.
    *
    * Not optimistic, unlike the switches: this is edited in a dialog that stays
    * open until the Host answers, so the dialog's own busy state is the feedback —
@@ -546,10 +595,21 @@ export class ProjectModel {
    * @param projectId - the project being edited.
    * @param title - the new title; surrounding whitespace is trimmed.
    * @param directories - the complete list, in display order.
+   * @param links - the complete link list, in display order.
    */
-  async update(projectId: string, title: string, directories: readonly string[]): Promise<void> {
+  async update(
+    projectId: string,
+    title: string,
+    directories: readonly string[],
+    links: readonly string[],
+  ): Promise<void> {
     unwrap(
-      await this.remote.update({ projectId, title: title.trim(), directories: [...directories] }),
+      await this.remote.update({
+        projectId,
+        title: title.trim(),
+        directories: [...directories],
+        links: [...links],
+      }),
       'update project',
     )
   }
@@ -884,6 +944,30 @@ export class ProjectModel {
   }
 
   /**
+   * Persist whether the project dialogs mark links that are not `http(s)://` URLs.
+   *
+   * Optimistic for the same reason as the other switches: the toggle has to follow the
+   * click in the frame it happened, and the Host's `follow` frame corrects it if the write
+   * is refused.
+   * @param value - the chosen behaviour.
+   */
+  async setValidateLinks(value: boolean): Promise<void> {
+    const previous = this.state.validateLinks
+    if (previous === value) return
+    this.state = Object.freeze({ ...this.state, validateLinks: value })
+    for (const listener of [...this.listeners]) listener()
+    try {
+      unwrap(await this.remote.setValidateLinks({ value }), 'set validate links')
+    } catch (error: unknown) {
+      if (this.state.validateLinks === value) {
+        this.state = Object.freeze({ ...this.state, validateLinks: previous })
+        for (const listener of [...this.listeners]) listener()
+      }
+      throw error
+    }
+  }
+
+  /**
    * Set or clear one project's spec override.
    *
    * Not optimistic: like {@link setDirectories}, this is committed from a dialog
@@ -994,7 +1078,15 @@ export class ProjectModel {
     // `setting` rides along as the requested memory: the 更换… chooser sends the current
     // mode plus the newly picked Workspace, so this must store that new path while keeping
     // the mode. Passing nothing would silently keep the OLD path and drop the replacement.
-    const next = setting.mode === 'default' ? withDefaultMode(previous, setting) : setting
+    //
+    // `adoptedPath` is carried through both arms, mirroring the Host's own rule: it is the
+    // default Workspace's location and outlives a switch to 指定, so dropping it here would
+    // render a frame in which the takeover had been forgotten — and the Host's next frame
+    // would put it back, which is exactly the flash this normalisation exists to prevent.
+    const adopted = previous.adoptedPath === undefined ? {} : { adoptedPath: previous.adoptedPath }
+    const next = setting.mode === 'default'
+      ? withDefaultMode(previous, setting)
+      : { ...setting, ...adopted }
     if (sameBaseWorkspace(previous, next)) return
     this.state = Object.freeze({ ...this.state, baseWorkspace: Object.freeze({ ...next }) })
     for (const listener of [...this.listeners]) listener()
@@ -1047,6 +1139,36 @@ export class ProjectModel {
     }
   }
 
+  /**
+   * @returns the taken-over default Workspace's path, or undefined while the official one governs.
+   *
+   * Read by the settings card to tell the two `'default'` sub-states apart: with no takeover the
+   * official flow decides, and only the Host can say whether it still resolves.
+   */
+  adoptedDefaultPath(): string | undefined {
+    return this.state.baseWorkspace.adoptedPath
+  }
+
+  /**
+   * Ask the Host whether the official default Workspace still resolves.
+   *
+   * Not cached and not stored: the Host owns the answer, and the probe is a cheap read once the
+   * official pointer is set. A refusal reports `'unknown'`, which the card renders as "no warning"
+   * — an infrastructure fault must not be shown as a missing Workspace.
+   * @returns the three-state probe result.
+   */
+  async officialDefaultWorkspace(): Promise<'present' | 'missing' | 'unknown'> {
+    try {
+      const value = unwrap(
+        await this.remote.officialDefaultWorkspace(),
+        'probe the official default workspace',
+      )
+      return (value as { status: 'present' | 'missing' | 'unknown' }).status ?? 'unknown'
+    } catch {
+      return 'unknown'
+    }
+  }
+
   private acceptFrame(frame: ProjectFollowFrame): void {
     if (frame.type === 'baseline') {
       this.accept(frame.value)
@@ -1068,6 +1190,10 @@ export class ProjectModel {
     const projects = Object.freeze(baseline.projects.map(project => Object.freeze({
       ...project,
       directories: Object.freeze([...(project.directories ?? [])]),
+      // `?? []` for the same reason as `directories`: a Host predating the field sends
+      // none, and this is the sidebar's render path — degrading to "no links" beats
+      // throwing where no caller can recover. Frozen copy, never the frame's own array.
+      links: Object.freeze([...(project.links ?? [])]),
     })))
     // Retire every placement the Host has now echoed: this frame carries our
     // value, so the local guess and the authoritative one agree and the overlay
@@ -1124,6 +1250,12 @@ export class ProjectModel {
     const docSpecMode = baseline.docSpecMode ?? 'default'
     const docSpecFileName = baseline.docSpecFileName ?? ''
     const perProjectDocSpec = baseline.perProjectDocSpec ?? false
+    // `?? true`, the opposite direction to the two injection switches above and for a
+    // stated reason: an older Host has no opinion on **marking**, and this Client's own
+    // default is on. Reading it as `false` would silently switch the feature off for
+    // everyone whose Host predates the field — the same reading `createOpensSession` uses
+    // for "the behaviour such an install is about to get".
+    const validateLinks = baseline.validateLinks ?? true
     const specs = Object.freeze([...(baseline.specs ?? [])])
     if (
       sameProjects(this.state.projects, projects)
@@ -1137,6 +1269,7 @@ export class ProjectModel {
       && this.state.docSpecMode === docSpecMode
       && this.state.docSpecFileName === docSpecFileName
       && this.state.perProjectDocSpec === perProjectDocSpec
+      && this.state.validateLinks === validateLinks
       && sameStringList(this.state.specs, specs)
       && sameBaseWorkspace(this.state.baseWorkspace, baseWorkspace)
     ) {
@@ -1145,7 +1278,7 @@ export class ProjectModel {
     this.state = Object.freeze({
       projects, assignments, expansions, orders, newSessionTarget, createOpensSession,
       injectProjectInfo, injectProjectDoc,
-      docSpecMode, docSpecFileName, perProjectDocSpec, specs, baseWorkspace,
+      docSpecMode, docSpecFileName, perProjectDocSpec, validateLinks, specs, baseWorkspace,
     })
     this.derived = undefined
     for (const listener of [...this.listeners]) listener()
@@ -1167,6 +1300,10 @@ export class ProjectModel {
       // identity, and handing out the state's own array would let a consumer's
       // later mutation be visible as a change to state it does not own.
       directories: Object.freeze([...project.directories]),
+      // Same copy-and-freeze rule as `directories` above: the edit dialog reads this
+      // list off the group, so it has to carry the stored links rather than a reference
+      // into state a consumer could mutate.
+      links: Object.freeze([...project.links]),
       // Spread rather than assigned as `undefined`: the browser distinguishes
       // "no override" from `'none'`, and an explicit undefined key would erase
       // that at the boundary.
@@ -1194,6 +1331,10 @@ function sameProjects(left: readonly ProjectValue[], right: readonly ProjectValu
       // hazard: a directory edit that touches nothing else would be judged
       // unchanged and the sidebar would not re-render.
       && sameStringList(project.directories, other.directories)
+      // `?? []` on both sides: the field is required on the wire but an older Host's
+      // frame carries none, and `sameStringList(undefined, …)` would throw on `.length`
+      // inside the sidebar's render path.
+      && sameStringList(project.links ?? [], other.links ?? [])
       && project.docPath === other.docPath
       && project.updatedAt === other.updatedAt
   })

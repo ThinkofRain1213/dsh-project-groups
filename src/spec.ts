@@ -80,6 +80,19 @@ export const projectRecord = z.object({
    * dropped, and the shape must not reserve room for it.
    */
   directories: z.array(z.string()).default([]),
+  /**
+   * Links associated with this project, in display order.
+   *
+   * Plain URLs, one per entry — no label: a label would be a second field on the
+   * wire and in the dialog for a name the URL already implies, and a `note` is
+   * where a human-written description belongs when Z-8 lands.
+   *
+   * `.default([])` for the reason stated on `directories` above: the domain parses
+   * every stored record through this schema when it opens, and a missing field
+   * would make an install written before this change unreadable, taking every
+   * project with it. No version bump, same reason.
+   */
+  links: z.array(z.string()).default([]),
   docPath: z.string(),
   /**
    * Spec override for this project's document. Absent inherits the global
@@ -205,6 +218,34 @@ export const baseWorkspaceSetting = z.object({
   path: z.string().optional(),
   /** Display name captured when the Workspace was picked. */
   name: z.string().optional(),
+  /**
+   * The default Workspace **after this plugin has taken it over**.
+   *
+   * Absent means "follow the official default": the resolver returns `'official'` and the
+   * shipped flow resolves it. Set means the official pointer has been abandoned.
+   *
+   * The official pointer is `defaultWorkspaceId` in the workspace domain. It is written
+   * exactly once — by `createCanonical` under its `firstUse` flag, which only
+   * `initializeDefault` sets — and is never cleared, so once the default Workspace's
+   * registration is deleted the official flow can never resolve again, and no public API
+   * re-points it. This field is the plugin's own copy of where the default Workspace
+   * lives, written by a rebuild and read from then on.
+   *
+   * A **path**, not an id, for the reason {@link path} states: re-registering a directory
+   * mints a new id, so a stored id would go stale while the path keeps resolving.
+   *
+   * Deliberately separate from {@link path}. That one is the memory of the user's last
+   * 指定 pick and is ignored while `mode === 'default'`; this one is the default
+   * Workspace's own location and is ignored while `mode === 'specified'`. One field could
+   * not carry both without making 默认 → 指定 → 默认 lose the pick, which is exactly what
+   * `withDefaultMode` exists to prevent.
+   *
+   * `.optional()` rather than defaulted, the same compatibility mechanism the fields above
+   * use: a setting written before this existed reads back as absent, which is exactly the
+   * "follow the official default" such an install was doing. No version bump — see the
+   * note on `projectDomainSpec`.
+   */
+  adoptedPath: z.string().optional(),
 })
 
 /**
@@ -350,6 +391,18 @@ export const globalRecord = z.object({
    * is worth until a user asks for it.
    */
   perProjectDocSpec: z.boolean().default(false),
+  /**
+   * Whether the project dialogs mark `links` that are not `http(s)://` URLs.
+   *
+   * Defaults to **on**. The marking is never a gate: the Host stores whatever it is
+   * given either way, and this flag only decides whether the editor computes the
+   * green check, the amber ⓘ and the invalid count. A refusing write was designed
+   * and rejected — one legacy value would dead-lock the whole dialog, including a
+   * title edit the user did make.
+   *
+   * Carries a default for the compatibility reason stated on `createOpensSession`.
+   */
+  validateLinks: z.boolean().default(true),
   /** The mutation a previous process left unfinished, if any. */
   pendingMutation: pendingMutation.optional(),
 })
@@ -376,6 +429,7 @@ export const initialGlobal: GlobalRecord = {
   docSpecMode: 'default',
   docSpecFileName: '',
   perProjectDocSpec: false,
+  validateLinks: true,
 }
 
 /**

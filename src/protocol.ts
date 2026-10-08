@@ -66,6 +66,13 @@ export function withDefaultMode(
     mode: 'default',
     path: requested?.path ?? stored?.path,
     name: requested?.name ?? stored?.name,
+    // The takeover survives a mode switch, exactly like the memory above it: 默认 → 指定
+    // → 默认 must come back to the taken-over Workspace rather than to the official
+    // pointer, which is permanently dead once this field is set. Spread rather than
+    // assigned as `undefined` so the key stays absent until a rebuild actually sets it —
+    // an explicit `undefined` would survive JSON round-tripping as `null`, a third
+    // spelling of "not taken over".
+    ...stored?.adoptedPath === undefined ? {} : { adoptedPath: stored.adoptedPath },
   }
 }
 
@@ -81,6 +88,15 @@ export interface ProjectValue {
    * shape must not reserve room for it.
    */
   readonly directories: readonly string[]
+  /**
+   * Links associated with this project, in display order.
+   *
+   * A plain list of URLs, like {@link directories} above and for the same reason:
+   * the shape must not reserve room for a primary/secondary flag that was designed
+   * and dropped. Required rather than optional because the Host always produces it;
+   * a Client facing an older Host reads it through `?? []`.
+   */
+  readonly links: readonly string[]
   /** Bound work document, or `''` when none is bound yet (L5). */
   readonly docPath: string
   /**
@@ -185,6 +201,13 @@ export interface ProjectBaseline {
   /** Whether the project dialogs expose a per-project spec row. */
   readonly perProjectDocSpec?: boolean
   /**
+   * Whether the project dialogs mark `links` that are not `http(s)://` URLs.
+   *
+   * Optional like the other settings above: a Client facing a Host that predates the
+   * field reads through its own default, which is why it is not required here.
+   */
+  readonly validateLinks?: boolean
+  /**
    * Every uploaded spec's file name, sorted.
    *
    * Carried on the baseline rather than fetched on demand because two surfaces
@@ -220,6 +243,14 @@ export interface ProjectCreateRequest {
    */
   readonly directories?: readonly string[]
   /**
+   * Links to associate at creation time; omitted means none.
+   *
+   * Carried on create for the same reason as `directories`: the create dialog
+   * collects everything it wants in one dialog, so committing it in one write
+   * avoids a project that briefly existed with the wrong links.
+   */
+  readonly links?: readonly string[]
+  /**
    * Spec override to store at creation time; omitted means inherit the global
    * choice.
    *
@@ -248,6 +279,8 @@ export interface ProjectUpdateRequest {
   readonly title: string
   /** The complete list, in display order. An empty list is a real value. */
   readonly directories: readonly string[]
+  /** The complete link list, in display order. An empty list is a real value. */
+  readonly links: readonly string[]
 }
 /** `update` result. */
 export type ProjectUpdateValue = ProjectValueResult
@@ -452,6 +485,100 @@ export interface ProjectPerProjectDocSpecValue {
   readonly value: boolean
 }
 
+/** `setValidateLinks` request: whether the project dialogs mark non-URL links. */
+export interface ProjectSetValidateLinksRequest {
+  readonly value: boolean
+}
+
+/** `setValidateLinks` result: the stored value. */
+export interface ProjectValidateLinksValue {
+  readonly value: boolean
+}
+
+/**
+ * Whether one link is a usable `http(s)://` URL.
+ *
+ * **Two steps**: the prefix must be `http://` or `https://`, and the remainder must parse
+ * as a URL. Deliberately strict — a bare `github.com/x/y` is rejected rather than
+ * auto-completed, because with a debounced live check, silently rewriting what the user
+ * typed is worse than asking for three more characters.
+ *
+ * A hostname without a dot passes on purpose: `https://gitlab` and `https://nas` are real
+ * intranet addresses, and this predicate answers "does it look like a URL", not "does that
+ * site exist" — a question nothing here can answer and must not pretend to.
+ *
+ * Shared by both halves: the editor marks rows with it while the **Host does not validate
+ * at all**, so a client-side copy would be free to drift from what the dialog means by
+ * "valid". It lives here rather than in `injection.ts` to keep the browser bundle out of
+ * the Host half; this module already carries a value export for both sides
+ * (`withDefaultMode`), and adding this one was measured not to break the client bundle's
+ * purity gate.
+ * @param url - the raw input.
+ * @returns whether it passes.
+ */
+export function isValidLink(url: string): boolean {
+  const trimmed = url.trim()
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) return false
+  try {
+    new URL(trimmed)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether a link carries no content: empty or whitespace-only, tested on the trimmed value.
+ *
+ * This is the rule the dialogs mean by "empty" — the row shows no verdict, does not count as
+ * failing, and is dropped on save — so all three sites have to reach it the same way. It is
+ * exported for the same reason `isValidLink` is: the editor marks with it while the Host drops
+ * blanks with it, and a second copy would be free to drift from what the dialog means by "empty".
+ *
+ * The distinction it draws is **emptiness, not validity**: a blank row is not a failing row, it is
+ * a row with nothing to judge. That is why the dialogs can act on it immediately, while a verdict
+ * has to wait.
+ * @param url - the raw input.
+ * @returns whether it holds no content.
+ */
+export function isBlankLink(url: string): boolean {
+  return url.trim() === ''
+}
+
+/**
+ * The links that carry content: blank entries dropped.
+ *
+ * "Blank" means empty or whitespace-only, tested on the trimmed value — the same rule the
+ * dialogs already use to decide a row shows no verdict and does not count as failing.
+ * Those two agreed with each other; what this fixes is the sites that consulted no rule at
+ * all.
+ *
+ * ## Why it is shared rather than written at each site
+ *
+ * The rule had reached **six** call sites: two in the dialogs, two on the Host's write path,
+ * and two in the injection renderer. The defect that prompted this is what that spread
+ * produces — the design said "drop blanks when storing" and the implementation dropped
+ * nothing, so an empty row became a real link: a bare `- ` in the injected block, a ghost
+ * row in the next dialog, and a save button that looked stuck because the ghost row was
+ * "unchanged". `isValidLink` lives here for the same reason.
+ *
+ * ## What it deliberately does not do
+ *
+ * It does **not** trim what it keeps: a URL the user padded with spaces keeps its spelling.
+ * Trimming is a formatting decision the editors have not made either — a directory path is
+ * stored verbatim too — and silently rewriting the stored value is the thing the link
+ * feature already refused to do when it chose marking over auto-completion.
+ *
+ * It also does **not** filter on validity. A non-blank link that fails the `http(s)://`
+ * check is still a link the user typed: dropping it here would turn the marking into the
+ * refusal the whole design rejected.
+ * @param links - the raw list, in display order.
+ * @returns the entries carrying content, order preserved.
+ */
+export function nonBlankLinks(links: readonly string[]): string[] {
+  return links.filter(link => !isBlankLink(link))
+}
+
 /**
  * `setProjectDocSpec` request: one project's spec override.
  *
@@ -548,6 +675,11 @@ export interface ProjectSetBaseWorkspaceRequest {
   readonly path?: string
   /** Display name captured at pick time; ignored otherwise. */
   readonly name?: string
+  // `adoptedPath` is deliberately **not** accepted from the caller. It records where the default
+  // Workspace lives after this plugin took it over, and it is written only by a rebuild — the Host
+  // reads its own stored value rather than trusting a path from the wire, so a client cannot point
+  // the resolver at an arbitrary directory. The Client's optimistic write still carries the field
+  // (it mirrors the whole setting), which is harmless: the Host ignores it.
 }
 
 /** `setBaseWorkspace` result: the stored setting, with `path`/`name` dropped for `'default'`. */
@@ -555,6 +687,14 @@ export interface ProjectBaseWorkspaceValue {
   readonly mode: BaseWorkspaceSetting['mode']
   readonly path?: string
   readonly name?: string
+  /**
+   * The taken-over default Workspace, carried through a mode switch.
+   *
+   * Present only once a rebuild has recorded one. Reported rather than assumed because a
+   * switch to `'default'` **retains** it (see `withDefaultMode`), and the caller must be
+   * able to see that the takeover is still in force.
+   */
+  readonly adoptedPath?: string
 }
 
 /**
@@ -572,15 +712,42 @@ export interface ProjectDefaultWorkspacePathValue {
 }
 
 /**
+ * `officialDefaultWorkspace` result: whether the official default Workspace still resolves.
+ *
+ * Three states rather than a boolean. `'unknown'` is a real answer, not a failure: the probe
+ * declines to ask when asking would make `initializeDefault` **create** the Workspace, and
+ * rendering a settings page must not write to disk. See the Host method for how the creating
+ * branch is made unreachable.
+ */
+export interface ProjectOfficialDefaultValue {
+  /**
+   * `'present'` — it resolves, and `workspaceId`/`path` name it.
+   * `'missing'` — it does not resolve and cannot any more, so a New Session will report the
+   * missing 底层工作区.
+   * `'unknown'` — the probe could not tell, and the caller must not warn.
+   */
+  readonly status: 'present' | 'missing' | 'unknown'
+  /** The resolving Workspace's id; present only with `status: 'present'`. */
+  readonly workspaceId?: string
+  /** The resolving Workspace's canonical path; present only with `status: 'present'`. */
+  readonly path?: string
+}
+
+/**
  * `rebuildBaseWorkspace` result: the Workspace that now exists at the base path.
  *
- * `mode` reports what the plugin's setting holds **after** the rebuild, and it is part of the
- * result rather than assumed because the repair is not always purely a filesystem action. In
- * `'default'` mode the official pointer is deliberately permanent — upstream documents that
- * "deleting that registration permanently disables automatic creation" — so re-registering the
- * path mints an id that pointer never adopts. The plugin therefore takes the path over into its
- * own setting, which its resolver does read, and the caller must be able to see that this is what
- * happened rather than discovering it as a surprise on the settings card.
+ * `mode` reports what the plugin's setting holds **after** the rebuild. It is part of the
+ * result rather than assumed because the repair is not always purely a filesystem action: in
+ * `'default'` mode the official pointer is permanent and unwritable — upstream documents that
+ * "deleting that registration permanently disables automatic creation", and no public API
+ * re-points it — so the plugin records the rebuilt directory in **its own** setting and
+ * resolves that from then on.
+ *
+ * The mode itself is **unchanged** by a rebuild, and that is the deliberate part: repairing
+ * the Workspace is not re-choosing where Sessions land, so the settings card's highlight stays
+ * where the user left it. An earlier version rewrote `'default'` to `'specified'`, which moved
+ * the highlight and reported the user's "rebuild the default workspace" as "I am now on a
+ * specific workspace".
  */
 export interface ProjectRebuildBaseWorkspaceValue {
   /** The canonical path the registry stored, after `realpathNormalize`. */
@@ -588,6 +755,6 @@ export interface ProjectRebuildBaseWorkspaceValue {
   readonly workspaceId: string
   /** The Workspace's title as registered. */
   readonly title: string
-  /** The setting's mode once the rebuild is complete. */
+  /** The setting's mode: the one the rebuild started from, unchanged. */
   readonly mode: BaseWorkspaceSetting['mode']
 }

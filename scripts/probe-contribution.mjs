@@ -79,4 +79,17 @@ for (const descriptor of projectGroupsRemote.descriptors) {
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)
-process.exit(failures.length === 0 ? 0 : 1)
+// `process.exitCode`, **not** `process.exit()`.
+//
+// This file registers the TypeScript module loader (`node:module` `register`), whose async
+// hooks keep libuv handles alive past the last statement. Calling `process.exit()` here forces
+// teardown while one is still closing and aborts the process with
+//
+//     Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 94
+//
+// **after** every assertion has already passed — so the suite reports success and then exits
+// non-zero, failing `pnpm check`. Measured: the same source passes when the file is small and
+// aborts once a few kilobytes are added, including a purely decorative unused `interface`; on
+// this file switching to `process.exitCode` made it pass 4/4 where `process.exit` failed 3/3.
+// Setting the code and letting Node drain the handles gives the same exit status without the race.
+process.exitCode = failures.length === 0 ? 0 : 1

@@ -107,20 +107,20 @@ function fakeRemote({ failOn, holdAssign = [], refuseAssignFor } = {}) {
     /** Let every held `assign`/`unassign` proceed. */
     releasePlace: () => { const held = releasePlace; releasePlace = []; for (const resolve of held) resolve() },
     async baseline() { return { ok: true, value: structuredClone(state) } },
-    async create({ title, directories = [] }) {
+    async create({ title, directories = [], links = [] }) {
       calls.push(['create', title])
       const refused = guard('create')
       if (refused !== undefined) return refused
       const project = {
         projectId: `p${state.projects.length + 1}`,
-        title, directories: [...directories], docPath: '',
+        title, directories: [...directories], links: [...links], docPath: '',
         createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
       }
       state.projects.push(project)
       landed()
       return ok({ project })
     },
-    async update({ projectId, title, directories }) {
+    async update({ projectId, title, directories, links }) {
       calls.push(['update', projectId, title])
       const refused = guard('update')
       if (refused !== undefined) return refused
@@ -128,6 +128,7 @@ function fakeRemote({ failOn, holdAssign = [], refuseAssignFor } = {}) {
       if (project === undefined) return { ok: false, error: { message: 'unknown project' } }
       project.title = title
       project.directories = [...directories]
+      project.links = [...links]
       landed()
       return ok({ project })
     },
@@ -415,7 +416,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   const projectId = model.list()[0].projectId
   let message = ''
   try {
-    await model.update(projectId, 'b', [])
+    await model.update(projectId, 'b', [], [])
     message = '(no throw)'
   } catch (error) {
     message = error instanceof Error ? error.message : String(error)
