@@ -78,16 +78,6 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
       {groups.length > 0 && (
         <div className={css.injectionDiffTitle}>{t('injectionDiffTitle')}</div>
       )}
-      {/*
-        The groups are plain rows: no enclosing surface, and no divider between them.
-        *
-        * Each row is a full-width button whose only affordance is the hover fill. That is the
-        * deliberate trade of this shape — a filled block (the alternative) marks the region even
-        * before the pointer arrives, while this one stays quiet and names the row only under the
-        * cursor. What must NOT come back is a hairline *between* rows: that was the reported
-        * defect, where the last row's divider was indistinguishable from the panel's own bottom
-        * border and the stack read as a fourth, empty row.
-      */}
       {groups.map(group => (
         <div key={group.key} className={css.injectionDiff}>
           <button
