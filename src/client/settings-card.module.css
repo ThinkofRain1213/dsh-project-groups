@@ -529,56 +529,48 @@
 }
 
 /*
- * The groups' shared surface: one filled block, not a stack of dividers.
+ * The heading's trailing gap, now that no block supplies one.
  *
- * ## Why a block rather than dividers
- *
- * The heading above is this section's head; content that arrives as a single surface reads as one
- * group belonging to it, whereas three hairline-separated rows read as a list that merely follows
- * the heading. That was the reported problem: the last row's divider and the panel's own bottom
- * border were indistinguishable, so the stack looked like a fourth, empty row (measured: the last
- * label sat 21px above that border while the rows between dividers measured 11–13px).
- *
- * ## Why the official shape
- *
- * `ui-plugin-manager`'s `.guide` is the same construction — a filled block with `radius-lg` and a
- * `border-l4` hairline — opened by a divider-less toggle whose affordance is a hover fill rather
- * than a line. Reusing it keeps this panel's vocabulary identical to the settings pages around it.
- *
- * ## ⚠️ Why `bg-module-platform` and not `bg-layer-1`
- *
- * Measured, not assumed. In the **light** scheme `bg-layer-1` and `bg-base` are the *same token*
- * (`--dsw-static-neutral-bluish-00`, both `rgb(255,255,255)`), so a block filled with it is
- * invisible against the page — the probe caught this as `listFill: "rgb(255, 255, 255)"` with no
- * contrast against its ancestor. Only in dark do they diverge (`bluish-875` against `bluish-950`).
- *
- * `bg-module-platform` is the token the official settings surfaces use for exactly this "a filled
- * editing region on the panel" role (`ui-settings-models`' `.editor`: *"a filled module on the
- * panel, matching the settings selector fill"*), and it is visibly distinct in **both** schemes
- * (light `#F5F6F7` against white, dark `#353638` against `#151517`).
- *
- * ⚠️ Rows deliberately keep **no** `border-top`: a divider here would restore the list reading this
- * block exists to remove, and would again be confusable with the panel's bottom border.
+ * On the **row**, not on its button's padding: a taller `padding-top` on the first row alone would
+ * break the property every other row keeps — that a label sits centred in its own button (the probe
+ * measures exactly that, and it is what makes hover fills line up). The margin is outside the
+ * button, so it separates the heading from the row without touching that symmetry.
  */
-.injectionDiffList {
-  display: flex;
-  flex-direction: column;
+.injectionDiffTitle + .injectionDiff {
   margin-top: 8px;
-  padding: 4px 8px;
-  border: 0.5px solid var(--dsw-alias-border-l4);
-  border-radius: var(--dsw-radius-lg);
-  background: var(--dsw-alias-bg-module-platform);
 }
 
 /*
- * One segment: a divider-less row whose affordance is the hover fill.
+ * The diff rows: plain rows, no enclosing surface.
  *
- * `border-radius` is what lets that fill read as a row rather than a band across the block.
+ * ## Why there is no block here
+ *
+ * The alternative shape puts the three rows inside one filled container (radius + border + a
+ * `bg-module-platform` fill), which marks the region statically. This shape deliberately does not:
+ * the rows stay flush with the panel, and a row names itself only under the pointer, through the
+ * hover fill on its own button.
+ *
+ * The trade is stated rather than hidden: with nothing between them and nothing around them, three
+ * collapsed rows are three lines of quiet text until the pointer arrives. What that buys is a panel
+ * that reads as two parts — the resident display and its heading — rather than as a framed inset
+ * sitting inside a wider frame.
+ *
+ * ## ⚠️ Why no divider comes back
+ *
+ * A hairline between rows was the reported defect, not a neutral choice: with one under each row,
+ * the last row's line and the panel's own `border-bottom` were the same weight and colour, so the
+ * stack read as a fourth, empty row (measured: the last label sat 21px above that border while the
+ * rows between dividers measured 11–13px). The rows therefore separate by **spacing only** —
+ * `padding: 8px` top and bottom on each toggle, which puts 16px between two labels.
  */
 .injectionDiff {
   border-radius: var(--dsw-radius-md);
 }
 
+/*
+ * One row's button. The fill is inset by 6px so it reads as a row rather than as a band spanning
+ * the panel, and it is the row's only affordance — see the note above.
+ */
 .injectionDiffToggle {
   width: 100%;
   padding: 8px 6px;
@@ -621,9 +613,9 @@
 /*
  * The expanded shapes.
  *
- * `padding-bottom: 8px` rather than 12px: the block already owns 4px below its last row, and the
- * row itself contributes its own 8px. Together that is the same 16px a collapsed row's label has
- * beneath it, so expanding a group does not make the block's bottom look tighter than its top.
+ * `padding-bottom: 8px` and the `18px` left inset are both the row's own now: the block that used
+ * to supply them is gone. The inset is what keeps a variant visibly *inside* its row rather than
+ * flush with the row's label.
  */
 .injectionDiffBody {
   flex-direction: column;

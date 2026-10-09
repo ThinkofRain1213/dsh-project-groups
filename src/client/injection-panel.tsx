@@ -78,54 +78,47 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
       {groups.length > 0 && (
         <div className={css.injectionDiffTitle}>{t('injectionDiffTitle')}</div>
       )}
-      {groups.length > 0 && (
-        /*
-         * The groups sit in one filled block rather than under a stack of dividers.
-         *
-         * The heading above them is the section's head, and a section whose content is a single
-         * surface reads as one group; three hairline-separated rows read as a list that happens to
-         * follow the heading. That distinction was the reported problem: with a divider under each
-         * of the three rows, the last one and the panel's own bottom border were indistinguishable,
-         * so the stack looked like a fourth, empty row.
-         *
-         * Copied from the official shape for exactly this (`ui-plugin-manager`'s `.guide`: a
-         * `bg-layer-1` block with `radius-lg` and a `border-l4` hairline, opened by a divider-less
-         * toggle). Rows keep their affordance through the hover fill instead of a divider.
-         */
-        <div className={css.injectionDiffList}>
-          {groups.map(group => (
-            <div key={group.key} className={css.injectionDiff}>
-              <button
-                type="button"
-                className={css.injectionDiffToggle}
-                aria-expanded={open.has(group.key)}
-                onClick={() => { toggle(group.key) }}
-              >
-                <IconChevronDownOutlineRegular
-                  className={open.has(group.key) ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
-                />
-                {t(group.titleKey)}
-              </button>
-              {open.has(group.key) && (
-                <div className={css.injectionDiffBody}>
-                  {group.variants.map(variant => (
-                    <div key={variant.key} className={css.injectionVariant}>
-                      <div className={css.injectionVariantLabel}>{t(variant.labelKey)}</div>
-                      {variant.text === ''
-                        ? (
-                          <div className={css.injectionVariantEmpty}>
-                            {variant.hintKey === undefined ? '' : t(variant.hintKey)}
-                          </div>
-                        )
-                        : <pre className={css.injectionText}>{variant.text}</pre>}
-                    </div>
-                  ))}
+      {/*
+        The groups are plain rows: no enclosing surface, and no divider between them.
+        *
+        * Each row is a full-width button whose only affordance is the hover fill. That is the
+        * deliberate trade of this shape — a filled block (the alternative) marks the region even
+        * before the pointer arrives, while this one stays quiet and names the row only under the
+        * cursor. What must NOT come back is a hairline *between* rows: that was the reported
+        * defect, where the last row's divider was indistinguishable from the panel's own bottom
+        * border and the stack read as a fourth, empty row.
+      */}
+      {groups.map(group => (
+        <div key={group.key} className={css.injectionDiff}>
+          <button
+            type="button"
+            className={css.injectionDiffToggle}
+            aria-expanded={open.has(group.key)}
+            onClick={() => { toggle(group.key) }}
+          >
+            <IconChevronDownOutlineRegular
+              className={open.has(group.key) ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
+            />
+            {t(group.titleKey)}
+          </button>
+          {open.has(group.key) && (
+            <div className={css.injectionDiffBody}>
+              {group.variants.map(variant => (
+                <div key={variant.key} className={css.injectionVariant}>
+                  <div className={css.injectionVariantLabel}>{t(variant.labelKey)}</div>
+                  {variant.text === ''
+                    ? (
+                      <div className={css.injectionVariantEmpty}>
+                        {variant.hintKey === undefined ? '' : t(variant.hintKey)}
+                      </div>
+                    )
+                    : <pre className={css.injectionText}>{variant.text}</pre>}
                 </div>
-              )}
+              ))}
             </div>
-          ))}
+          )}
         </div>
-      )}
+      ))}
     </div>
   )
 }

@@ -404,18 +404,17 @@ async function runCardBehaviour() {
   //   2. three dividers plus the panel's own bottom border made the last row indistinguishable from
   //      a fourth, empty row, and left that row 8px deeper than the ones above it.
   //
-  // The rows now live in one filled block (`.injectionDiffList`) with **no** dividers, so what is
-  // asserted is the block's existence, its fill, the absence of internal dividers, and that the
-  // rows are evenly spaced inside it with the label vertically centred.
+  // The rows are **plain rows**: no enclosing surface, and no divider between them. What is asserted
+  // is that the rows exist, that nothing sits between them, that no divider came back, and that each
+  // label stays centred in its own button.
   const shape = await card().evaluate((root) => {
     const panel = root.querySelector('[class*="injectionPanel"]')
     if (panel === null) return null
-    const list = panel.querySelector('[class*="injectionDiffList"]')
-    if (list === null) return { missing: 'injectionDiffList' }
-    // Descendant search, not `panel.children`: the rows are grandchildren now that they sit in the
-    // block. Matching the block itself must be excluded — its class also contains "injectionDiff".
-    const groups = [...list.querySelectorAll('[class*="injectionDiff"]')]
-      .filter((el) => el !== list && el.querySelector(':scope > button') !== null)
+    // Descendant search, not `panel.children`: the panel also holds the heading and the main display.
+    // Matching must require a direct `button`, which is what distinguishes a row from any other
+    // element whose class merely contains "injectionDiff".
+    const groups = [...panel.querySelectorAll('[class*="injectionDiff"]')]
+      .filter((el) => el.querySelector(':scope > button') !== null)
     if (groups.length === 0) return { missing: 'groups' }
 
     /** The button's content box: its rect minus the padding its own rule declares. */
@@ -429,7 +428,6 @@ async function runCardBehaviour() {
     }
 
     const pr = panel.getBoundingClientRect()
-    const lr = list.getBoundingClientRect()
     const rects = groups.map((g) => g.getBoundingClientRect())
     const rows = groups.map((group) => {
       const box = contentBox(group.querySelector(':scope > button'))
@@ -439,15 +437,14 @@ async function runCardBehaviour() {
         under: Math.round(g.bottom - box.bottom),
       }
     })
-    // The rows are flush inside the block (no margins, no `gap`), so a positive number here is a
-    // re-added `gap` or margin — the exact defect this section was written for.
+    // The rows are flush: the only spacing between two labels is their own padding, so a positive
+    // number here is a re-added `gap` or margin — the exact defect this section was written for.
     const boxGaps = rects.slice(0, -1).map((r, i) => Math.round(rects[i + 1].top - r.bottom))
-    // Full-width **dividers** inside the panel: an element with a top or bottom border but **no**
-    // left/right border. That exclusion is the whole point — a four-sided box (the injected block's
-    // `border`, the diff block's outline) has top and bottom borders too, and counting those made
-    // this assertion fail the moment a second full-width box existed. It also excluded the panel
-    // itself (`querySelectorAll('*')` never returns the context element), so the "only the panel's
-    // bottom edge" reading was doubly wrong; the panel is measured explicitly.
+    // Full-width **dividers**: an element with a top or bottom border but **no** left/right border.
+    // That exclusion is the whole point — a four-sided box (the injected block's `border`) has top
+    // and bottom borders too, and counting those made this assertion fail the moment a second
+    // full-width box existed. It also excluded the panel itself (`querySelectorAll('*')` never
+    // returns the context element), so the panel is measured explicitly.
     const panelWidth = Math.round(pr.width)
     const isWide = (el) => Math.round(el.getBoundingClientRect().width) >= panelWidth - 2
     const dividers = []
@@ -463,95 +460,71 @@ async function runCardBehaviour() {
       + Number.parseFloat(panelCS.borderBottomWidth)) > 0
     const first = panel.firstElementChild
     const title = panel.querySelector('[class*="injectionDiffTitle"]')
-    const listFill = getComputedStyle(list).backgroundColor
-    /**
-     * The block's fill must be **visible**, not merely non-transparent.
-     *
-     * Measured the hard way: `bg-layer-1` is the *same token* as `bg-base` in the light scheme
-     * (both `rgb(255,255,255)`), so a block filled with it renders white-on-white and looks like no
-     * block at all — while a "not transparent" assertion passed happily. The check below compares
-     * the fill against the nearest opaque ancestor's, which is the property that actually matters.
-     */
-    const parseRgb = (value) => {
-      const m = /rgba?\(([^)]+)\)/.exec(value)
-      if (m === null) return null
-      const parts = m[1].split(',').map((p) => Number.parseFloat(p.trim()))
-      return { r: parts[0], g: parts[1], b: parts[2], a: parts[3] === undefined ? 1 : parts[3] }
-    }
-    const fill = parseRgb(listFill)
-    let backdrop = null
-    for (let el = list.parentElement; el !== null; el = el.parentElement) {
-      const c = parseRgb(getComputedStyle(el).backgroundColor)
-      if (c !== null && c.a > 0.5) { backdrop = c; break }
-    }
-    const fillVsBackdrop = fill === null || backdrop === null ? null
-      : Math.abs(fill.r - backdrop.r) + Math.abs(fill.g - backdrop.g) + Math.abs(fill.b - backdrop.b)
+    const firstRow = groups[0]
     return {
       rows,
       boxGaps,
       dividers,
       panelDivider,
-      listFill,
-      listBackdrop: backdrop,
-      fillVsBackdrop,
-      listBorderRadius: getComputedStyle(list).borderTopLeftRadius,
-      topAir: first === null ? null : Math.round(first.getBoundingClientRect().top - pr.top),
-      blockGapAbove: title === null ? null : Math.round(lr.top - title.getBoundingClientRect().bottom),
+      // The heading's trailing gap now lives on the first row's **margin**, so this is measured
+      // between the heading's box and the first row's box.
+      headingToFirstRow: title === null ? null
+        : Math.round(firstRow.getBoundingClientRect().top - title.getBoundingClientRect().bottom),
+      // No enclosing surface may exist: this is the property that separates this shape from the
+      // block alternative, and its return would silently undo the design.
+      hasEnclosingSurface: [...panel.querySelectorAll('[class*="injectionDiffList"]')].length,
       panelGap: getComputedStyle(panel).rowGap,
       panelPadTop: Math.round(Number.parseFloat(getComputedStyle(panel).paddingTop)),
+      topAir: first === null ? null : Math.round(first.getBoundingClientRect().top - pr.top),
       groupCount: groups.length,
     }
   })
 
-  // 1. The block exists and is filled **visibly** in the active scheme: this is what "the diff is one
-  // group" means physically. The threshold is deliberately generous (any channel difference at all)
-  // — the failure this guards is *invisibility*, not a specific shade.
-  check('7) 差分区是一个带底色、且与背景有色差的整块',
-    shape !== null && shape.fillVsBackdrop !== null && shape.fillVsBackdrop > 0
-    && shape.listBorderRadius !== undefined,
-    JSON.stringify({ listFill: shape?.listFill, backdrop: shape?.listBackdrop,
-      diff: shape?.fillVsBackdrop, radius: shape?.listBorderRadius }))
+  // 1. No enclosing surface. The block alternative would put a filled, bordered container around the
+  // rows; this shape deliberately does not, and a leftover class name is exactly how it would come
+  // back by accident.
+  check('7) 差分区没有外层容器（行直接属于面板）',
+    shape !== null && shape.hasEnclosingSurface === 0,
+    JSON.stringify({ hasEnclosingSurface: shape?.hasEnclosingSurface }))
 
-  // 2. No dividers inside the block: the rows lost their `border-top`, and the only horizontal rule
-  // in the panel is the panel's own bottom border (which the section's shape relies on). Measured on
-  // single-edge rules only, so the two four-sided boxes (the injected block, the diff block) are not
-  // mistaken for lines — see the comment at `dividers` for why that distinction broke this once.
-  check('7) 差分区内部不再有分割线（只剩面板底边一条）',
+  // 2. No divider anywhere inside the panel, and the only horizontal rule is the panel's own bottom
+  // border. A hairline between rows was the reported defect: the last row's line and this border were
+  // the same weight, so the stack read as a fourth, empty row.
+  check('7) 行之间没有分割线（只剩面板底边一条）',
     shape !== null && shape.dividers !== undefined && shape.panelDivider === true
     && shape.dividers.length === 0,
     JSON.stringify({ dividers: shape?.dividers, panelDivider: shape?.panelDivider }))
 
-  // 3. No `gap` between the rows: a re-added `gap`/margin on the block brings 8 straight back.
-  check('7) 分组之间没有额外间隙（block 未再加 gap）',
+  // 3. No `gap` or margin between the rows: a re-added one brings the 8px asymmetry straight back.
+  check('7) 分组之间没有额外间隙（未再加 gap/margin）',
     shape !== null && shape.boxGaps !== undefined && shape.boxGaps.length > 0
     && shape.boxGaps.every((g) => Math.abs(g) <= 1),
     JSON.stringify({ panelGap: shape?.panelGap, boxGaps: shape?.boxGaps }))
 
-  // 4. Every row's label is vertically centred in its button: the dividers used to hide an
-  // asymmetry here (8 over, 16 under, from the panel `gap`); with them gone the padding is the only
-  // spacing, and it must be symmetric.
+  // 4. Every row's label is vertically centred in its button. With no block to carry padding and no
+  // divider to hide an asymmetry, this symmetry is the only thing keeping the spacing even, and it is
+  // what makes the hover fills line up with the labels.
   check('7) 每行标签在其按钮内上下居中（±1px）',
     shape !== null && shape.rows !== undefined && shape.rows.length > 0
     && shape.rows.every((r) => r.over !== null && r.under !== null && Math.abs(r.over - r.under) <= 1),
     JSON.stringify({ rows: shape?.rows }))
 
-  // 5. The heading is this section's head: the block starts right below it, and the panel's top air
-  // matches the gap above the block, so the section is not tighter at one end than the other.
-  check('7) 标题紧接底色块（8px），且面板顶部留白 16px',
-    shape !== null && shape.blockGapAbove !== undefined
-    && Math.abs(shape.blockGapAbove - 8) <= 1 && shape.topAir === 16,
-    JSON.stringify({ blockGapAbove: shape?.blockGapAbove, topAir: shape?.topAir }))
+  // 5. The heading starts the section and the rows follow it closely: the gap is the heading's own
+  // `margin-top` air echoed below it, and the panel's top air matches the first heading's.
+  check('7) 标题与第一行相距 8px，且面板顶部留白 16px',
+    shape !== null && shape.headingToFirstRow !== null
+    && Math.abs(shape.headingToFirstRow - 8) <= 1 && shape.topAir === 16,
+    JSON.stringify({ headingToFirstRow: shape?.headingToFirstRow, topAir: shape?.topAir }))
 
-  // 6. The rows lost their dividers, so the hover fill is now their only affordance. That is the
-  // trade this shape makes, and a regression to a colour-only hover would leave the rows looking
-  // inert with nothing else to fail — every other assertion here still passes.
+  // 6. The hover fill is the rows' **only** affordance now that neither a divider nor a block marks
+  // them. That is the trade this shape makes, and a regression to a colour-only hover would leave the
+  // rows looking inert with nothing else to fail — every other assertion here still passes.
   //
   // Read from the stylesheet rather than simulated: a synthetic class proves the *token* resolves,
   // not that the `:hover` rule exists, and the rule is exactly what would be deleted by mistake.
   const hover = await card().evaluate((root) => {
     const panel = root.querySelector('[class*="injectionPanel"]')
-    const list = panel?.querySelector('[class*="injectionDiffList"]')
-    const button = list?.querySelector(':scope > [class*="injectionDiff"] > button')
+    const button = panel?.querySelector('[class*="injectionDiff"] > button')
     const own = button?.className ?? ''
     const hits = []
     for (const sheet of [...document.styleSheets]) {
@@ -566,7 +539,7 @@ async function runCardBehaviour() {
     }
     return { own, hits }
   })
-  check('7) 分组行有悬停底色（去线后可点击性的唯一提示）',
+  check('7) 分组行有悬停底色（无块无线时可点击性的唯一提示）',
     hover.hits.some((t) => t.includes('background')), JSON.stringify(hover))
 
   // The master switch off: the panel stays, and says nothing is injected.
