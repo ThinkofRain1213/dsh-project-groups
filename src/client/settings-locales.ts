@@ -119,6 +119,33 @@ export const zh = {
   basePickerEmpty: '暂无工作区',
   cancel: '取消',
   close: '关闭',
+  // The injection preview. Kept in one block rather than beside the switches above: it is one
+  // panel with its own vocabulary, and the diff labels are only meaningful next to each other.
+  //
+  // The note explains both the bracket convention and the one thing about this panel that is
+  // genuinely counter-intuitive — the link check marks and does not filter, so switching it off
+  // changes nothing about what is injected. Without that sentence the panel invites the opposite
+  // reading, since the switch sits three rows above it.
+  injectionTitle: '当前注入内容',
+  injectionOff: '「注入项目信息」已关闭，本插件不向请求注入任何内容。',
+  injectionNote: '[方括号] 内是你设置的内容，实际注入时按项目数据替换。校验开关只影响编辑时的标记，不影响注入。',
+  injectionDiffTitle: '各状态下的分块差异',
+  diffOwningTitle: 'owning project 段',
+  diffOwningFiled: '有归属项目',
+  diffOwningUnfiled: '未分组',
+  diffDirectoriesTitle: 'relevant directories 段',
+  diffDirectoriesNone: '未设置目录',
+  diffDirectoriesOne: '只有一条',
+  diffDirectoriesMany: '多条',
+  diffLinksTitle: 'related links 段',
+  diffLinksNone: '没有链接',
+  diffLinksNoneHint: '整段不渲染 —— 与「未设置目录」不同，那里仍会输出一句话。',
+  diffLinksOne: '只有一条',
+  diffLinksMany: '多条',
+  diffDocumentTitle: 'work document 段',
+  diffDocumentSpec: '有规范',
+  diffDocumentNoSpec: '无规范',
+  diffDocumentDrift: '规范漂移',
 }
 
 /** Keys accepted by the card's translator. */
@@ -184,6 +211,27 @@ export const en: Record<ProjectGroupsSettingsKey, string> = {
   confirm: 'Confirm',
   cancel: 'Cancel',
   close: 'Close',
+  // The injection preview; see the zh block for why the note says what it says.
+  injectionTitle: 'Injected content',
+  injectionOff: '"Inject project info" is off, so this plugin injects nothing.',
+  injectionNote: 'Text in [brackets] is your own content, substituted from the project at request time. The validate switch only marks links while editing; it does not change what is injected.',
+  injectionDiffTitle: 'Segment differences by state',
+  diffOwningTitle: 'owning project segment',
+  diffOwningFiled: 'Filed under a project',
+  diffOwningUnfiled: 'Ungrouped',
+  diffDirectoriesTitle: 'relevant directories segment',
+  diffDirectoriesNone: 'No directory set',
+  diffDirectoriesOne: 'Exactly one',
+  diffDirectoriesMany: 'More than one',
+  diffLinksTitle: 'related links segment',
+  diffLinksNone: 'No links',
+  diffLinksNoneHint: 'The segment does not render at all — unlike an unset directory, which still prints a sentence.',
+  diffLinksOne: 'Exactly one',
+  diffLinksMany: 'More than one',
+  diffDocumentTitle: 'work document segment',
+  diffDocumentSpec: 'With a spec',
+  diffDocumentNoSpec: 'Without a spec',
+  diffDocumentDrift: 'Spec drift',
 }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {

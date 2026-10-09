@@ -20,12 +20,13 @@ import type { BaseWorkspaceSetting, DocSpecMode, NewSessionTarget } from '../pro
 import type { BaseWorkspaceChooserRequest, OfficialBaseState } from './index.ts'
 import type {
   clientBaseWorkspace, clientCreateOpensSession, clientDocSpecFileName, clientDocSpecMode,
-  clientInjectProjectDoc, clientInjectProjectInfo, clientNewSessionTarget, clientPerProjectDocSpec,
-  clientSpecs, clientValidateLinks,
+  clientInjectProjectDoc, clientInjectProjectInfo, clientInjectionLocale, clientNewSessionTarget,
+  clientPerProjectDocSpec, clientSpecs, clientValidateLinks,
 } from './grouping.ts'
 import type { SETTINGS_NS } from './settings-locales.ts'
 import { BaseWorkspacePicker } from './base-workspace-picker.tsx'
 import { SpecPicker } from './spec-picker.tsx'
+import { InjectionPanel } from './injection-panel.tsx'
 import css from './settings-card.module.css'
 
 /**
@@ -101,6 +102,13 @@ export interface ProjectGroupsCardInjected {
      * perform can never disagree about what is on.
      */
     validateLinks: typeof clientValidateLinks
+    /**
+     * The active locale, for the injection preview's drift sample.
+     *
+     * Not a Host-backed setting like the seats above: it mirrors the browser's own locale service,
+     * so the previewed drift question is written in the language the injected block would use.
+     */
+    injectionLocale: typeof clientInjectionLocale
   }
   /** Consume the chooser request so a repeat is a new value rather than a silent no-op. */
   settleBaseWorkspaceChooser: () => void
@@ -167,6 +175,7 @@ export function ProjectGroupsCard({
   useDocSpecFileName, setDocSpecFileName,
   usePerProjectDocSpec, setPerProjectDocSpec,
   useValidateLinks, setValidateLinks,
+  useInjectionLocale,
   useSpecs, uploadSpec, deleteSpec, specsUsedBy, t,
 }: ProjectGroupsCardProps) {
   const target = useTarget(value => value)
@@ -184,6 +193,7 @@ export function ProjectGroupsCard({
   const docSpecFileName = useDocSpecFileName(value => value)
   const perProjectSpec = usePerProjectDocSpec(value => value)
   const validateLinksOn = useValidateLinks(value => value)
+  const injectionLocale = useInjectionLocale(value => value)
   const specs = useSpecs(value => value)
   /**
    * Whether `'custom'` currently names a spec that exists on disk.
@@ -321,6 +331,28 @@ export function ProjectGroupsCard({
           checked={openOnCreate}
           onChange={setCreateOpensSession}
           label={t('createOpensTitle')}
+        />
+      </div>
+
+      {/*
+        The link-validation switch. Deliberately **not** gated on the injection switches below:
+        a project's links are registered and injected whether or not anything about its document
+        is, so tying this to those would disable a control whose feature is still in force.
+
+        Moved above the injection chain (2026-10-09). It is the one setting here that depends on
+        nothing else, so sitting after a four-row dependency chain read as the last link in it.
+        Grouped with the other Session-behaviour switch, and separated from the chain it has no
+        part in.
+      */}
+      <div className={css.row}>
+        <div className={css.rowText}>
+          <div className={css.title}>{t('validateLinksTitle')}</div>
+          <div className={css.desc}>{t('validateLinksDesc')}</div>
+        </div>
+        <Switch
+          checked={validateLinksOn}
+          onChange={setValidateLinks}
+          label={t('validateLinksTitle')}
         />
       </div>
 
@@ -513,24 +545,6 @@ export function ProjectGroupsCard({
         </div>
       </div>
 
-      {/*
-        The link-validation switch. Its own row OUTSIDE the spec group above, and
-        deliberately not gated on the injection switches: a project's links are registered
-        and injected whether or not anything about its document is, so tying this to those
-        would disable a control whose feature is still in force.
-      */}
-      <div className={css.row}>
-        <div className={css.rowText}>
-          <div className={css.title}>{t('validateLinksTitle')}</div>
-          <div className={css.desc}>{t('validateLinksDesc')}</div>
-        </div>
-        <Switch
-          checked={validateLinksOn}
-          onChange={setValidateLinks}
-          label={t('validateLinksTitle')}
-        />
-      </div>
-
       {pickingSpec && (
         <SpecPicker
           specs={specs}
@@ -567,6 +581,18 @@ export function ProjectGroupsCard({
           t={t}
         />
       )}
+
+      {/*
+        The injection preview, directly under the chain it describes. It reads the two switches
+        above rather than the stored records: the samples spell out which parts are the user's
+        data, so nothing here depends on a project or a Session.
+      */}
+      <InjectionPanel
+        injectInfo={injectInfo}
+        injectDoc={injectDoc}
+        locale={injectionLocale}
+        t={t}
+      />
 
       {/*
         The base workspace, laid out as the official appearance row is (three cards

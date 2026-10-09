@@ -28,6 +28,7 @@
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { GroupSource } from '../vendored/client/tree.ts'
 import type { BaseWorkspaceSetting, NewSessionTarget } from '../protocol.ts'
+import type { InjectionLocale } from '../injection.ts'
 import type { ProjectModel } from './projects.ts'
 
 /** The override with no projects: one Ungrouped bucket. */
@@ -391,6 +392,61 @@ export const clientPerProjectDocSpec: HostObservable<boolean> = pendingSeat(
   false,
   live => live.perProjectDocSpec$,
 )
+
+/**
+ * The slice of the locale service this plugin reads.
+ *
+ * Structural rather than the service's own type: these two members are exactly what the observable
+ * below needs, and naming only those keeps this plugin's compile surface from growing with a
+ * service it otherwise does not touch.
+ */
+interface LocaleServiceLike {
+  readonly getSnapshot: () => { readonly active: string }
+  readonly subscribe: (listener: () => void) => () => void
+}
+
+/**
+ * The locale service, captured by {@link installLocaleService}.
+ *
+ * Module-level like {@link model}, and for the same reason: the observable is built at module load
+ * while the service only exists once the client's `apply` runs.
+ */
+let localeService: LocaleServiceLike | undefined
+
+/**
+ * Normalize an active locale id to the two languages this plugin renders user-facing text for.
+ *
+ * The rule matches the Host's normalization of the **stored preference** (`index.ts:834`) —
+ * English is recognized and everything else is Chinese — but the test differs, deliberately. The
+ * Host reads a preference written as `'en'`, while the browser's snapshot carries a **resolved
+ * BCP 47 id** that may be `'en-US'`; hence `startsWith`. A drift question previewed in the wrong
+ * language would be the panel stating something the injected block does not do.
+ * @param active - the active locale id.
+ * @returns the locale to render the drift question in.
+ */
+function injectionLocaleOf(active: string): InjectionLocale {
+  return active.startsWith('en') ? 'en' : 'zh'
+}
+
+/**
+ * Adopt the locale service, once the client's `apply` has it.
+ * @param service - the live service, or undefined when the locale plugin is absent.
+ */
+export function installLocaleService(service: LocaleServiceLike | undefined): void {
+  localeService = service
+}
+
+/**
+ * The active locale, for the settings card's injection preview.
+ *
+ * Not a {@link pendingSeat}: locale is not a project-model value, so there is nothing to re-seat
+ * when the model's baseline lands. `'zh'` before the service exists, matching the Host's own
+ * fallback when it cannot read the setting.
+ */
+export const clientInjectionLocale: HostObservable<InjectionLocale> = {
+  getSnapshot: () => injectionLocaleOf(localeService?.getSnapshot().active ?? 'zh'),
+  subscribe: listener => localeService?.subscribe(listener) ?? (() => {}),
+}
 
 /**
  * Whether the project dialogs mark links that are not `http(s)://` URLs.

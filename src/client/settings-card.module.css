@@ -433,3 +433,223 @@
 .footerLeading {
   margin-right: auto;
 }
+
+/*
+ * The injection preview.
+ *
+ * Same row geometry as `.group` above — a bordered block with a heading — because it is another
+ * section of the same card, not a new kind of thing.
+ *
+ * ## Why this panel carries no `gap`, and where its rhythm comes from instead
+ *
+ * `gap` on this column applies between *every* pair of children — and the diff groups are children
+ * too. Each group's `.injectionDiffToggle` already carries `padding: 8px 0`, so the `gap` added a
+ * second 8px *below* every row but not above it (measured: 16px under the text against 8px over it),
+ * which is why a group's label sat visibly closer to the line above it than to the line below.
+ *
+ * The rhythm is explicit now — `margin-top` on the main display, on the diff heading, and on the
+ * block that follows it — so each section states its own spacing instead of summing with a `gap`.
+ *
+ * ## Why the bottom padding is 16px again
+ *
+ * It was 8px while every diff row carried its own divider: the last row contributed 8px of its own,
+ * so 8 + 8 put that row the same 16px from the panel's edge as the first heading sat from its top.
+ * The rows lost their dividers when they moved into the filled block below (which owns the
+ * padding around them now), so the panel is back to the plain 16px every other section uses.
+ */
+.injectionPanel {
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+  flex-direction: column;
+  padding: 16px 0;
+  display: flex;
+}
+
+/* The heading → main display spacing the panel's `gap` used to provide. */
+.injectionMain {
+  margin-top: 8px;
+  flex-direction: column;
+  gap: 8px;
+  display: flex;
+}
+
+/*
+ * The rendered block.
+ *
+ * Monospace, because the block's own punctuation is meaningful (backticks around segment names,
+ * the XML frame) and because its indentation carries structure the drift prompt relies on.
+ *
+ * `pre-wrap` with `anywhere`: the samples contain absolute paths that are far longer than the
+ * card, and without it they would push the card wider instead of wrapping.
+ */
+.injectionText {
+  margin: 0;
+  padding: 12px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The master switch being off: a statement, not an example. */
+.injectionOff {
+  padding: 12px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-lg);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* The bracket convention, and the one thing about this panel that reads backwards. */
+.injectionNote {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/*
+ * The diff heading.
+ *
+ * `margin-top: 16px` opens the section: the heading above it ("当前注入内容") also sits 16px below
+ * the panel's top edge, so both headings start their section with the same amount of air. The 4px
+ * this used to carry summed with the panel's `gap` to 12px — less than the section above it — which
+ * is what made this heading read as glued to the main display rather than as its own section.
+ */
+.injectionDiffTitle {
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
+  margin-top: 16px;
+}
+
+/*
+ * The groups' shared surface: one filled block, not a stack of dividers.
+ *
+ * ## Why a block rather than dividers
+ *
+ * The heading above is this section's head; content that arrives as a single surface reads as one
+ * group belonging to it, whereas three hairline-separated rows read as a list that merely follows
+ * the heading. That was the reported problem: the last row's divider and the panel's own bottom
+ * border were indistinguishable, so the stack looked like a fourth, empty row (measured: the last
+ * label sat 21px above that border while the rows between dividers measured 11–13px).
+ *
+ * ## Why the official shape
+ *
+ * `ui-plugin-manager`'s `.guide` is the same construction — a filled block with `radius-lg` and a
+ * `border-l4` hairline — opened by a divider-less toggle whose affordance is a hover fill rather
+ * than a line. Reusing it keeps this panel's vocabulary identical to the settings pages around it.
+ *
+ * ## ⚠️ Why `bg-module-platform` and not `bg-layer-1`
+ *
+ * Measured, not assumed. In the **light** scheme `bg-layer-1` and `bg-base` are the *same token*
+ * (`--dsw-static-neutral-bluish-00`, both `rgb(255,255,255)`), so a block filled with it is
+ * invisible against the page — the probe caught this as `listFill: "rgb(255, 255, 255)"` with no
+ * contrast against its ancestor. Only in dark do they diverge (`bluish-875` against `bluish-950`).
+ *
+ * `bg-module-platform` is the token the official settings surfaces use for exactly this "a filled
+ * editing region on the panel" role (`ui-settings-models`' `.editor`: *"a filled module on the
+ * panel, matching the settings selector fill"*), and it is visibly distinct in **both** schemes
+ * (light `#F5F6F7` against white, dark `#353638` against `#151517`).
+ *
+ * ⚠️ Rows deliberately keep **no** `border-top`: a divider here would restore the list reading this
+ * block exists to remove, and would again be confusable with the panel's bottom border.
+ */
+.injectionDiffList {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+  padding: 4px 8px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+/*
+ * One segment: a divider-less row whose affordance is the hover fill.
+ *
+ * `border-radius` is what lets that fill read as a row rather than a band across the block.
+ */
+.injectionDiff {
+  border-radius: var(--dsw-radius-md);
+}
+
+.injectionDiffToggle {
+  width: 100%;
+  padding: 8px 6px;
+  border: none;
+  background: transparent;
+  border-radius: var(--dsw-radius-md);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/*
+ * Hover and focus name the row — the job the deleted dividers used to do.
+ *
+ * ⚠️ One rule, not two: an earlier version had a separate `:hover` setting only the colour, and a
+ * second one adding the fill; the later of the two wins wholesale, so the colour change vanished
+ * silently. Keep both declarations here.
+ */
+.injectionDiffToggle:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.injectionDiffToggle:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+/* Rotated rather than a second icon, so the two states share one glyph. */
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+/*
+ * The expanded shapes.
+ *
+ * `padding-bottom: 8px` rather than 12px: the block already owns 4px below its last row, and the
+ * row itself contributes its own 8px. Together that is the same 16px a collapsed row's label has
+ * beneath it, so expanding a group does not make the block's bottom look tighter than its top.
+ */
+.injectionDiffBody {
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 0 8px 18px;
+  display: flex;
+}
+
+.injectionVariant {
+  flex-direction: column;
+  gap: 4px;
+  display: flex;
+}
+
+.injectionVariantLabel {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* The one shape that renders nothing; says so instead of showing an empty box. */
+.injectionVariantEmpty {
+  padding: 8px 12px;
+  border: 0.5px dashed var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-lg);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}

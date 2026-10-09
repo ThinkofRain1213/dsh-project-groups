@@ -125,7 +125,13 @@ const openCard = async () => {
   await page.waitForTimeout(2500)
   await dismiss()
   // The bundle's card in the list, then its detail page.
-  const entry = page.locator('text=dsh-project-groups').first()
+  //
+  // Addressed by its **displayed** name, not by the package name: the Plugins list localizes the
+  // entry, so `text=dsh-project-groups` matches nothing and this helper timed out on every run. It
+  // was verified to fail identically on the commit before Z-9, so this is a pre-existing mismatch
+  // with the current DSH rather than a consequence of that work — and it has to be fixed for any
+  // card assertion to run at all.
+  const entry = page.locator('[data-plugin-id="dsh-project-groups"]').or(page.getByText('项目分组', { exact: true })).first()
   await entry.click({ force: true })
   await page.waitForTimeout(2500)
   await dismiss()
@@ -290,6 +296,302 @@ async function runCardBehaviour() {
   check('and neither is the OS light popup fill',
     light.fill !== 'rgb(255, 255, 255)' && dark.fill !== 'rgb(255, 255, 255)',
     JSON.stringify({ light, dark }))
+
+  // ── 7. The injection preview. ──
+  //
+  // Z-9: the card shows what the plugin injects, before the user has to open a Session and read
+  // its logs. Two things about it are worth pinning, because both are easy to break silently:
+  //
+  //   - the main display must be **resident**, not a disclosure. A collapsed answer is not an
+  //     answer, and "it is there but folded" would still pass a naive text search.
+  //   - the bracketed placeholders must stand for the user's data **only**. `"Ungrouped"` is a
+  //     constant in the renderer, so bracketing it would claim it varies — the first draft of this
+  //     panel did exactly that.
+  await openCard()
+  const panel = card().locator('text=当前注入内容').first()
+  check('7) 注入预览面板存在', await panel.count() > 0)
+  /**
+   * The panel's own text.
+   *
+   * Scoped by the panel's own class rather than the whole card: the card also carries every
+   * switch's copy and every dictionary entry it renders, so a full-card string is not evidence
+   * about the panel — and a failure would print the wrong thing to look at.
+   */
+  const panelText = async () => (await card()
+    .locator('[class*="injectionPanel"]').first().innerText()).replace(/\s+/g, ' ')
+  const shown = await panelText()
+  check('7) 主展示含项目名占位符（带引号，与真实语法一致）',
+    shown.includes('project name "[项目名称]"'), shown.slice(0, 260))
+  check('7) 主展示含目录与链接占位符',
+    shown.includes('[目录 1]') && shown.includes('[链接 1]'),
+    shown.slice(0, 300))
+
+  /** The 注入项目信息 switch, by name. */
+  const masterSwitch = page.getByRole('switch', { name: '注入项目信息' }).first()
+  /** The 注入项目文档 switch, by name. */
+  const docSwitch = page.getByRole('switch', { name: '注入项目文档' }).first()
+
+  // The document segment joins only with both switches on; the declaration paragraph tracks it.
+  await docSwitch.click()
+  await page.waitForTimeout(1200)
+  const withDoc = await panelText()
+  check('7) 文档开关打开后，声明段列出 work document',
+    withDoc.includes('`work document`'), withDoc.slice(0, 260))
+  check('7) 文档开关打开后，主展示含文档路径占位符',
+    withDoc.includes('Project document: [文档路径]'), withDoc.slice(0, 320))
+  await docSwitch.click()
+  await page.waitForTimeout(1200)
+  const withoutDoc = await panelText()
+  check('7) 文档开关关闭后，主展示不再含文档段',
+    !withoutDoc.includes('Project document: '), withoutDoc.slice(0, 260))
+
+  // The diffs start collapsed: their variant labels exist in the dictionary but must not be
+  // rendered until a group is opened.
+  check('7) 分块差分默认全部折叠（组标题在场）',
+    withoutDoc.includes('owning project 段') && withoutDoc.includes('related links 段'),
+    withoutDoc.slice(0, 320))
+  check('7) 折叠时组内的形态标签不可见',
+    !withoutDoc.includes('有归属项目') && !withoutDoc.includes('只有一条'),
+    withoutDoc.slice(0, 320))
+
+  // Opening one group reveals only that group.
+  await card().locator('text=related links 段').first().click()
+  await page.waitForTimeout(600)
+  const linksOpen = await panelText()
+  check('7) 点开后该组展开，出现形态标签',
+    linksOpen.includes('没有链接') && linksOpen.includes('多条'), linksOpen.slice(0, 420))
+  check('7) 展开后其它组仍折叠（owning 组标签仍不可见）',
+    !linksOpen.includes('有归属项目'), linksOpen.slice(0, 420))
+  check('7) 空链接那一项说明「整段不渲染」',
+    linksOpen.includes('整段不渲染'), linksOpen.slice(0, 420))
+
+  // The assertion that pins the placeholder rule: a constant gets no brackets.
+  //
+  // Read **after opening the owning group**, because that is the only place `"Ungrouped"` is ever
+  // rendered — the diff variant carrying it is collapsed by default. Asserting it against the
+  // default view passed no matter what the preview did, which is how this assertion was first
+  // written and why reverse control 2 did not fail.
+  await card().locator('text=owning project 段').first().click()
+  await page.waitForTimeout(600)
+  const owningOpen = await panelText()
+  check('7) 未分组一项保留真实常量文本（"Ungrouped" 不加方括号）',
+    owningOpen.includes('"Ungrouped"') && !owningOpen.includes('"[未分组]"'),
+    owningOpen.slice(0, 420))
+
+  // The diff section's shape, measured rather than described.
+  //
+  // ⚠️ Measured with every group **collapsed**. An expanded group appends its `.injectionDiffBody`
+  // below the button, so that group's box would extend past the label and its "air below" would
+  // swallow the whole body — the measurement would be of the body, not of the row. The two
+  // assertions above leave `related links` and `owning project` open, so both are closed first.
+  await card().locator('text=related links 段').first().click()
+  await page.waitForTimeout(400)
+  await card().locator('text=owning project 段').first().click()
+  await page.waitForTimeout(400)
+  const collapsed = await panelText()
+  check('7) 测量前所有分组已收起（形态标签不可见）',
+    !collapsed.includes('有归属项目') && !collapsed.includes('没有链接'),
+    collapsed.slice(0, 320))
+
+  // ## Why these are geometric, and what each one is guarding
+  //
+  // Every string assertion above passed while the geometry was wrong, so the shape is measured
+  // directly. Two defects are being pinned, and both are invisible to text:
+  //
+  //   1. the panel's one-time `gap: 8px` landed *below* each diff row but not above it (the row's
+  //      own `padding: 8px 0` was already there), so a label sat 8px from its neighbour above and
+  //      16px from the one below;
+  //   2. three dividers plus the panel's own bottom border made the last row indistinguishable from
+  //      a fourth, empty row, and left that row 8px deeper than the ones above it.
+  //
+  // The rows now live in one filled block (`.injectionDiffList`) with **no** dividers, so what is
+  // asserted is the block's existence, its fill, the absence of internal dividers, and that the
+  // rows are evenly spaced inside it with the label vertically centred.
+  const shape = await card().evaluate((root) => {
+    const panel = root.querySelector('[class*="injectionPanel"]')
+    if (panel === null) return null
+    const list = panel.querySelector('[class*="injectionDiffList"]')
+    if (list === null) return { missing: 'injectionDiffList' }
+    // Descendant search, not `panel.children`: the rows are grandchildren now that they sit in the
+    // block. Matching the block itself must be excluded — its class also contains "injectionDiff".
+    const groups = [...list.querySelectorAll('[class*="injectionDiff"]')]
+      .filter((el) => el !== list && el.querySelector(':scope > button') !== null)
+    if (groups.length === 0) return { missing: 'groups' }
+
+    /** The button's content box: its rect minus the padding its own rule declares. */
+    const contentBox = (button) => {
+      const r = button.getBoundingClientRect()
+      const cs = getComputedStyle(button)
+      return {
+        top: r.top + Number.parseFloat(cs.paddingTop),
+        bottom: r.bottom - Number.parseFloat(cs.paddingBottom),
+      }
+    }
+
+    const pr = panel.getBoundingClientRect()
+    const lr = list.getBoundingClientRect()
+    const rects = groups.map((g) => g.getBoundingClientRect())
+    const rows = groups.map((group) => {
+      const box = contentBox(group.querySelector(':scope > button'))
+      const g = group.getBoundingClientRect()
+      return {
+        over: Math.round(box.top - g.top),
+        under: Math.round(g.bottom - box.bottom),
+      }
+    })
+    // The rows are flush inside the block (no margins, no `gap`), so a positive number here is a
+    // re-added `gap` or margin — the exact defect this section was written for.
+    const boxGaps = rects.slice(0, -1).map((r, i) => Math.round(rects[i + 1].top - r.bottom))
+    // Full-width **dividers** inside the panel: an element with a top or bottom border but **no**
+    // left/right border. That exclusion is the whole point — a four-sided box (the injected block's
+    // `border`, the diff block's outline) has top and bottom borders too, and counting those made
+    // this assertion fail the moment a second full-width box existed. It also excluded the panel
+    // itself (`querySelectorAll('*')` never returns the context element), so the "only the panel's
+    // bottom edge" reading was doubly wrong; the panel is measured explicitly.
+    const panelWidth = Math.round(pr.width)
+    const isWide = (el) => Math.round(el.getBoundingClientRect().width) >= panelWidth - 2
+    const dividers = []
+    for (const el of panel.querySelectorAll('*')) {
+      const cs = getComputedStyle(el)
+      const vb = Number.parseFloat(cs.borderTopWidth) + Number.parseFloat(cs.borderBottomWidth)
+      const hb = Number.parseFloat(cs.borderLeftWidth) + Number.parseFloat(cs.borderRightWidth)
+      if (vb <= 0 || hb > 0) continue
+      if (isWide(el)) dividers.push(el.className)
+    }
+    const panelCS = getComputedStyle(panel)
+    const panelDivider = (Number.parseFloat(panelCS.borderTopWidth)
+      + Number.parseFloat(panelCS.borderBottomWidth)) > 0
+    const first = panel.firstElementChild
+    const title = panel.querySelector('[class*="injectionDiffTitle"]')
+    const listFill = getComputedStyle(list).backgroundColor
+    /**
+     * The block's fill must be **visible**, not merely non-transparent.
+     *
+     * Measured the hard way: `bg-layer-1` is the *same token* as `bg-base` in the light scheme
+     * (both `rgb(255,255,255)`), so a block filled with it renders white-on-white and looks like no
+     * block at all — while a "not transparent" assertion passed happily. The check below compares
+     * the fill against the nearest opaque ancestor's, which is the property that actually matters.
+     */
+    const parseRgb = (value) => {
+      const m = /rgba?\(([^)]+)\)/.exec(value)
+      if (m === null) return null
+      const parts = m[1].split(',').map((p) => Number.parseFloat(p.trim()))
+      return { r: parts[0], g: parts[1], b: parts[2], a: parts[3] === undefined ? 1 : parts[3] }
+    }
+    const fill = parseRgb(listFill)
+    let backdrop = null
+    for (let el = list.parentElement; el !== null; el = el.parentElement) {
+      const c = parseRgb(getComputedStyle(el).backgroundColor)
+      if (c !== null && c.a > 0.5) { backdrop = c; break }
+    }
+    const fillVsBackdrop = fill === null || backdrop === null ? null
+      : Math.abs(fill.r - backdrop.r) + Math.abs(fill.g - backdrop.g) + Math.abs(fill.b - backdrop.b)
+    return {
+      rows,
+      boxGaps,
+      dividers,
+      panelDivider,
+      listFill,
+      listBackdrop: backdrop,
+      fillVsBackdrop,
+      listBorderRadius: getComputedStyle(list).borderTopLeftRadius,
+      topAir: first === null ? null : Math.round(first.getBoundingClientRect().top - pr.top),
+      blockGapAbove: title === null ? null : Math.round(lr.top - title.getBoundingClientRect().bottom),
+      panelGap: getComputedStyle(panel).rowGap,
+      panelPadTop: Math.round(Number.parseFloat(getComputedStyle(panel).paddingTop)),
+      groupCount: groups.length,
+    }
+  })
+
+  // 1. The block exists and is filled **visibly** in the active scheme: this is what "the diff is one
+  // group" means physically. The threshold is deliberately generous (any channel difference at all)
+  // — the failure this guards is *invisibility*, not a specific shade.
+  check('7) 差分区是一个带底色、且与背景有色差的整块',
+    shape !== null && shape.fillVsBackdrop !== null && shape.fillVsBackdrop > 0
+    && shape.listBorderRadius !== undefined,
+    JSON.stringify({ listFill: shape?.listFill, backdrop: shape?.listBackdrop,
+      diff: shape?.fillVsBackdrop, radius: shape?.listBorderRadius }))
+
+  // 2. No dividers inside the block: the rows lost their `border-top`, and the only horizontal rule
+  // in the panel is the panel's own bottom border (which the section's shape relies on). Measured on
+  // single-edge rules only, so the two four-sided boxes (the injected block, the diff block) are not
+  // mistaken for lines — see the comment at `dividers` for why that distinction broke this once.
+  check('7) 差分区内部不再有分割线（只剩面板底边一条）',
+    shape !== null && shape.dividers !== undefined && shape.panelDivider === true
+    && shape.dividers.length === 0,
+    JSON.stringify({ dividers: shape?.dividers, panelDivider: shape?.panelDivider }))
+
+  // 3. No `gap` between the rows: a re-added `gap`/margin on the block brings 8 straight back.
+  check('7) 分组之间没有额外间隙（block 未再加 gap）',
+    shape !== null && shape.boxGaps !== undefined && shape.boxGaps.length > 0
+    && shape.boxGaps.every((g) => Math.abs(g) <= 1),
+    JSON.stringify({ panelGap: shape?.panelGap, boxGaps: shape?.boxGaps }))
+
+  // 4. Every row's label is vertically centred in its button: the dividers used to hide an
+  // asymmetry here (8 over, 16 under, from the panel `gap`); with them gone the padding is the only
+  // spacing, and it must be symmetric.
+  check('7) 每行标签在其按钮内上下居中（±1px）',
+    shape !== null && shape.rows !== undefined && shape.rows.length > 0
+    && shape.rows.every((r) => r.over !== null && r.under !== null && Math.abs(r.over - r.under) <= 1),
+    JSON.stringify({ rows: shape?.rows }))
+
+  // 5. The heading is this section's head: the block starts right below it, and the panel's top air
+  // matches the gap above the block, so the section is not tighter at one end than the other.
+  check('7) 标题紧接底色块（8px），且面板顶部留白 16px',
+    shape !== null && shape.blockGapAbove !== undefined
+    && Math.abs(shape.blockGapAbove - 8) <= 1 && shape.topAir === 16,
+    JSON.stringify({ blockGapAbove: shape?.blockGapAbove, topAir: shape?.topAir }))
+
+  // 6. The rows lost their dividers, so the hover fill is now their only affordance. That is the
+  // trade this shape makes, and a regression to a colour-only hover would leave the rows looking
+  // inert with nothing else to fail — every other assertion here still passes.
+  //
+  // Read from the stylesheet rather than simulated: a synthetic class proves the *token* resolves,
+  // not that the `:hover` rule exists, and the rule is exactly what would be deleted by mistake.
+  const hover = await card().evaluate((root) => {
+    const panel = root.querySelector('[class*="injectionPanel"]')
+    const list = panel?.querySelector('[class*="injectionDiffList"]')
+    const button = list?.querySelector(':scope > [class*="injectionDiff"] > button')
+    const own = button?.className ?? ''
+    const hits = []
+    for (const sheet of [...document.styleSheets]) {
+      let rules
+      try { rules = [...sheet.cssRules] } catch { continue }
+      for (const rule of rules) {
+        const text = String(rule.cssText)
+        if (!text.includes(':hover')) continue
+        // The hashed class name is the only stable link back to our rule from inside the page.
+        if (own !== '' && text.includes(own.split(' ')[0])) hits.push(text.slice(0, 220))
+      }
+    }
+    return { own, hits }
+  })
+  check('7) 分组行有悬停底色（去线后可点击性的唯一提示）',
+    hover.hits.some((t) => t.includes('background')), JSON.stringify(hover))
+
+  // The master switch off: the panel stays, and says nothing is injected.
+  await masterSwitch.click()
+  await page.waitForTimeout(1200)
+  const offText = await panelText()
+  check('7) master 关闭后面板仍常驻（标题在场）',
+    offText.includes('当前注入内容'), offText.slice(0, 240))
+  check('7) master 关闭后说明不注入任何内容',
+    offText.includes('不向请求注入任何内容'), offText.slice(0, 280))
+  check('7) master 关闭后不再渲染注入块',
+    !offText.includes('project name "'), offText.slice(0, 280))
+  check('7) master 关闭后没有分块差分',
+    !offText.includes('各状态下的分块差异'), offText.slice(0, 280))
+  await masterSwitch.click()
+  await page.waitForTimeout(1200)
+
+  // The validate switch moved above the injection chain, and still works where it now sits.
+  const cardOrder = await card().evaluate((root) => {
+    const text = root.innerText
+    return ['开启http(s)://校验', '注入项目信息', '注入项目文档'].map(label => text.indexOf(label))
+  })
+  check('7) 校验开关排在「注入项目信息」之前',
+    cardOrder[0] !== -1 && cardOrder[1] !== -1 && cardOrder[0] < cardOrder[1],
+    JSON.stringify(cardOrder))
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)
