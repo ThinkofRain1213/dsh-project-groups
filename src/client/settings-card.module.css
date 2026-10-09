@@ -439,16 +439,33 @@
  *
  * Same row geometry as `.group` above — a bordered block with a heading — because it is another
  * section of the same card, not a new kind of thing.
+ *
+ * ## Why this column carries no `gap`
+ *
+ * `gap` here applies between *every* pair of children, and the diff rows are children too. Each
+ * row's own button already carries `padding: 8px 0`, so the `gap` added a second 8px **below** each
+ * row but not above it — measured: a label sat 10px under the line above it and 18px above the line
+ * below. Symmetry is the property, so the spacing is stated explicitly per section instead of
+ * summed from a `gap`: see `.injectionMain`, `.injectionDiffTitle` and its adjacent-row rule.
+ *
+ * ## Why the bottom padding is 8px, not 16px
+ *
+ * The top padding is 16px and that is correct — the first heading is the section's head. The bottom
+ * cannot match it: with `gap` gone, the last row's own 8px of padding is the only thing under the
+ * last label, so 16px here would make the panel end 8px looser than it starts. Measured, both ways:
+ * `16/16` leaves the last label 27px from the panel's edge while rows sit 10px from their lines;
+ * `16/8` brings it to 19px, which is the row's 10px plus this 8px plus the border.
  */
 .injectionPanel {
   border-bottom: 0.5px solid var(--dsw-alias-border-l2);
   flex-direction: column;
-  gap: 8px;
-  padding: 16px 0;
+  padding: 16px 0 8px;
   display: flex;
 }
 
+/* The heading-to-content 8px the panel's `gap` used to provide. */
 .injectionMain {
+  margin-top: 8px;
   flex-direction: column;
   gap: 8px;
   display: flex;
@@ -494,12 +511,31 @@
   line-height: 18px;
 }
 
+/*
+ * The diff heading.
+ *
+ * `margin-top: 16px` opens the section: the heading above it ("当前注入内容") also sits 16px below
+ * the panel's top edge, so both headings start their section with the same amount of air. The 4px
+ * this used to carry summed with the panel's `gap` to 12px — less than the section above it — which
+ * is what made this heading read as glued to the main display rather than as its own section.
+ */
 .injectionDiffTitle {
   color: var(--dsw-alias-label-primary);
   font-size: 14px;
   font-weight: 400;
   line-height: 22px;
-  margin-top: 4px;
+  margin-top: 16px;
+}
+
+/*
+ * The heading's trailing gap, which the panel's `gap` used to supply.
+ *
+ * On the **row**, not on the first button's padding: a taller `padding-top` on one row would break
+ * the property every row keeps — that its label is centred between the two lines — and that
+ * symmetry is what the whole section is about.
+ */
+.injectionDiffTitle + .injectionDiff {
+  margin-top: 8px;
 }
 
 /* One segment. Indented one step so the group reads as belonging to the heading above it. */

@@ -378,6 +378,104 @@ async function runCardBehaviour() {
     owningOpen.includes('"Ungrouped"') && !owningOpen.includes('"[未分组]"'),
     owningOpen.slice(0, 420))
 
+  // ── 7b. The panel's vertical rhythm, measured. ──
+  //
+  // Every string assertion above passed while the spacing was wrong, so the geometry is measured
+  // directly. The defect being pinned: the panel carried `gap: 8px`, and the diff rows are its
+  // children — so the `gap` landed *below* each row but not above it, on top of the row's own
+  // `padding: 8px 0`. A label therefore sat 10px under the line above it and 18px above the line
+  // below, and the last row ended 27px from the panel's edge while rows sat between 10px lines.
+  //
+  // Read from the **text ink**, not the button box: the box includes the padding, so measuring it
+  // would report the padding back and never see the asymmetry. `Range.selectNodeContents` gives the
+  // glyph extents, which is what a reader sees.
+  //
+  // Every group must be **collapsed** first. An expanded group renders its variants between the
+  // row's label and the next line, so the "label to next line" distance would measure the body
+  // instead of the spacing (measured while writing this: 202px and 281px instead of 10px). The
+  // earlier sections of this probe leave groups open on purpose, so the state is set here rather
+  // than assumed.
+  //
+  // Two separate reads, because `click()` inside one `evaluate` only queues the React update: the
+  // count taken in the same pass reports the **pre-click** DOM (measured: it returned 2 after
+  // closing two). The confirmation therefore happens in a later pass, and it is a real assertion —
+  // without it, a group left open would silently turn the spacing measurements into body
+  // measurements while every one of them still passed.
+  const openGroups = () => card().evaluate((root) => {
+    const panel = root.querySelector('[class*="injectionPanel"]')
+    return panel.querySelectorAll('[class*="injectionDiffToggle"][aria-expanded="true"]').length
+  })
+  await card().evaluate((root) => {
+    const panel = root.querySelector('[class*="injectionPanel"]')
+    for (const open of [...panel.querySelectorAll('[class*="injectionDiffToggle"][aria-expanded="true"]')]) {
+      open.click()
+    }
+  })
+  await page.waitForTimeout(700)
+  check('7b) 测量前所有分组已收起（否则量到的是展开体）',
+    await openGroups() === 0, String(await openGroups()))
+
+  const rhythm = await card().evaluate((root) => {
+    const panel = root.querySelector('[class*="injectionPanel"]')
+    if (panel === null) return null
+    /** Buttons that are a diff row: only those directly inside a row element. */
+    const rows = [...panel.querySelectorAll('[class*="injectionDiff"]')]
+      .filter((el) => el.querySelector(':scope > button') !== null)
+    if (rows.length === 0) return { missing: 'rows' }
+    const ink = (el) => {
+      const r = document.createRange()
+      r.selectNodeContents(el)
+      return r.getBoundingClientRect()
+    }
+    const panelRect = panel.getBoundingClientRect()
+    const rowRects = rows.map((r) => r.getBoundingClientRect())
+    const labelInk = rows.map((r) => ink(r.querySelector(':scope > button')))
+    const last = rows[rows.length - 1]
+    const title = panel.querySelector('[class*="injectionDiffTitle"]')
+    const main = panel.querySelector('[class*="injectionMain"]')
+    return {
+      // Every collapsed row at once, so a fix applied to one row only cannot pass.
+      perRow: labelInk.slice(0, -1).map((label, i) => ({
+        over: Math.round(label.top - rowRects[i].top),
+        under: Math.round(rowRects[i + 1].top - label.bottom),
+      })),
+      lastUnder: Math.round(panelRect.bottom - ink(last.querySelector(':scope > button')).bottom),
+      firstOver: Math.round(labelInk[0].top - rowRects[0].top),
+      title2Air: title === null || main === null
+        ? null
+        : Math.round(title.getBoundingClientRect().top - main.getBoundingClientRect().bottom),
+      title1Air: Math.round((panel.querySelector('[class*="groupTitle"]')).getBoundingClientRect().top - panelRect.top),
+      panelGap: getComputedStyle(panel).rowGap,
+    }
+  })
+
+  // 1. The `gap` is gone. This is the cause, not a symptom, and re-adding it brings the asymmetry
+  //    back in one line.
+  check('7b) 面板没有 gap（间距由各段显式给出，不再叠加）',
+    rhythm !== null && rhythm.panelGap === 'normal',
+    JSON.stringify({ panelGap: rhythm?.panelGap }))
+
+  // 2. A label sits the same distance from the line above it as from the line below — for **every**
+  //    collapsed row at once. The tolerance is 1px for sub-pixel line boxes.
+  check('7b) 每行标签到上下两条线等距（±1px）',
+    rhythm !== null && rhythm.perRow !== undefined && rhythm.perRow.length > 0
+    && rhythm.perRow.every((r) => Math.abs(r.over - r.under) <= 1),
+    JSON.stringify({ perRow: rhythm?.perRow }))
+
+  // 3. The panel ends as tightly as it starts. With the `gap` gone the last row's own padding is all
+  //    that is under the last label, so a restored `padding-bottom: 16px` would put 8px extra there
+  //    while the top stays right — this is the half of the fix a "remove the gap" change misses.
+  check('7b) 末行标签到面板下沿 == 行内间距 + 面板底部留白（±1px）',
+    rhythm !== null && rhythm.lastUnder !== undefined && rhythm.firstOver !== undefined
+    && Math.abs(rhythm.lastUnder - (rhythm.firstOver + 8 + 1)) <= 1,
+    JSON.stringify({ lastUnder: rhythm?.lastUnder, firstOver: rhythm?.firstOver }))
+
+  // 4. Both headings open their section with the same air. The second one used to get `gap 8 +
+  //    margin 4` = 12px against the first one's 16px, which is what made it read as a tail.
+  check('7b) 两个标题上方的留白一致（各 16px）',
+    rhythm !== null && rhythm.title1Air === 16 && rhythm.title2Air === 16,
+    JSON.stringify({ title1Air: rhythm?.title1Air, title2Air: rhythm?.title2Air }))
+
   // The master switch off: the panel stays, and says nothing is injected.
   await masterSwitch.click()
   await page.waitForTimeout(1200)
