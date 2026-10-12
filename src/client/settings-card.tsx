@@ -824,7 +824,7 @@ export function ProjectGroupsCard({
             </>
           )}
         >
-          <p className={css.groupTitle}>{t('baseRebuildConfirmBody')}</p>
+          <p className={css.modalBody}>{t('baseRebuildConfirmBody')}</p>
           {rebuildError !== null && <div className={css.specError} role="alert">{rebuildError}</div>}
         </Modal>
       )}

@@ -42,9 +42,18 @@
   padding-right: 48px;
 }
 
+/*
+ * A setting's name, and — with `.groupTitle` and `.selector` — one of the three things this card
+ * sets at 14px/500.
+ *
+ * Size and colour are the official settings-page row's; the weight is the official plugin cards'
+ * (`终端` / `网页搜索` set their row labels at 500). Bold is what those cards use to tell a label
+ * from its hint, and it is the distinction this card was missing: at 400 a row name, a group
+ * heading and a plain value all read as the same kind of text.
+ */
 .title {
   font-size: 14px;
-  font-weight: 400;
+  font-weight: 500;
   line-height: 22px;
   color: var(--dsw-alias-label-primary);
 }
@@ -61,6 +70,9 @@
  * `<select>` the voice-input card uses: a SELECT's popup is drawn by the
  * operating system and ignores CSS, so it renders light on a dark theme. The
  * Menu draws its own themed surface instead.
+ *
+ * Weight 500 to match `.title`, which it shares a row with: a bold name beside a normal-weight
+ * value would read as two different kinds of text in one line.
  */
 .selector {
   display: inline-flex;
@@ -73,6 +85,7 @@
   background: var(--dsw-alias-bg-module-platform);
   font: inherit;
   font-size: 14px;
+  font-weight: 500;
   line-height: 22px;
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
@@ -142,7 +155,29 @@
   border-top: 0.5px solid var(--dsw-alias-border-l2);
 }
 
+/*
+ * A group heading: 文档规范, 注入内容, 底层工作区.
+ *
+ * 14px/500, the same as `.title` — one size and one weight for everything that names something on
+ * this card. The two are told apart by position and spacing rather than by type. Official plugin
+ * cards actually bold their headings *more* than their labels (`ui-plugin-manager`'s `.guideTitle`
+ * is 13px/500, 子智能体's `h3` is 13px/600 against its labels' 13px/500); using one weight for
+ * both is this card's simplification, chosen by the user, not an official value.
+ */
 .groupTitle {
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+}
+
+/*
+ * A modal's body copy, which is not a heading and must not inherit one's weight.
+ *
+ * It used to carry `.groupTitle`, which was harmless while that class was 400 — and became wrong
+ * the moment the headings were bolded, because this is a sentence in a dialog, not a name.
+ */
+.modalBody {
   color: var(--dsw-alias-label-primary);
   font-size: 14px;
   font-weight: 400;
@@ -293,8 +328,17 @@
   border-color: var(--dsw-static-neutral-bluish-400);
 }
 
+/*
+ * A card's own name — 无 / 默认 / 自定义, 默认工作区 / 指定工作区.
+ *
+ * 13px/400: one step down from the 14px/500 that names things outside a card, and no longer bold.
+ * The `.themeCube` this is copied from sets 14px at the container, so neither value is a straight
+ * copy; the user set this pair, and it keeps the name distinct from both the row names above it
+ * and the 12px `.cubePath` under it.
+ */
 .cubeName {
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 400;
 }
 
 /*
