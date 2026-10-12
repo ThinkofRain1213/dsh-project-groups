@@ -1,34 +1,16 @@
 /* New Session destination: label plus the destination menu. */
 
 /*
- * ⚠️ SPACING ZEROED (2026-10-12) — this is a deliberate clean slate.
- *
- * Every spacing value this file owns is set to 0, and the two dividers are
- * gone. The reason is that the previous values had no single author: `16px 0`
- * was copied from the official settings row, the 12px between blocks comes
- * from the official `detailSection` container, and the `border-bottom`s were
- * borrowed from the official *settings page* even though this card is a
- * *plugin* card — whose official examples carry no dividers at all. The result
- * was a card with three different separation mechanisms at once, and one
- * visible asymmetry nobody could justify (content → divider measured 17px
- * while divider → next heading measured 28px, because the container's 12px gap
- * sits only on the lower side).
- *
- * So the values are zeroed rather than adjusted, and they will be added back
- * one at a time, each with its own reason. Everything below this comment is
- * therefore the *floor*, not a finished design:
- *
- *   - the only spacing that remains is the 12px the official container itself
- *     puts between blocks, which this file cannot remove;
- *   - `.cube` and `.selector` keep their own internal geometry (they are
- *     official component shapes — see their notes below), so the cards do not
- *     collapse into unreadable text while the surrounding rhythm is decided.
+ * The row geometry is the official settings-row one — `PermissionRow` and
+ * `PreferenceRow` in the checkout carry this same block, copied rather than
+ * imported because the client bundle purity gate forbids a value import from
+ * another plugin (tsdown.config.ts). Copying it is what upstream itself does.
  */
 .row {
   display: flex;
   align-items: center;
-  gap: 0;
-  padding: 0;
+  gap: 8px;
+  padding: 16px 0;
 }
 
 .rowText {
@@ -36,8 +18,8 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0;
-  padding-right: 0;
+  gap: 4px;
+  padding-right: 48px;
 }
 
 .title {
@@ -87,21 +69,19 @@
 /*
  * The base-workspace card row.
  *
- * `dsh-client-ui-theme`'s `AppearanceRow` is the three-card 外观 row the user
- * asked this to match. Its stylesheet is **copied** rather than imported: the
- * client bundle's purity gate rejects a value import from a package outside
- * PLATFORM_MODULES / INLINE_SAFE, and `ui-theme` is in neither. Copied CSS is
- * what upstream itself does for shared row geometry.
+ * Copied from `dsh-client-ui-theme`'s `AppearanceRow` — the three-card 外观 row the
+ * user asked this to match — rather than imported: the client bundle's purity gate
+ * rejects a value import from a package outside PLATFORM_MODULES / INLINE_SAFE, and
+ * `ui-theme` is in neither. Copied CSS is what upstream itself does for shared row
+ * geometry (see the note on `.row`).
  *
- * ⚠️ SPACING ZEROED (2026-10-12): `padding` and `gap` are 0 and the
- * `border-bottom` is gone — see the note at the top of this file. The only
- * thing kept is `display: flex; flex-direction: column`, which is structure
- * rather than spacing.
+ * Every value is a theme variable, so both colour schemes follow automatically.
  */
 .group {
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
   flex-direction: column;
-  gap: 0;
-  padding: 0;
+  gap: 8px;
+  padding: 16px 0;
   display: flex;
 }
 
@@ -115,7 +95,7 @@
 .cubeRow {
   flex-wrap: wrap;
   align-items: stretch;
-  gap: 0;
+  gap: 8px;
   display: flex;
 }
 
