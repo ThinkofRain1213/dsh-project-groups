@@ -596,6 +596,20 @@ export function ProjectGroupsCard({
       )}
 
       {/*
+        A rule above the base workspace, and only here.
+
+        User's specification: the spacing on each side of it must equal what a row-to-row gap
+        already is — so "row to rule" and "rule to row" are both 32px (16 of the block's own
+        padding plus 16 of the rule's own margin), which is exactly the 16+16 that separates two
+        ordinary blocks.
+
+        Full width, and drawn as its own element rather than as a border on either neighbour:
+        a border would belong to one block and make its padding lopsided, which is the
+        arrangement that produced the asymmetry this card just removed.
+      */}
+      <div className={css.rule} role="separator" />
+
+      {/*
         The base workspace, laid out as the official appearance row is (three cards
         there, two here). Its stylesheet is copied rather than imported: the client
         bundle's purity gate rejects a value import from a package outside

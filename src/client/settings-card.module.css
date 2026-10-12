@@ -115,6 +115,26 @@
   display: flex;
 }
 
+/*
+ * The one rule on the card, above the base workspace only.
+ *
+ * User's specification: the space on each side of it must equal the row-to-row gap, so both
+ * sides read the same as an ordinary gap between blocks. An ordinary gap is 16 (the upper
+ * block's `padding-bottom`) + 16 (the lower block's `padding-top`) = 32px. Here each side is
+ * 16 (that block's own padding) + 16 (this rule's own margin) = 32px, which is why the margin
+ * is `16px 0` and neither neighbour's padding had to change.
+ *
+ * Drawn as its own element rather than as a `border` on a neighbour: a border belongs to one
+ * block, which makes that block's own padding lopsided — and that asymmetry, where the rule
+ * sat on one side of a gap it did not own, is what this card removed earlier today. It is
+ * full width because a separator between two full-width blocks is not inset.
+ */
+.rule {
+  flex: none;
+  margin: 16px 0;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
 .groupTitle {
   color: var(--dsw-alias-label-primary);
   font-size: 14px;
