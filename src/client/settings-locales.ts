@@ -134,11 +134,13 @@ export const zh = {
   // injected. Without that sentence the preview invites the opposite reading, since the switch
   // sits several rows above it.
   //
-  // There is deliberately no heading for the diff rows: each row names its own segment, and a
-  // heading over four self-labelled rows was one more element saying what they already say.
+  // The diff rows carry a heading of their own (user's decision, 2026-10-13), at the same weight
+  // and size as 当前注入内容. It names what the four rows below it are, which the rows alone only
+  // imply through the word 段 in each label.
   injectionTitle: '当前注入内容',
   injectionOff: '「注入项目信息」已关闭，本插件不向请求注入任何内容。',
   injectionNote: '[方括号] 内是你设置的内容，实际注入时按项目数据替换。校验开关只影响编辑时的标记，不影响注入。',
+  injectionDiffTitle: '各状态下的分块差异',
   diffOwningTitle: 'owning project 段',
   diffOwningFiled: '有归属项目',
   diffOwningUnfiled: '未分组',
@@ -221,11 +223,12 @@ export const en: Record<ProjectGroupsSettingsKey, string> = {
   confirm: 'Confirm',
   cancel: 'Cancel',
   close: 'Close',
-  // The injection preview; see the zh block for why the note says what it says and why the diff
-  // rows carry no heading.
+  // The injection preview; see the zh block for why the note says what it says and what the diff
+  // heading names.
   injectionTitle: 'Injected content',
   injectionOff: '"Inject project info" is off, so this plugin injects nothing.',
   injectionNote: 'Text in [brackets] is your own content, substituted from the project at request time. The validate switch only marks links while editing; it does not change what is injected.',
+  injectionDiffTitle: 'Segment differences by state',
   diffOwningTitle: 'owning project segment',
   diffOwningFiled: 'Filed under a project',
   diffOwningUnfiled: 'Ungrouped',

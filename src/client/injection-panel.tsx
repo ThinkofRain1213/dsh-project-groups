@@ -1,5 +1,12 @@
 /**
- * The "what this plugin injects" panel, on the plugin's own settings card.
+ * What this plugin injects, shown on the plugin's own settings card.
+ *
+ * ## One group, not a panel
+ *
+ * This renders a single `.group` — the same shape the 文档规范 row uses — so its parts are spaced
+ * by that group's own `gap` and it has no surface of its own. An earlier version was a bordered
+ * panel containing a filled block of rows; that was rolled back, and this rebuild keeps the card's
+ * existing vocabulary instead of inventing a second one.
  *
  * ## The main display cannot be collapsed
  *
@@ -94,13 +101,21 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
       <div className={css.desc}>{t('injectionNote')}</div>
 
       {/*
+       * The rows' heading, at the same size and weight as 当前注入内容 above it (user's decision,
+       * 2026-10-13). It is a title, so it takes `groupTitle` rather than a dimmed `.desc` — the
+       * rows below it need naming, and a grey line there would read as a second sentence of the
+       * bracket note rather than as the head of the list.
+       *
+       * It is spaced by the group's own 8px like everything else here: no margin to pull it away
+       * from the note above, because that value is the group's single rhythm.
+       */}
+      {groups.length > 0 && <div className={css.groupTitle}>{t('injectionDiffTitle')}</div>}
+
+      {/*
        * One row per segment, each a child of this group so `gap: 8px` spaces them — the same value
        * that separates the heading from the block above. The rows are not given a padding of their
        * own: an 8px gap plus a 16px padding would read as 24px where every other gap in this group
        * reads 8px.
-       *
-       * No heading over them. Each row names its own segment, and belonging to this group is what
-       * says they describe the block above.
        */}
       {groups.map(group => (
         <div key={group.key} className={css.injectionDiffRow}>
