@@ -102,14 +102,17 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
 
       {/*
        * The rows' heading, at the same size and weight as 当前注入内容 above it (user's decision,
-       * 2026-10-13). It is a title, so it takes `groupTitle` rather than a dimmed `.desc` — the
+       * 2026-10-13). It is a title, so it takes the title shape rather than a dimmed `.desc` — the
        * rows below it need naming, and a grey line there would read as a second sentence of the
        * bracket note rather than as the head of the list.
        *
-       * It is spaced by the group's own 8px like everything else here: no margin to pull it away
-       * from the note above, because that value is the group's single rhythm.
+       * It is the one place in this group where the spacing is not the group's own 8px: it sits
+       * 16px below the note, because that distance is what says the differences are a **second
+       * part** of this group rather than a continuation of the bracket note. `.injectionDiffTitle`
+       * carries the 8px margin that adds to the group's 8px gap; see its rule for why the sum is
+       * written that way.
        */}
-      {groups.length > 0 && <div className={css.groupTitle}>{t('injectionDiffTitle')}</div>}
+      {groups.length > 0 && <div className={css.injectionDiffTitle}>{t('injectionDiffTitle')}</div>}
 
       {/*
        * One row per segment, each a child of this group so `gap: 8px` spaces them — the same value

@@ -563,11 +563,33 @@
 }
 
 /*
+ * The diff heading: the group's title shape, plus the one deliberate exception to its rhythm.
+ *
+ * It reads 16px below the bracket note while everything else in this group is 8px apart. That
+ * extra distance is the whole point — it says the differences are a **second part** of this group
+ * rather than a continuation of the note. Reading them as one run is a real mistake here, because
+ * the note above is about the brackets inside the block, not about the rows below.
+ *
+ * `margin-top: 8px`, not 16, and the sum is deliberate: `.group` already contributes its `gap`,
+ * which is 8px, so 8 + 8 = the intended 16. Writing 16 here would give 24.
+ *
+ * ⚠️ That makes this value depend on `.group`'s gap. It is the only such coupling in this file: if
+ * the group's gap ever changes, this margin has to change with it to keep the distance at 16.
+ */
+.injectionDiffTitle {
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
+  margin-top: 8px;
+}
+
+/*
  * One segment: a child of the injection group, not a block of its own.
  *
  * No `padding` — and that is the point. The rows sit inside `.group`, so `.group`'s `gap: 8px`
- * spaces them from the note above and from each other. A 16px padding here would add to that gap
- * and make these rows read as 24px apart while every other gap in the group reads 8px.
+ * spaces them from the heading above and from each other. A 16px padding here would add to that
+ * gap and make these rows read as 24px apart while every other gap in the group reads 8px.
  *
  * `gap: 8px` is this row's internal rhythm — between the toggle and the expanded shapes, and
  * between the shapes themselves — so an expanded row also has one spacing value and no exceptions.
@@ -623,9 +645,9 @@
 /*
  * The expanded shapes, indented to show they belong to the toggle above them.
  *
- * No surface and no vertical rule: the row is separated from its neighbours by its padding, and
- * the indentation plus each block's own border is what carries the hierarchy. A filled block here
- * would reintroduce the "panel inside a panel" reading this layout just removed.
+ * No surface and no vertical rule: the row is separated from its neighbours by the group's gap,
+ * and the indentation plus each block's own border is what carries the hierarchy. A filled block
+ * here would reintroduce the "panel inside a panel" reading this layout just removed.
  */
 .injectionDiffBody {
   flex-direction: column;
