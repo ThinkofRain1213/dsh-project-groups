@@ -530,23 +530,32 @@ export function ProjectGroupsCard({
           </button>
         </div>
 
-        <div className={css.row}>
-          <div className={css.rowText}>
-            <div className={injectDoc && injectInfo ? css.title : `${css.title} ${css.gated}`}>
-              {t('perProjectSpecTitle')}
-            </div>
-            <div className={injectDoc && injectInfo ? css.desc : `${css.desc} ${css.gated}`}>
-              {injectDoc && injectInfo ? t('perProjectSpecDesc') : t('perProjectSpecGated')}
-            </div>
+      </div>
+
+      {/*
+        Its own block, not a member of the 文档规范 group above.
+        
+        It was the group's third child, which read as one more card under that heading. But the
+        row's shape is the same as every other setting row on this card (title, description,
+        switch) and its subject is a switch, not a spec — so it belongs beside the other rows.
+        Only the heading and its three cards form the group.
+      */}
+      <div className={css.row}>
+        <div className={css.rowText}>
+          <div className={injectDoc && injectInfo ? css.title : `${css.title} ${css.gated}`}>
+            {t('perProjectSpecTitle')}
           </div>
-          <Switch
-            checked={perProjectSpec}
-            onChange={setPerProjectDocSpec}
-            label={t('perProjectSpecTitle')}
-            disabled={!injectDoc || !injectInfo}
-            {...injectDoc && injectInfo ? {} : { title: t('perProjectSpecGated') }}
-          />
+          <div className={injectDoc && injectInfo ? css.desc : `${css.desc} ${css.gated}`}>
+            {injectDoc && injectInfo ? t('perProjectSpecDesc') : t('perProjectSpecGated')}
+          </div>
         </div>
+        <Switch
+          checked={perProjectSpec}
+          onChange={setPerProjectDocSpec}
+          label={t('perProjectSpecTitle')}
+          disabled={!injectDoc || !injectInfo}
+          {...injectDoc && injectInfo ? {} : { title: t('perProjectSpecGated') }}
+        />
       </div>
 
       {pickingSpec && (
