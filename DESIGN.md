@@ -4504,6 +4504,31 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
           union/coerce，需先验证 schema 能否在**不删数据**的前提下做到
         **未定，未动代码。**
   - [x] **Z-9 详情页展示"当前注入文案"** ✅ **已实施（2026-10-09）**（2026-10-07 用户提出）
+
+        > ## ⚠️ 已暂时回滚（2026-10-12，用户要求「暂时拿掉」）
+        >
+        > **注入预览面板不在当前代码里。** 本节以下全部内容是**设计记录**，记录当时怎么设计、
+        > 怎么验证、踩过哪些坑；它**描述的不是当前实现**。
+        >
+        > **本次回滚方式（方案二：只删预览，保留无关变更）**：
+        >
+        > | 处理 | 内容 |
+        > |---|---|
+        > | **删除** | `injection-panel.tsx` / `injection-preview.ts` 两个文件；`grouping.ts` 的 locale 座位（`installLocaleService` / `clientInjectionLocale`）；`index.ts` 的 5 处接线；`settings-locales.ts` 的 22 个文案键；`settings-card.module.css` 的面板样式段；探针的 `7)` / `7b)` 两组断言 |
+        > | **保留** | **「开启http(s)://校验」开关移位** —— 它是 Z-9 期间**独立**的一个决定（不依赖预览），探针里留下 `6b)` 断言守着它 |
+        > | **保留** | **本节的文档**（用户要求）、`Z-13`（项目嵌套待办，完全独立）、探针定位器的既有缺陷修复 |
+        >
+        > **逐文件核对**：`grouping.ts` / `index.ts` / `settings-locales.ts` / `settings-card.module.css`
+        > 与本功能之前的基线（标签 **`pre-injection-preview`**）**逐字节一致**；
+        > `settings-card.tsx` 相对该基线**只剩校验开关移位**这一处差异。
+        >
+        > **恢复方式**：`git checkout scheme-C -- <那些文件>` 可取回 C 形态，
+        > 或 `git checkout pre-injection-preview -- src/` 取回无预览的基线。
+        > 相关标签：`pre-injection-preview`（本节功能的起点）、`scheme-C` / `scheme-B`（试过的两种面板形态）、
+        > `rhythm-fixed`（间距修复，随面板一起回滚）。
+        >
+        > **以下为设计记录，保留原文。**
+
         **目标**：在本插件的插件详情页（设置卡所在页）显示**模型实际会收到的注入文本**。
 
         #### 一、位置（两处定案）
