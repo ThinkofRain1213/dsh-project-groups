@@ -116,22 +116,29 @@
 }
 
 /*
- * The one rule on the card, above the base workspace only.
+ * A boundary line between two blocks, and it costs no space.
  *
- * User's specification: the space on each side of it must equal the row-to-row gap, so both
- * sides read the same as an ordinary gap between blocks. An ordinary gap is 16 (the upper
- * block's `padding-bottom`) + 16 (the lower block's `padding-top`) = 32px. Here each side is
- * 16 (that block's own padding) + 16 (this rule's own margin) = 32px, which is why the margin
- * is `16px 0` and neither neighbour's padding had to change.
+ * `margin: 0` is the whole design. Two neighbouring blocks already leave 16 + 16 = 32px between
+ * their contents (each one's own `padding`), and this rule drops into the middle of that gap, so
+ * "content to rule" and "rule to content" are both 16px — the same value either side of it, and
+ * content-to-content stays exactly the 32px it would be with no rule at all.
+ *
+ * That is also why the rule is **centred by construction**: its position is decided by the two
+ * paddings it sits between, not by a margin of its own. The invariant to keep is therefore that
+ * the block above and the block below pad the same amount. If one of them ever changes, the rule
+ * drifts toward the other and stops meaning "the boundary".
  *
  * Drawn as its own element rather than as a `border` on a neighbour: a border belongs to one
- * block, which makes that block's own padding lopsided — and that asymmetry, where the rule
- * sat on one side of a gap it did not own, is what this card removed earlier today. It is
- * full width because a separator between two full-width blocks is not inset.
+ * block, which makes that block's own padding lopsided — and that asymmetry, where the rule sat
+ * on one side of a gap it did not own, is what this card removed earlier today. It is full width
+ * because a separator between two full-width blocks is not inset.
+ *
+ * An earlier version carried `margin: 16px 0`, which made this the one place on the card where two
+ * blocks sat 64px apart instead of 32px — the rule doubled the gap rather than marking it.
  */
 .rule {
   flex: none;
-  margin: 16px 0;
+  margin: 0;
   border-top: 0.5px solid var(--dsw-alias-border-l2);
 }
 

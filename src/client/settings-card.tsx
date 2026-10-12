@@ -606,12 +606,24 @@ export function ProjectGroupsCard({
       )}
 
       {/*
-        What this plugin injects, as ordinary blocks of this card.
-        
-        It sits after the injection chain it describes and before the rule that opens the base
-        workspace, so the card reads: the switches, what they produce, then where Sessions land.
-        The panel returns a fragment — its blocks are `.stack`'s own children, spaced by their own
-        padding, with no enclosing surface of their own.
+        A rule above what this plugin injects, and one below it. Together they set the injection
+        preview apart as a section of its own: the switches above describe behaviour, this shows
+        what that behaviour produces.
+
+        The rules cost no space. A rule carries `margin: 0`, so it falls in the middle of the 32px
+        that two neighbouring blocks already leave between their contents — 16px above it from the
+        upper block's padding and 16px below from the lower one's. Content-to-content spacing is
+        therefore the same 32px on a ruled boundary as on an unruled one, which is what makes these
+        two lines read as marks rather than as gaps.
+      */}
+      <div className={css.rule} role="separator" />
+
+      {/*
+        What this plugin injects.
+
+        It sits after the injection chain it describes, so the card reads: the switches, what they
+        produce, then where Sessions land. The panel returns one `.group` — the same shape the
+        文档规范 row uses — whose own `gap` spaces its parts, with no enclosing surface of its own.
       */}
       <InjectionPanel
         injectInfo={injectInfo}
@@ -621,16 +633,8 @@ export function ProjectGroupsCard({
       />
 
       {/*
-        A rule above the base workspace, and only here.
-
-        User's specification: the spacing on each side of it must equal what a row-to-row gap
-        already is — so "row to rule" and "rule to row" are both 32px (16 of the block's own
-        padding plus 16 of the rule's own margin), which is exactly the 16+16 that separates two
-        ordinary blocks.
-
-        Full width, and drawn as its own element rather than as a border on either neighbour:
-        a border would belong to one block and make its padding lopsided, which is the
-        arrangement that produced the asymmetry this card just removed.
+        The closing rule of the injection section — the pair with the one above it. Same element,
+        same `margin: 0`, so the space either side of it is the ordinary block gap.
       */}
       <div className={css.rule} role="separator" />
 
