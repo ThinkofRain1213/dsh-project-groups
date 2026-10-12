@@ -616,7 +616,20 @@ export function ProjectGroupsCard({
         PLATFORM_MODULES / INLINE_SAFE, and `ui-theme` is not one.
       */}
       <div className={css.group}>
-        <div className={css.groupTitle}>{t('baseTitle')}</div>
+        {/*
+          The heading and its one-line explanation, as a pair.
+
+          This is the same title/description shape the rows above use (14px over 12px, 4px
+          apart), reused rather than reinvented — see the note on `.groupHeading`. Only this
+          group has one: 文档规范 and the official 外观 row are self-explanatory from their
+          cards, whereas "底层工作区" is not, and is the one setting here that someone could
+          reasonably read as describing where their projects live. Saying outright that it does
+          not is the point of the sentence.
+        */}
+        <div className={css.groupHeading}>
+          <div className={css.groupTitle}>{t('baseTitle')}</div>
+          <div className={css.desc}>{t('baseDesc')}</div>
+        </div>
         <div className={css.cubeRow}>
           <button
             type="button"

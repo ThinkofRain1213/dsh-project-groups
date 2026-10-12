@@ -97,7 +97,13 @@ export const zh = {
   validateLinksDesc: '标记不以 http:// 或 https:// 开头的关联链接；只作标记，不阻止保存',
   confirm: '确认',
   // The base workspace: the directory every New Session lands in.
+  //
+  // `baseDesc` states the one thing this group is most easily misread as: that it has something
+  // to do with which project a Session belongs to. It does not — the plugin records membership
+  // and never moves a directory — so the sentence says what the setting is and then rules that
+  // reading out, rather than explaining the mechanism.
   baseTitle: '底层工作区',
+  baseDesc: '新会话的起始目录，由官方工作区决定。项目归属只记录关系，不改这里。',
   baseModeDefault: '默认工作区',
   baseDefaultHint: '官方首次创建的工作区',
   // Shown instead of `baseDefaultHint` while the default Workspace cannot be resolved.
@@ -166,6 +172,7 @@ export const en: Record<ProjectGroupsSettingsKey, string> = {
   validateLinksTitle: 'Validate http(s)://',
   validateLinksDesc: 'Mark associated links that do not start with http:// or https://. Marks only; never blocks saving.',
   baseTitle: 'Base workspace',
+  baseDesc: 'The directory a New Session starts in, governed by the official workspace. Project membership only records a relationship; it never changes this.',
   baseModeDefault: 'Default workspace',
   baseDefaultHint: 'the workspace created on first use',
   baseDefaultMissing: 'The default workspace is missing; a New Session will ask whether to rebuild it',
