@@ -1,6 +1,26 @@
 /* New Session destination: label plus the destination menu. */
 
 /*
+ * The card's own column, and the reason it exists.
+ *
+ * The card used to return a fragment, which generates no element — so its seven blocks became
+ * children of the official `detailSection` container and its `gap: 12px` applied between every
+ * pair of them. Measured before this: 12px between all seven, and 0px in official plugin cards
+ * (`终端` / `网页搜索`), which wrap their blocks in an inner column so that container sees only
+ * one child.
+ *
+ * That gap cannot be edited here — every plugin's configuration shares the same container — so
+ * this wrapper is what takes the card out of its reach. `gap` is **0**: like the official cards,
+ * each block's own `padding` provides the spacing, and the card is no longer bound to a value it
+ * does not own.
+ */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/*
  * The row geometry is the official settings-row one — `PermissionRow` and
  * `PreferenceRow` in the checkout carry this same block, copied rather than
  * imported because the client bundle purity gate forbids a value import from

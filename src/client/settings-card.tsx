@@ -272,7 +272,21 @@ export function ProjectGroupsCard({
     : workspaces.find(item => item.path === adoptedPath) === undefined
 
   return (
-    <>
+    /*
+     * The card's blocks live in their own column rather than directly in the fragment.
+     *
+     * This is structure, not styling, and it is what official plugin cards do — 终端 wraps its
+     * blocks in an inner flex column, so the official `detailSection` sees exactly **one** child.
+     * A fragment generates no element, so our seven blocks floated up and became children of
+     * `detailSection` itself, and its `gap: 12px` applied between every pair of them. That gap is
+     * a container this file cannot edit (every plugin shares it), so the only way to stop being
+     * subject to it is to stop being its direct child.
+     *
+     * With the column in place the container's gap has nothing to act on, and this card controls
+     * its own rhythm through `.stack`'s `gap` and each block's padding — the same arrangement the
+     * official cards use.
+     */
+    <div className={css.stack}>
       <div className={css.row}>
         <div className={css.rowText}>
           <div className={css.title}>{t('title')}</div>
@@ -749,6 +763,6 @@ export function ProjectGroupsCard({
           {rebuildError !== null && <div className={css.specError} role="alert">{rebuildError}</div>}
         </Modal>
       )}
-    </>
+    </div>
   )
 }
