@@ -30,7 +30,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 0;
+  padding: 16px 0;
 }
 
 .rowText {
@@ -111,7 +111,7 @@
 .group {
   flex-direction: column;
   gap: 8px;
-  padding: 12px 0;
+  padding: 16px 0;
   display: flex;
 }
 
@@ -119,10 +119,10 @@
  * The one rule on the card, above the base workspace only.
  *
  * User's specification: the space on each side of it must equal the row-to-row gap, so both
- * sides read the same as an ordinary gap between blocks. An ordinary gap is 12 (the upper
- * block's `padding-bottom`) + 12 (the lower block's `padding-top`) = 24px. Here each side is
- * 12 (that block's own padding) + 12 (this rule's own margin) = 24px, which is why the margin
- * matches the blocks' padding and neither neighbour's padding had to change.
+ * sides read the same as an ordinary gap between blocks. An ordinary gap is 16 (the upper
+ * block's `padding-bottom`) + 16 (the lower block's `padding-top`) = 32px. Here each side is
+ * 16 (that block's own padding) + 16 (this rule's own margin) = 32px, which is why the margin
+ * is `16px 0` and neither neighbour's padding had to change.
  *
  * Drawn as its own element rather than as a `border` on a neighbour: a border belongs to one
  * block, which makes that block's own padding lopsided — and that asymmetry, where the rule
@@ -131,7 +131,7 @@
  */
 .rule {
   flex: none;
-  margin: 12px 0;
+  margin: 16px 0;
   border-top: 0.5px solid var(--dsw-alias-border-l2);
 }
 
