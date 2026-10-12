@@ -20,13 +20,12 @@ import type { BaseWorkspaceSetting, DocSpecMode, NewSessionTarget } from '../pro
 import type { BaseWorkspaceChooserRequest, OfficialBaseState } from './index.ts'
 import type {
   clientBaseWorkspace, clientCreateOpensSession, clientDocSpecFileName, clientDocSpecMode,
-  clientInjectProjectDoc, clientInjectProjectInfo, clientInjectionLocale, clientNewSessionTarget,
+  clientInjectProjectDoc, clientInjectProjectInfo, clientNewSessionTarget,
   clientPerProjectDocSpec, clientSpecs, clientValidateLinks,
 } from './grouping.ts'
 import type { SETTINGS_NS } from './settings-locales.ts'
 import { BaseWorkspacePicker } from './base-workspace-picker.tsx'
 import { SpecPicker } from './spec-picker.tsx'
-import { InjectionPanel } from './injection-panel.tsx'
 import css from './settings-card.module.css'
 
 /**
@@ -102,13 +101,6 @@ export interface ProjectGroupsCardInjected {
      * perform can never disagree about what is on.
      */
     validateLinks: typeof clientValidateLinks
-    /**
-     * The active locale, for the injection preview's drift sample.
-     *
-     * Not a Host-backed setting like the seats above: it mirrors the browser's own locale service,
-     * so the previewed drift question is written in the language the injected block would use.
-     */
-    injectionLocale: typeof clientInjectionLocale
   }
   /** Consume the chooser request so a repeat is a new value rather than a silent no-op. */
   settleBaseWorkspaceChooser: () => void
@@ -175,7 +167,6 @@ export function ProjectGroupsCard({
   useDocSpecFileName, setDocSpecFileName,
   usePerProjectDocSpec, setPerProjectDocSpec,
   useValidateLinks, setValidateLinks,
-  useInjectionLocale,
   useSpecs, uploadSpec, deleteSpec, specsUsedBy, t,
 }: ProjectGroupsCardProps) {
   const target = useTarget(value => value)
@@ -193,7 +184,6 @@ export function ProjectGroupsCard({
   const docSpecFileName = useDocSpecFileName(value => value)
   const perProjectSpec = usePerProjectDocSpec(value => value)
   const validateLinksOn = useValidateLinks(value => value)
-  const injectionLocale = useInjectionLocale(value => value)
   const specs = useSpecs(value => value)
   /**
    * Whether `'custom'` currently names a spec that exists on disk.
@@ -606,35 +596,13 @@ export function ProjectGroupsCard({
       )}
 
       {/*
-        A rule above what this plugin injects, and one below it. Together they set the injection
-        preview apart as a section of its own: the switches above describe behaviour, this shows
-        what that behaviour produces.
-
-        The rules cost no space. A rule carries `margin: 0`, so it falls in the middle of the 32px
-        that two neighbouring blocks already leave between their contents — 16px above it from the
-        upper block's padding and 16px below from the lower one's. Content-to-content spacing is
-        therefore the same 32px on a ruled boundary as on an unruled one, which is what makes these
-        two lines read as marks rather than as gaps.
-      */}
-      <div className={css.rule} role="separator" />
-
-      {/*
-        What this plugin injects.
-
-        It sits after the injection chain it describes, so the card reads: the switches, what they
-        produce, then where Sessions land. The panel returns one `.group` — the same shape the
-        文档规范 row uses — whose own `gap` spaces its parts, with no enclosing surface of its own.
-      */}
-      <InjectionPanel
-        injectInfo={injectInfo}
-        injectDoc={injectDoc}
-        locale={injectionLocale}
-        t={t}
-      />
-
-      {/*
-        The closing rule of the injection section — the pair with the one above it. Same element,
-        same `margin: 0`, so the space either side of it is the ordinary block gap.
+        A rule above the base workspace, and only here.
+        
+        It costs no space. A rule carries `margin: 0`, so it falls in the middle of the 32px two
+        neighbouring blocks already leave between their contents — 16px above from the upper
+        block's padding and 16px below from the lower one's. Content-to-content spacing is
+        therefore the same 32px on a ruled boundary as on an unruled one, which is what makes the
+        line read as a mark rather than as a gap.
       */}
       <div className={css.rule} role="separator" />
 
