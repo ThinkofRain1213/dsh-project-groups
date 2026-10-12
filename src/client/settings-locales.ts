@@ -98,12 +98,13 @@ export const zh = {
   confirm: '确认',
   // The base workspace: the directory every New Session lands in.
   //
-  // `baseDesc` states the one thing this group is most easily misread as: that it has something
-  // to do with which project a Session belongs to. It does not — the plugin records membership
-  // and never moves a directory — so the sentence says what the setting is and then rules that
-  // reading out, rather than explaining the mechanism.
+  // `baseDesc` is the user's own wording, settled 2026-10-12 in preference to the longer
+  // versions drafted here. It states the need and the purpose in one clause, and deliberately
+  // avoids 「落点」/「落在」: that word already names the setting above this one, which decides
+  // which *project* a Session belongs to. Reusing it here would blur the two settings that are
+  // easiest to confuse.
   baseTitle: '底层工作区',
-  baseDesc: '新会话的起始目录，由官方工作区决定。项目归属只记录关系，不改这里。',
+  baseDesc: '需要选择一个真实工作区用于保存会话',
   baseModeDefault: '默认工作区',
   baseDefaultHint: '官方首次创建的工作区',
   // Shown instead of `baseDefaultHint` while the default Workspace cannot be resolved.
@@ -172,7 +173,7 @@ export const en: Record<ProjectGroupsSettingsKey, string> = {
   validateLinksTitle: 'Validate http(s)://',
   validateLinksDesc: 'Mark associated links that do not start with http:// or https://. Marks only; never blocks saving.',
   baseTitle: 'Base workspace',
-  baseDesc: 'The directory a New Session starts in, governed by the official workspace. Project membership only records a relationship; it never changes this.',
+  baseDesc: 'A real workspace must be selected to store sessions',
   baseModeDefault: 'Default workspace',
   baseDefaultHint: 'the workspace created on first use',
   baseDefaultMissing: 'The default workspace is missing; a New Session will ask whether to rebuild it',
