@@ -506,15 +506,18 @@
 /*
  * ─────────────────────────── the injection preview ───────────────────────────
  *
- * These are the blocks that show what this plugin injects. Read the note at the top of
- * `injection-panel.tsx` for the shape; what matters here is that there is no panel: the main
- * display is an ordinary `.group` and each diff row is an ordinary block, so all of them are
- * `.stack` children spaced by their own `padding` like every other row on the card.
+ * These are the styles for what this plugin injects. Read the note at the top of
+ * `injection-panel.tsx` for the shape; what matters here is that there is no panel: the preview is
+ * one ordinary `.group` — heading, rendered block, note, then one row per diff segment.
  *
  * An earlier version wrapped everything in a `.injectionPanel` with a filled `.injectionDiffList`
  * inside it. Both are gone: the panel's own border and the rows' dividers were the same colour
  * and width, so the last row and the panel's bottom edge were indistinguishable and the stack
  * read as one extra empty row (measured: 21px against 11–13px between the rows).
+ *
+ * An intermediate version made the diff rows siblings of the group instead of its children. They
+ * then sat 32px away like any other setting row and read as four more settings; inside the group
+ * they belong to the block above and `.group`'s own 8px gap spaces them.
  */
 
 /*
@@ -553,28 +556,27 @@
 }
 
 /*
- * One segment: a block, sized like every other block on the card.
+ * One segment: a child of the injection group, not a block of its own.
  *
- * `padding: 16px 0` is the card's block padding, so this row's spacing to its neighbours is the
- * same 16 + 16 as everywhere else, and the diff section needs no container of its own.
+ * No `padding` — and that is the point. The rows sit inside `.group`, so `.group`'s `gap: 8px`
+ * spaces them from the note above and from each other. A 16px padding here would add to that gap
+ * and make these rows read as 24px apart while every other gap in the group reads 8px.
  *
- * `gap: 8px` is the block's internal rhythm — the same 8px `.group` uses between a heading and
- * what it introduces. It holds between the toggle and the expanded shapes, and between the
- * shapes themselves, so the expanded row has one spacing value and no exceptions.
+ * `gap: 8px` is this row's internal rhythm — between the toggle and the expanded shapes, and
+ * between the shapes themselves — so an expanded row also has one spacing value and no exceptions.
  */
 .injectionDiffRow {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 16px 0;
 }
 
 /*
  * The toggle is a plain line of text: no fill, no border, no padding of its own.
  *
- * The missing padding is deliberate. This row already pads 16px above and below, so a padded
- * toggle would read as 24px from the row's own edge while every other block reads 16 — the exact
- * kind of exception this layout exists to avoid.
+ * The missing padding is deliberate, for the same reason the row has none: this row's spacing
+ * comes entirely from `.group`'s gap, and any padding here would be a second, larger value in a
+ * group where everything else is 8px.
  */
 .injectionDiffToggle {
   width: 100%;

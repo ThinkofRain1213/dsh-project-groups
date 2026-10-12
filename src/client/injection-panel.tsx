@@ -66,40 +66,41 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
     })
   }
   /*
-   * Two kinds of block, both ordinary members of the card's `.stack`.
+   * One `.group`, and nothing else.
    *
-   * The card has no panel: this returns a fragment so the main block and each diff row are
-   * direct children of `.stack` alongside the switches, spaced by their own `padding` exactly
-   * like everything else. An earlier version wrapped all of this in a bordered panel with a
-   * filled list inside it; that surface is gone, because the reported problem was precisely
-   * that the panel's edges competed with the dividers it contained.
+   * The card has no panel: this returns the same group shape 文档规范 uses — heading, content,
+   * note — with the diff rows as further children of it. An earlier version wrapped the rows in a
+   * bordered panel with a filled list inside; that surface is gone, because the reported problem
+   * was precisely that the panel's edges competed with the dividers it contained.
    *
-   * `Fragment` and not a wrapper element: a wrapper would generate a box and its children
-   * would stop being `.stack`'s own, which is how the container gap returned the last time.
+   * The rows are inside the group rather than siblings of it (which is how this was rebuilt
+   * first). Outside, they sat 32px from the group like any other setting row and read as four new
+   * settings — the group wanted them, and the note about brackets wanted something to introduce.
+   * Inside, `.group`'s own `gap: 8px` spaces them, which is the same value the card uses between a
+   * heading and what it introduces.
    */
   return (
-    <>
+    <div className={css.group}>
+      <div className={css.groupTitle}>{t('injectionTitle')}</div>
+      {main === null
+        ? <div className={css.injectionOff}>{t('injectionOff')}</div>
+        : <pre className={css.injectionText}>{main}</pre>}
       {/*
-       * The main display, built on the card's existing group shape (heading, content, description)
-       * rather than a new one — the same `.group` the 文档规范 row uses, with the rendered block
-       * where that row puts its cards.
-       *
-       * The description sits **below** the block here, not between the heading and it as
-       * `groupHeading` does elsewhere: the sentence explains how to read the brackets inside the
-       * block, so it can only be read after the block exists. On the other rows the note explains
-       * what the setting is, which belongs above its control.
+       * Below the block, not between the heading and it as `groupHeading` does elsewhere: this
+       * sentence explains how to read the brackets *inside* the block, so it can only be read
+       * after the block exists. On other rows the note says what the setting is, which belongs
+       * above its control.
        */}
-      <div className={css.group}>
-        <div className={css.groupTitle}>{t('injectionTitle')}</div>
-        {main === null
-          ? <div className={css.injectionOff}>{t('injectionOff')}</div>
-          : <pre className={css.injectionText}>{main}</pre>}
-        <div className={css.desc}>{t('injectionNote')}</div>
-      </div>
+      <div className={css.desc}>{t('injectionNote')}</div>
 
       {/*
-       * One block per segment. Each is its own row in the stack, so the gap between two of them is
-       * the card's ordinary block gap and the diff section needs no container to hold it together.
+       * One row per segment, each a child of this group so `gap: 8px` spaces them — the same value
+       * that separates the heading from the block above. The rows are not given a padding of their
+       * own: an 8px gap plus a 16px padding would read as 24px where every other gap in this group
+       * reads 8px.
+       *
+       * No heading over them. Each row names its own segment, and belonging to this group is what
+       * says they describe the block above.
        */}
       {groups.map(group => (
         <div key={group.key} className={css.injectionDiffRow}>
@@ -132,6 +133,6 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
           )}
         </div>
       ))}
-    </>
+    </div>
   )
 }
