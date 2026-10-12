@@ -563,25 +563,23 @@
 }
 
 /*
- * The diff heading: the group's title shape, plus the one deliberate exception to its rhythm.
+ * A label for one part of the injection group — 当前注入 or 各差分.
  *
- * It reads 16px below the bracket note while everything else in this group is 8px apart. That
- * extra distance is the whole point — it says the differences are a **second part** of this group
- * rather than a continuation of the note. Reading them as one run is a real mistake here, because
- * the note above is about the brackets inside the block, not about the rows below.
+ * 13px, against the group heading's 14px, and both in `label-primary`; the diff rows below are
+ * 13px in `label-secondary`. So the three levels are told apart by colour at the lower two and by
+ * one step of size at the top, and no value is invented for it: 13px is the diff rows' own size
+ * and `primary` is the heading's own colour.
  *
- * `margin-top: 8px`, not 16, and the sum is deliberate: `.group` already contributes its `gap`,
- * which is 8px, so 8 + 8 = the intended 16. Writing 16 here would give 24.
- *
- * ⚠️ That makes this value depend on `.group`'s gap. It is the only such coupling in this file: if
- * the group's gap ever changes, this margin has to change with it to keep the distance at 16.
+ * It carries **no margin**: the group's `gap: 8px` is this group's single rhythm, and an earlier
+ * version gave this label 8px more so that it sat 16px below the note. Colour now does the job
+ * that extra distance was doing — it stops the label reading as a continuation of the bracket
+ * note — so the exception is gone and the group is back to one value.
  */
-.injectionDiffTitle {
+.injectionSubTitle {
   color: var(--dsw-alias-label-primary);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 400;
-  line-height: 22px;
-  margin-top: 8px;
+  line-height: 20px;
 }
 
 /*

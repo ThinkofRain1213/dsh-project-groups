@@ -89,30 +89,33 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
   return (
     <div className={css.group}>
       <div className={css.groupTitle}>{t('injectionTitle')}</div>
+
+      {/*
+       * The group holds two parts, each with a label of its own: the full text below the current
+       * switches, then the per-state differences.
+       *
+       * The labels are `.injectionSubTitle` — 13px against the group heading's 14px, both in
+       * `label-primary`, with the diff rows below in `label-secondary` at the same 13px. So the
+       * hierarchy is carried by colour rather than by size, and no value is invented: 13px is the
+       * diff rows' own size, and `primary` is the heading's own colour.
+       *
+       * This is what makes the first part stop competing with the group heading. It used to be a
+       * `groupTitle` itself, which read as a second heading of equal rank.
+       */}
+      <div className={css.injectionSubTitle}>{t('injectionCurrent')}</div>
       {main === null
         ? <div className={css.injectionOff}>{t('injectionOff')}</div>
         : <pre className={css.injectionText}>{main}</pre>}
       {/*
-       * Below the block, not between the heading and it as `groupHeading` does elsewhere: this
+       * Below the block, not between the label and it as `groupHeading` does elsewhere: this
        * sentence explains how to read the brackets *inside* the block, so it can only be read
        * after the block exists. On other rows the note says what the setting is, which belongs
        * above its control.
        */}
       <div className={css.desc}>{t('injectionNote')}</div>
 
-      {/*
-       * The rows' heading, at the same size and weight as 当前注入内容 above it (user's decision,
-       * 2026-10-13). It is a title, so it takes the title shape rather than a dimmed `.desc` — the
-       * rows below it need naming, and a grey line there would read as a second sentence of the
-       * bracket note rather than as the head of the list.
-       *
-       * It is the one place in this group where the spacing is not the group's own 8px: it sits
-       * 16px below the note, because that distance is what says the differences are a **second
-       * part** of this group rather than a continuation of the bracket note. `.injectionDiffTitle`
-       * carries the 8px margin that adds to the group's 8px gap; see its rule for why the sum is
-       * written that way.
-       */}
-      {groups.length > 0 && <div className={css.injectionDiffTitle}>{t('injectionDiffTitle')}</div>}
+      {/* The second part's label. Same shape as the one above; the group's 8px separates both. */}
+      {groups.length > 0 && <div className={css.injectionSubTitle}>{t('injectionDiffTitle')}</div>}
 
       {/*
        * One row per segment, each a child of this group so `gap: 8px` spaces them — the same value
