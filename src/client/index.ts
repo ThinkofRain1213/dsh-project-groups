@@ -53,9 +53,9 @@ import type { WorkspaceSource } from '@deepseek-ai/dsh-api-workspace-controller/
 import {
   clientBaseWorkspace, clientCreateOpensSession, clientDocSpecFileName, clientDocSpecMode,
   clientExpansions, clientGrouping,
-  clientInjectProjectDoc, clientInjectProjectInfo,
+  clientInjectProjectDoc, clientInjectProjectInfo, clientInjectionLocale,
   clientNewSessionTarget, clientOrders, clientPerProjectDocSpec, clientSpecs, clientValidateLinks,
-  installProjectModel, projectModel,
+  installLocaleService, installProjectModel, projectModel,
 } from './grouping.ts'
 import { ProjectModel } from './projects.ts'
 import { recentDestination, resolveTarget } from './target.ts'
@@ -68,6 +68,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
 export { clientExpansions, clientGrouping, clientNewSessionTarget, clientOrders, projectModel } from './grouping.ts'
 export { clientBaseWorkspace } from './grouping.ts'
+export { clientInjectionLocale } from './grouping.ts'
 export type { GroupSource } from '../vendored/client/tree.ts'
 export type { ProjectRemote } from './projects.ts'
 
@@ -329,6 +330,10 @@ export function apply(ctx: Context): void {
   // Workspace controller, and `ctx.get` is the ungated lookup.
   const workspacesService = ctx.get('workspaces') as { list: WorkspaceSource } | undefined
   workspacesRegistry = workspacesService?.list
+  // Read for the same reason, and after the Workspace one so the two module-level captures sit
+  // together. The injection preview renders the drift question in this locale, and the service is
+  // the only place the browser can learn it.
+  installLocaleService(ctx.get('locale') as Parameters<typeof installLocaleService>[0])
   clientContext = ctx
   // Mount before registering the browser so the model's baseline can land while
   // the sidebar is still being assembled. A failure here is contained: the
@@ -396,6 +401,9 @@ function registerSettingsCard(ctx: Context): void {
         docSpecFileName: clientDocSpecFileName,
         perProjectDocSpec: clientPerProjectDocSpec,
         specs: clientSpecs,
+        // The active locale, so the injection preview renders the drift question in the language
+        // the injected block would use. Independent of the project model, unlike the seats above.
+        injectionLocale: clientInjectionLocale,
         // Spread rather than assigned as `undefined`: the hooks compartment holds
         // observables, and a present-but-undefined key would break the renderer's
         // binding. Absent, the chooser reports "暂无工作区".

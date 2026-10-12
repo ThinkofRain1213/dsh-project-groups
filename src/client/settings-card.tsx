@@ -20,12 +20,13 @@ import type { BaseWorkspaceSetting, DocSpecMode, NewSessionTarget } from '../pro
 import type { BaseWorkspaceChooserRequest, OfficialBaseState } from './index.ts'
 import type {
   clientBaseWorkspace, clientCreateOpensSession, clientDocSpecFileName, clientDocSpecMode,
-  clientInjectProjectDoc, clientInjectProjectInfo, clientNewSessionTarget,
+  clientInjectProjectDoc, clientInjectProjectInfo, clientInjectionLocale, clientNewSessionTarget,
   clientPerProjectDocSpec, clientSpecs, clientValidateLinks,
 } from './grouping.ts'
 import type { SETTINGS_NS } from './settings-locales.ts'
 import { BaseWorkspacePicker } from './base-workspace-picker.tsx'
 import { SpecPicker } from './spec-picker.tsx'
+import { InjectionPanel } from './injection-panel.tsx'
 import css from './settings-card.module.css'
 
 /**
@@ -101,6 +102,13 @@ export interface ProjectGroupsCardInjected {
      * perform can never disagree about what is on.
      */
     validateLinks: typeof clientValidateLinks
+    /**
+     * The active locale, for the injection preview's drift sample.
+     *
+     * Not a Host-backed setting like the seats above: it mirrors the browser's own locale service,
+     * so the previewed drift question is written in the language the injected block would use.
+     */
+    injectionLocale: typeof clientInjectionLocale
   }
   /** Consume the chooser request so a repeat is a new value rather than a silent no-op. */
   settleBaseWorkspaceChooser: () => void
@@ -167,6 +175,7 @@ export function ProjectGroupsCard({
   useDocSpecFileName, setDocSpecFileName,
   usePerProjectDocSpec, setPerProjectDocSpec,
   useValidateLinks, setValidateLinks,
+  useInjectionLocale,
   useSpecs, uploadSpec, deleteSpec, specsUsedBy, t,
 }: ProjectGroupsCardProps) {
   const target = useTarget(value => value)
@@ -184,6 +193,7 @@ export function ProjectGroupsCard({
   const docSpecFileName = useDocSpecFileName(value => value)
   const perProjectSpec = usePerProjectDocSpec(value => value)
   const validateLinksOn = useValidateLinks(value => value)
+  const injectionLocale = useInjectionLocale(value => value)
   const specs = useSpecs(value => value)
   /**
    * Whether `'custom'` currently names a spec that exists on disk.
@@ -594,6 +604,21 @@ export function ProjectGroupsCard({
           t={t}
         />
       )}
+
+      {/*
+        What this plugin injects, as ordinary blocks of this card.
+        
+        It sits after the injection chain it describes and before the rule that opens the base
+        workspace, so the card reads: the switches, what they produce, then where Sessions land.
+        The panel returns a fragment — its blocks are `.stack`'s own children, spaced by their own
+        padding, with no enclosing surface of their own.
+      */}
+      <InjectionPanel
+        injectInfo={injectInfo}
+        injectDoc={injectDoc}
+        locale={injectionLocale}
+        t={t}
+      />
 
       {/*
         A rule above the base workspace, and only here.

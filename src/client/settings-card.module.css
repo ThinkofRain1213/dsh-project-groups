@@ -502,3 +502,148 @@
 .footerLeading {
   margin-right: auto;
 }
+
+/*
+ * ─────────────────────────── the injection preview ───────────────────────────
+ *
+ * These are the blocks that show what this plugin injects. Read the note at the top of
+ * `injection-panel.tsx` for the shape; what matters here is that there is no panel: the main
+ * display is an ordinary `.group` and each diff row is an ordinary block, so all of them are
+ * `.stack` children spaced by their own `padding` like every other row on the card.
+ *
+ * An earlier version wrapped everything in a `.injectionPanel` with a filled `.injectionDiffList`
+ * inside it. Both are gone: the panel's own border and the rows' dividers were the same colour
+ * and width, so the last row and the panel's bottom edge were indistinguishable and the stack
+ * read as one extra empty row (measured: 21px against 11–13px between the rows).
+ */
+
+/*
+ * The rendered block.
+ *
+ * Monospace, because the block's own punctuation is meaningful (backticks around segment names,
+ * the XML frame) and because its indentation carries structure the drift prompt relies on.
+ *
+ * `pre-wrap` with `anywhere`: the samples contain absolute paths far longer than the card, and
+ * without it they would push the card wider instead of wrapping.
+ *
+ * Its own `border` is a box, not a divider — the card's only full-width rule is `.rule`.
+ */
+.injectionText {
+  margin: 0;
+  padding: 12px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The master switch being off: a statement, not an example. */
+.injectionOff {
+  padding: 12px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-lg);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/*
+ * One segment: a block, sized like every other block on the card.
+ *
+ * `padding: 16px 0` is the card's block padding, so this row's spacing to its neighbours is the
+ * same 16 + 16 as everywhere else, and the diff section needs no container of its own.
+ *
+ * `gap: 8px` is the block's internal rhythm — the same 8px `.group` uses between a heading and
+ * what it introduces. It holds between the toggle and the expanded shapes, and between the
+ * shapes themselves, so the expanded row has one spacing value and no exceptions.
+ */
+.injectionDiffRow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 0;
+}
+
+/*
+ * The toggle is a plain line of text: no fill, no border, no padding of its own.
+ *
+ * The missing padding is deliberate. This row already pads 16px above and below, so a padded
+ * toggle would read as 24px from the row's own edge while every other block reads 16 — the exact
+ * kind of exception this layout exists to avoid.
+ */
+.injectionDiffToggle {
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/*
+ * Hover and focus name the row — with no dividers and no fill, this is what says it can be
+ * opened. One rule, not two: an earlier version split the colour and the fill, and the later
+ * rule won wholesale so the colour change vanished silently.
+ */
+.injectionDiffToggle:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.injectionDiffToggle:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+/* Rotated rather than a second icon, so the two states share one glyph. */
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+/*
+ * The expanded shapes, indented to show they belong to the toggle above them.
+ *
+ * No surface and no vertical rule: the row is separated from its neighbours by its padding, and
+ * the indentation plus each block's own border is what carries the hierarchy. A filled block here
+ * would reintroduce the "panel inside a panel" reading this layout just removed.
+ */
+.injectionDiffBody {
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 18px;
+  display: flex;
+}
+
+/* A label and its block are one unit: 4px is the card's heading-to-description value. */
+.injectionVariant {
+  flex-direction: column;
+  gap: 4px;
+  display: flex;
+}
+
+.injectionVariantLabel {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* The one shape that renders nothing; says so instead of showing an empty box. */
+.injectionVariantEmpty {
+  padding: 8px 12px;
+  border: 0.5px dashed var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-lg);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
