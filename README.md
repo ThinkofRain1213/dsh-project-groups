@@ -205,6 +205,12 @@ gh release create vX.Y.Z --verify-tag --title "vX.Y.Z" --notes-file <说明.md>
 本地 `npm publish` 只在 npm 侧尚未配置 trusted publisher 时用于首次发布
 （npm 没有"待生效的发布者"概念，第一次必须手工发）。
 
+**⚠️ CI 发布带 `--ignore-scripts`。** 因为 `prepublishOnly` 就是 `pnpm check`，
+而其中的 `verify:bundle` 要读本机 `app.asar` —— runner 上没有，会以退出码 2 中止。
+工作流已自行跑过 `typecheck`、`build`、`lib/` 同步校验与 `verify:release`，
+`validate.yml` 还会在同一提交上跑掉除 `verify:bundle` 以外的全部脚本，
+所以被跳过的只有那一条依赖本机 DSH 的断言。**本机发布（`npm publish`）仍会跑全量门禁。**
+
 排障时先看 `Publish npm` 工作流是否真的发布了——历史上它可能报
 `Report idempotent skip` 就结束，那说明该版本已存在，不是发布成功。
 

@@ -106,7 +106,23 @@ jobs:
           fi
       - name: Publish through npm OIDC
         if: steps.existing.outputs.skip != 'true'
-        run: npm publish --access public --provenance --tag latest
+        # `--ignore-scripts` skips `prepublishOnly` (= `pnpm check`), and it is
+        # required here rather than merely convenient: that gate runs
+        # `verify:bundle`, which reads a **locally installed DSH's `app.asar`** to
+        # compare resolved externals, and no runner has one. Publishing from a
+        # machine with DSH still runs the full gate; this workflow cannot.
+        #
+        # What that gives up is covered rather than waved away. The steps above
+        # already type-check, build, and assert the committed `lib/` matches
+        # `src/`; `validate.yml` runs every remaining script **except**
+        # `verify:bundle` on this same commit, on three platforms. So the only
+        # assertion not made anywhere is the externals comparison, which is a
+        # property of the vendored copy rather than of this release.
+        #
+        # The tarball is built from the committed `lib/`, never from a build this
+        # job performs — `files` ships `lib`, and the sync check above is what
+        # makes that safe.
+        run: npm publish --access public --provenance --tag latest --ignore-scripts
       - name: Report idempotent skip
         if: steps.existing.outputs.skip == 'true'
         run: echo 'The exact package version already exists; no duplicate publish was attempted.'

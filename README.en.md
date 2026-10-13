@@ -237,6 +237,13 @@ When diagnosing, check whether the `Publish npm` run actually published: it may 
 `Report idempotent skip`, which means the version already existed rather than that publishing
 succeeded.
 
+**⚠️ The CI publish passes `--ignore-scripts`.** `prepublishOnly` is `pnpm check`, and its
+`verify:bundle` reads a locally installed DSH's `app.asar` — no runner has one, so the publish would
+stop with exit code 2 before reaching npm. The workflow runs `typecheck`, `build`, the `lib/` sync
+check and `verify:release` itself, and `validate.yml` runs every remaining script **except**
+`verify:bundle` on the same commit, so the only assertion skipped is the one that needs a local DSH.
+**Publishing from a machine with DSH installed still runs the full gate.**
+
 ## Maintaining the fork
 
 `src/vendored/` **started** as a byte-identical copy of upstream
