@@ -129,10 +129,10 @@ export const zh = {
   // The injection preview. One block rather than keys beside the switches above: it is its own
   // subject with its own vocabulary, and the diff labels are only meaningful next to each other.
   //
-  // The note explains the bracket convention and the one thing here that reads backwards — the
-  // link check marks and does not filter, so switching it off changes nothing about what is
-  // injected. Without that sentence the preview invites the opposite reading, since the switch
-  // sits several rows above it.
+  // The note explains the bracket convention, and only that. It used to carry a second sentence
+  // about the link-validation switch (it marks and does not filter, so switching it off changes
+  // nothing about what is injected); the user removed it (2026-10-13) — the switch sits several
+  // rows above, and a sentence about it here explained the switch rather than this block.
   //
   // The preview is two groups (user's decision, 2026-10-13): 当前注入内容预览 is the text the
   // current switches produce, 不同状态下的分块差异 is the per-state differences. Each is a heading
@@ -143,7 +143,7 @@ export const zh = {
   // for their own project's name in it.
   injectionTitle: '当前注入内容预览',
   injectionOff: '「注入项目信息」已关闭，本插件不向请求注入任何内容。',
-  injectionNote: '[方括号] 内是你设置的内容，实际注入时按项目数据替换。校验开关只影响编辑时的标记，不影响注入。',
+  injectionNote: '[方括号] 内是你设置的内容，实际注入时按项目数据替换。',
   injectionDiffTitle: '不同状态下的分块差异',
   diffOwningTitle: 'owning project 段',
   diffOwningFiled: '有归属项目',
@@ -229,10 +229,10 @@ export const en: Record<ProjectGroupsSettingsKey, string> = {
   cancel: 'Cancel',
   close: 'Close',
   // The injection preview; see the zh block for why it is two groups, why the first heading says
-  // "preview", and what the note says.
+  // "preview", and why the note is one sentence.
   injectionTitle: 'Preview of the current injection',
   injectionOff: '"Inject project info" is off, so this plugin injects nothing.',
-  injectionNote: 'Text in [brackets] is your own content, substituted from the project at request time. The validate switch only marks links while editing; it does not change what is injected.',
+  injectionNote: 'Text in [brackets] is your own content, substituted from the project at request time.',
   injectionDiffTitle: 'Segment differences across states',
   diffOwningTitle: 'owning project segment',
   diffOwningFiled: 'Filed under a project',
