@@ -153,6 +153,14 @@ class UiWorkspaceService extends Service implements UiWorkspace {
    * land because its 底层工作区 is gone. Absent, the flow is exactly the shipped one:
    * the click does nothing. The caller supplies the path, since deriving it needs a
    * Host query this service does not hold.
+   * @param onNewSession - optional report that a New Session flow just landed, called
+   * with the Session before it is opened. Every entry passes through {@link startSession}
+   * — the shell's button and its shortcut, ui-schedule, ui-agent-preset, a project row's
+   * ＋, the Ungrouped bucket's ＋, and creating a project — so this is the one place that
+   * can say "what lands next is new" without six callers repeating it, and it is what
+   * lets the sidebar fade that row in. Separate from `beforeOpen` because the two answer
+   * different questions: `beforeOpen` decides *where* a Session belongs, this one says
+   * *that it is new*. A caller may supply either, both, or neither.
    * @param resolveBaseWorkspace - optional: where this plugin's 底层工作区 setting
    * points, for the entries that state no destination — the shell's New Session
    * button and its shortcut, ui-schedule, ui-agent-preset, and a caller-supplied
@@ -175,6 +183,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     private readonly notify: (toast: RowToast) => void,
     private readonly placeUnscoped?: (sessionId: SessionId, currentSessionId: SessionId | undefined) => void,
     private readonly onBaseWorkspaceMissing?: (request: BaseWorkspaceMissingRequest) => void,
+    private readonly onNewSession?: (sessionId: SessionId) => void,
     private readonly resolveBaseWorkspace?: () => BaseWorkspaceRoute,
   ) {
     super(ctx, 'uiWorkspace')
@@ -250,10 +259,21 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   }
 
   startSession(workspaceId?: WorkspaceId, beforeOpen?: (sessionId: SessionId) => void): void {
+    // Everything that starts a New Session enters here, so this is where the sidebar is told that
+    // what lands is new — rather than at each of the six entries, where a seventh would silently
+    // not fade. `beforeOpen` still runs, and still decides where the Session belongs; the two are
+    // composed rather than merged because a caller may supply either, both, or neither.
+    const announce = (sessionId: SessionId): void => {
+      this.onNewSession?.(sessionId)
+    }
+    const withBeforeOpen = (sessionId: SessionId): void => {
+      announce(sessionId)
+      beforeOpen?.(sessionId)
+    }
     // An explicit target is a real Workspace row asking for its own New
     // Session: unchanged.
     if (workspaceId !== undefined) {
-      this.openNewSessionIn(workspaceId, beforeOpen)
+      this.openNewSessionIn(workspaceId, withBeforeOpen)
       return
     }
     // This plugin's 底层工作区 setting governs every entry that states no destination.
@@ -267,7 +287,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       // filed. A project row files it under that project; the shell's button applies the
       // caller's placement policy. Returning early would create the Session and drop the
       // filing, so a project's ＋ would file into nothing.
-      this.openNewSessionIn(route.workspaceId, beforeOpen)
+      this.openNewSessionIn(route.workspaceId, withBeforeOpen)
       return
     }
     if (route?.kind === 'missing') {
@@ -291,10 +311,12 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     // `beforeOpen` wins when it is present: a caller that states a destination
     // (a project row's ＋, the Ungrouped bucket's ＋) has already decided, and the
     // placement policy is only for the entries that state none.
-    const prepared = beforeOpen ?? (this.placeUnscoped === undefined
+    const place = beforeOpen ?? (this.placeUnscoped === undefined
       ? undefined
       : (sessionId: SessionId) => { this.placeUnscoped?.(sessionId, this.mainReference?.sessionId) })
-    void this.startSessionInDefaultWorkspace(prepared)
+    void this.startSessionInDefaultWorkspace(
+      place === undefined ? announce : (sessionId: SessionId) => { announce(sessionId); place(sessionId) },
+    )
   }
 
   /** Open the New Session flow in one already-known Workspace. */

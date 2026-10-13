@@ -352,6 +352,18 @@ export function apply(
   const rowToast = createSnapshotStore<RowToastState | null>(null)
   let toastSeq = 0
   const notify = (toast: RowToast): void => { rowToast.set({ ...toast, seq: ++toastSeq }) }
+  // The Session a New Session flow just landed on, announced by `startSession` below and
+  // consumed by the browser to fade that row in. Its own store rather than a passed-in
+  // value: the service that knows (this half) and the surface that animates (the browser
+  // component) are on opposite sides of the slot boundary, and the announcement has to
+  // outlive the click for as long as it takes the Session to appear in the list.
+  //
+  // Carries a sequence number like `rowToast` does, and for the same reason: a New Session
+  // usually **reuses the one blank Session**, so two clicks announce the *same id*. A store
+  // compares by value and would treat the second as no change, which is exactly the case that
+  // most needs the fade — clicking project A's ＋ and then project B's ＋ moves one row twice.
+  const newSessionLanded = createSnapshotStore<{ sessionId: SessionId; seq: number } | null>(null)
+  let landedSeq = 0
   // The unscoped-placement callback. `updatedAt` is assembled here because this
   // is the only half holding the Session list; the caller owns the project model
   // and has no view of Session activity.
@@ -396,6 +408,11 @@ export function apply(
         // exactly what it already shows.
       })
     },
+    // Every New Session announces itself here, which is what lets the sidebar fade
+    // that row in rather than glide it from wherever the reused blank Session sat.
+    // Store-backed rather than a callback into the browser: the announcement is made
+    // by this service, and the browser reads it through its bound hook.
+    sessionId => { newSessionLanded.set({ sessionId, seq: ++landedSeq }) },
     // The last constructor argument: where the caller's 底层工作区 setting points.
     // Absent, every unscoped New Session resolves the official default as before.
     projectActions?.resolveBaseWorkspace,
@@ -634,6 +651,7 @@ export function apply(
       grouping,
       expansions,
       orders,
+      newSessionLanded,
       createOpensSession,
       perProjectDocSpec,
       injectProjectInfo,

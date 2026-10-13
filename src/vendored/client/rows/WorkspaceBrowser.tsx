@@ -65,6 +65,14 @@ const SEARCH_DEBOUNCE_MS = 250
 const SEARCH_QUERY_MAX_CODE_UNITS = 500
 /** Idle Session rows visible per Workspace before the local overflow control. */
 const COLLAPSED_SESSION_LIMIT = 5
+/**
+ * Shared empty `enteringKeys`, so the ordinary render hands `AnimatedRows` a stable array.
+ *
+ * A fresh `[]` per render would be a new value each time, and the animation layer would have to
+ * compare contents to stay quiet; one frozen empty array keeps identity meaningless when there is
+ * nothing to animate.
+ */
+const EMPTY_ENTERING_KEYS: readonly string[] = Object.freeze([])
 
 /** Keep provisional and running rows outside the idle-session quota, including parents with running children. */
 function collapsedSessionRows(sessions: readonly SessionNode[], limit = COLLAPSED_SESSION_LIMIT): {
@@ -1277,6 +1285,16 @@ type SessionTreeProps = Pick<
   revealSessionId?: SessionId | undefined
   /** Acknowledge that the chosen Session row has been revealed. */
   onSessionRevealed: (sessionId: SessionId) => void
+  /**
+   * Row keys arriving because a New Session flow just landed on them.
+   *
+   * Empty in the ordinary case. Non-empty only when the Session that landed reused a blank
+   * Session already in the tree — its key was present last commit, so the entry fade has to be
+   * asked for rather than inferred. See `AnimatedRows`.
+   */
+  enteringKeys: readonly string[]
+  /** Release {@link enteringKeys} once the commit that drew them has run. */
+  onEnteringKeysDrawn: () => void
 }
 
 /** The list-empty placeholder — a glyph over the text; the archived-only view names its filter and offers the way back. */
@@ -1310,7 +1328,7 @@ function SessionTree({
   nestWorkspaces, groupExpansion, setGroupExpanded,
   projectExpansion, setProjectExpanded,
   setSessionOrder, home, t,
-  revealSessionId, onSessionRevealed, shortcuts,
+  revealSessionId, onSessionRevealed, shortcuts, enteringKeys, onEnteringKeysDrawn,
 }: SessionTreeProps) {
   const panelActive = usePanelInfo(info => info.activePanelId !== null)
   const statuses = useSessionStatus(s => s)
@@ -1642,7 +1660,7 @@ function SessionTree({
     // in the same order — `AnimatedRows` pairs the two by position. Both sides call
     // `sessionRowKey` for that reason; writing the string out here instead would let
     // them drift, and a drift shows up as wrong motion rather than as an error.
-    for (const node of sessions) rowKeys.push(sessionRowKey(node.id, group.key))
+    for (const node of sessions) rowKeys.push(sessionRowKey(node.id))
     if (collapsed.hiddenCount > 0) rowKeys.push(`overflow:${group.key}`)
     const activeDrag = workspaceDrag
     const markerOver = dragRowId !== undefined && activeDrag !== null
@@ -1922,7 +1940,7 @@ function SessionTree({
               // Must equal the matching entry `rowKeys` pushed above; see the note
               // there. `key` stays the bare id so React re-parents the row rather
               // than remounting it when the Session changes group.
-              rowKey={sessionRowKey(node.id, group.key)}
+              rowKey={sessionRowKey(node.id)}
               currentId={current}
               now={now}
               onOpen={open}
@@ -1972,6 +1990,8 @@ function SessionTree({
         rowKeys={rowKeys}
         ready={list.phase === 'ready' && workspaceReady && !nativeDragActive}
         resetKey={JSON.stringify([animationResetKey, sessionLimits])}
+        enteringKeys={enteringKeys}
+        onEnteringKeysDrawn={onEnteringKeysDrawn}
       >
         {groups.length === 0 && (
           <EmptySessions rowState={rowState} onLeaveArchivedOnly={onLeaveArchivedOnly} t={t} />
@@ -1987,7 +2007,7 @@ function SessionTree({
 function FlatList({
   list, sessionIds, rowState, onLeaveArchivedOnly, useSessionStatus, open, onSessionRenameRequest,
   usePanelInfo, setSessionOrder, workspaceReady, animationResetKey,
-  revealSessionId, onSessionRevealed, renderSlot, t,
+  revealSessionId, onSessionRevealed, renderSlot, t, enteringKeys, onEnteringKeysDrawn,
 }: Pick<
   SessionTreeProps,
   | 'useSessionStatus'
@@ -2003,6 +2023,8 @@ function FlatList({
   | 'rowState'
   | 'onLeaveArchivedOnly'
   | 't'
+  | 'enteringKeys'
+  | 'onEnteringKeysDrawn'
 > & {
   list: SessionListState
   sessionIds: readonly SessionId[]
@@ -2035,6 +2057,8 @@ function FlatList({
         rowKeys={rows.length === 0 ? ['empty'] : rows.map(row => `session:${row.id}`)}
         ready={list.phase === 'ready' && workspaceReady && drag === null}
         resetKey={animationResetKey}
+        enteringKeys={enteringKeys}
+        onEnteringKeysDrawn={onEnteringKeysDrawn}
       >
         {rows.length === 0 && (
           <EmptySessions rowState={rowState} onLeaveArchivedOnly={onLeaveArchivedOnly} t={t} />
@@ -2237,6 +2261,7 @@ export function WorkspaceBrowser({
   setProjectOrders,
   useExpansions,
   useOrders,
+  useNewSessionLanded,
   useCreateOpensSession,
   usePerProjectDocSpec,
   useInjectProjectInfo,
@@ -2491,6 +2516,25 @@ export function WorkspaceBrowser({
   const [query, setQuery] = useState('')
   const [searchExpanded, setSearchExpanded] = useState(false)
   const [revealSessionId, setRevealSessionId] = useState<SessionId | undefined>(undefined)
+  // The Session a New Session flow announced, and whether its entry fade has been drawn.
+  //
+  // Derived during **render** from the announcement, not copied into state by an effect. The
+  // announcement and the re-filing that puts the row in its new group are written in the same
+  // synchronous step, so React batches them into one commit; an effect would set this *after* that
+  // commit, by which time the row has already glided and there is nothing left to fade.
+  const announcedLanded = useNewSessionLanded(value => value)
+  const [drawnLandedSeq, setDrawnLandedSeq] = useState<number | null>(null)
+  const releaseLanded = useCallback(() => {
+    setDrawnLandedSeq(announcedLanded === null ? null : announcedLanded.seq)
+  }, [announcedLanded])
+  // Compared by sequence, not by id: the same blank Session is reused for every New Session, so an
+  // id comparison would suppress the fade on every arrival after the first.
+  const enteringKeys = useMemo(
+    () => (announcedLanded === null || announcedLanded.seq === drawnLandedSeq
+      ? EMPTY_ENTERING_KEYS
+      : [sessionRowKey(announcedLanded.sessionId)]),
+    [announcedLanded, drawnLandedSeq],
+  )
   const normalizedQuery = sanitizeSearchQuery(query).trim()
   const [remoteSearch, setRemoteSearch] = useState<RemoteSearchState>({
     query: '',
@@ -3092,6 +3136,8 @@ export function WorkspaceBrowser({
                 setSessionOrder={saveSessionOrder}
                 revealSessionId={revealSessionId}
                 onSessionRevealed={acknowledgeSessionReveal}
+                enteringKeys={enteringKeys}
+                onEnteringKeysDrawn={releaseLanded}
                 t={t}
               />
             )
@@ -3125,6 +3171,8 @@ export function WorkspaceBrowser({
                 orderBy={orderBy}
                 revealSessionId={revealSessionId}
                 onSessionRevealed={acknowledgeSessionReveal}
+                enteringKeys={enteringKeys}
+                onEnteringKeysDrawn={releaseLanded}
                 home={home}
                 t={t}
                 onRenameRequest={(row) => {

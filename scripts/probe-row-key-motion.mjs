@@ -1,30 +1,35 @@
 /**
  * The motion a Session row makes when it changes group — measured per frame.
  *
- * This is the acceptance probe for `sessionRowKey`. It exists because the earlier
- * probes on this path were misleading: they hooked `Element.prototype.animate` and
- * reported "moved" whenever a transform animation was *created*, which is also what
- * happens to a row that snaps. A dense position sampler settled it — a cross-group
- * drag has exactly two positions and nothing between — so the same method is used
- * here.
+ * This is the acceptance probe for the rule "a New Session fades, a re-filed Session glides".
+ * It exists because the earlier probes on this path were misleading: they hooked
+ * `Element.prototype.animate` and reported "moved" whenever a transform animation was *created*,
+ * which is also what happens to a row that snaps. A dense position sampler settled it, so the same
+ * method is used here.
  *
  * What is measured, and why each is the right signal:
  *
- *   - **the row key per frame**, so "the same Session under a new group" is visible
- *     as a key change while the Session id stays put;
+ *   - **the row key per frame**, so the same Session under two groups is visible as one identity;
  *   - **the row's y per frame, without deduplication**, so travel shows as a run of
  *     intermediate positions and a fade-and-replace shows one jump;
  *   - **which animations ran**, read from the keyframes, because a fade is
  *     `opacity→opacity` and a glide is `transform+opacity→transform+opacity`.
  *
- * The four transitions the design turns on:
+ * The transitions the design turns on:
  *
  *   1. A project's ＋ with no blank yet       → the row appears (entry fade)
  *   2. The same project's ＋ again            → nothing at all
- *   3. a different project's ＋               → the old row leaves and a new row
- *      arrives, and the Session does **not** travel between them
+ *   3. a different project's ＋               → the Session **fades** in its new group: it is a
+ *      New Session operation, even though the blank Session underneath is reused
  *   4. the blank becoming real (first prompt) → no animation, patched in place,
  *      matching the official sidebar
+ *   5. a cross-group **drag**                 → the Session **glides**: moving an existing Session
+ *      is not a New Session, and the row key does not change
+ *
+ * Sections 3 and 5 are the pair this probe exists to keep apart. An earlier version carried the
+ * group inside the row key, which happened to fade section 3 correctly but also faded section 5,
+ * section 4's patch-in-place, and every Session released by a deleted project. The key is identity
+ * again; the arrival is announced instead.
  *
  * Usage: node probe-row-key-motion.mjs <dshExe> <asarRoot> <dshHome> [profile]
  */
@@ -111,7 +116,6 @@ const sessionRows = () => page.evaluate(() => {
     if (id === null) continue
     found.push({
       id,
-      ownGroup: window.__groupIdOf(key),
       group,
       key,
       y: Math.round(node.getBoundingClientRect().top),
@@ -147,7 +151,6 @@ const startSampler = (windowMs) => page.evaluate((windowMs) => {
       if (id === null) continue
       seen.push({
         id,
-        ownGroup: window.__groupIdOf(key),
         group,
         key,
         y: Math.round(node.getBoundingClientRect().top),
@@ -164,7 +167,6 @@ const startSampler = (windowMs) => page.evaluate((windowMs) => {
     if (id !== null) {
       animations.push({
         id,
-        ownGroup: window.__groupIdOf(key),
         frames: Array.isArray(keyframes)
           ? keyframes.map(frame => Object.keys(frame).filter(k => k !== 'offset').join('+')).join('→')
           : 'obj',
@@ -265,7 +267,9 @@ try {
   check('1) ＋ 之后出现了一个空白会话', blankId1 !== null, String(blankId1))
   check('1) 该空白属于该项目', rowsAfter1.find(row => row.id === blankId1)?.group === keyA,
     `组=${String(rowsAfter1.find(row => row.id === blankId1)?.group)}`)
-  check('1) 行 key 带上了所属项目', rowsAfter1.find(row => row.id === blankId1)?.key === `session:${blankId1}@${keyA}`,
+  // The key is the Session alone: the owning group is rendered from the grouping model rather than
+  // encoded into a row's animation identity.
+  check('1) 行 key 只有会话 id', rowsAfter1.find(row => row.id === blankId1)?.key === `session:${blankId1}`,
     String(rowsAfter1.find(row => row.id === blankId1)?.key))
   check('1) 新行播放了入场动画', c1.animations.length > 0, JSON.stringify(c1.animations.map(a => a.frames)))
   await dismiss()
@@ -314,10 +318,13 @@ try {
   console.log(`  是否出现了"同一会话横跨两组且 y 有中间位置": ${travelled}`)
 
   check('3) 空白会话现在属于新项目', blankAfter3?.group === keyB, `组=${String(blankAfter3?.group)}`)
-  check('3) 行 key 带上了新项目', blankAfter3?.key === `session:${blankAfter3?.id}@${keyB}`, String(blankAfter3?.key))
+  // The key did not change, and that is the point: the row is the same Session. What makes it an
+  // entry is the announcement from `startSession`, not a different key.
+  check('3) 行 key 未变（会话身份与归属无关）', blankAfter3?.key === `session:${blankAfter3?.id}`,
+    String(blankAfter3?.key))
   check('3) 换组【不是】平移（无中间位置）', !travelled)
   const c3Blank = c3.animations.filter(a => a.id === travelledId)
-  check('3) 换组伴随动画（淡出/淡入）', c3Blank.length > 0, JSON.stringify(c3Blank.map(a => a.frames)))
+  check('3) 换组伴随动画（淡入）', c3Blank.length > 0, JSON.stringify(c3Blank.map(a => a.frames)))
   check('3) 该会话的动画里【没有】transform', !c3Blank.some(a => a.frames.includes('transform')),
     JSON.stringify(c3Blank.map(a => a.frames)))
   await dismiss()
@@ -344,11 +351,12 @@ try {
   const y4 = [...new Set(trajectory(r4.samples, beforeReal?.id))]
   check('4) 位置未变（无位移补间）', y4.length === 1, JSON.stringify(y4))
 
-  // ── 5. Regression: a cross-group drag must still snap. ──
-  // A real Session is seeded in the *other* project first, so the drag has both a
-  // source and a target row; without one the check silently skips, and a skipped
-  // regression guard is not a guard.
-  console.log(`\n=== 5) 回归：跨组拖拽应仍是瞬移 ===`)
+  // ── 5. A cross-group drag: the row glides. ──
+  // Moving an existing Session is not a New Session, so nothing announces it and the key does not
+  // change — `AnimatedRows` sees the same key in a new place and animates the travel. This is the
+  // other half of section 3, and the pair is what the probe exists to keep apart: an earlier
+  // version carried the group in the key and faded this case too.
+  console.log(`\n=== 5) 回归：跨组拖拽应平移 ===`)
   const seedPlus = async (title, message) => {
     const before = new Set((await sessionRows()).map(row => row.id))
     await dismiss()
@@ -385,10 +393,19 @@ try {
     await page.waitForTimeout(1400)
     const r5 = await readSampler()
     const c5 = classify(`拖 ${source.key} → ${target.key}`, r5.samples, r5.animations, source.id)
-    check('5) 拖拽后仍是瞬移（无中间位置）', c5.ys.length <= 2, JSON.stringify(c5.ys))
+    // A glide, not a fade. `hasTransform` is the discriminating signal, and the two distinct
+    // positions confirm the row moved at all: a fade is opacity-only, so it can never carry a
+    // transform. The position *count* is not asserted, because a 200ms glide may fit only two
+    // samples — the earlier version of this probe required a run of intermediate positions and
+    // would have called a legitimate short glide a failure.
+    check('5) 拖拽后是平移（带 transform）', c5.hasTransform, JSON.stringify(c5.animations.map(a => a.frames)))
+    check('5) 拖拽后位置确实移动了', c5.ys.length >= 2, JSON.stringify(c5.ys))
     const landed = (await sessionRows()).find(row => row.id === source.id)
     check('5) 会话确实换到了另一个组', landed !== null && landed.group !== source.group,
       `${String(source.group)} → ${String(landed?.group)}`)
+    // The identity is unchanged by the move — this is the property that lets every non-New-Session
+    // re-filing glide instead of being mistaken for an arrival.
+    check('5) 换组后行 key 未变', landed?.key === source.key, `${String(source.key)} → ${String(landed?.key)}`)
   }
 
   console.log(`\n=== 结果 ===`)

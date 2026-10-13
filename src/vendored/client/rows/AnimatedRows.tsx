@@ -14,6 +14,30 @@ interface AnimatedRowsProps {
   ready: boolean
   /** Changes that replace the view or reveal hidden rows settle immediately. */
   resetKey: string
+  /**
+   * Keys that are arriving because a New Session flow just landed on them.
+   *
+   * A row whose key was absent from the previous commit fades in on its own — that is what
+   * `previousRow === undefined` below means — so this covers the other half of the same gesture: a
+   * New Session that **reused an existing blank Session** keeps its key, and without this the row
+   * would glide from wherever that Session sat before (another project, or Ungrouped) to its new
+   * home instead of arriving.
+   *
+   * Only a New Session belongs here. Re-filing an existing Session — a drag, a project being
+   * deleted — is the row moving, and a move is a glide.
+   */
+  enteringKeys?: readonly string[] | undefined
+  /**
+   * Called from the commit that drew {@link enteringKeys}, so the owner drops them.
+   *
+   * Without dropping them the array would describe every later commit too, and the row would fade
+   * in again on each scroll, expansion, or unrelated re-render. Reported rather than timed, because
+   * only this component knows whether a commit drew anything: `getSnapshotBeforeUpdate` returns
+   * `null` when it is not armed yet, when the motion preference is reduced, on a `resetKey` change,
+   * and when the list is not ready — and in each of those the keys must still be released, or they
+   * would be drawn by a later commit that has nothing to do with the arrival.
+   */
+  onEnteringKeysDrawn?: (() => void) | undefined
 }
 
 interface RowPosition {
@@ -74,9 +98,17 @@ export class AnimatedRows extends Component<AnimatedRowsProps> {
   }
 
   override componentDidUpdate(previous: AnimatedRowsProps, _state: unknown, snapshot: RowSnapshot | null): void {
+    const entering = this.props.enteringKeys ?? []
+    const release = (): void => {
+      if (entering.length > 0) this.props.onEnteringKeysDrawn?.()
+    }
     if (snapshot === null) {
       if (!sameRows(previous, this.props) || previous.resetKey !== this.props.resetKey
         || previous.ready !== this.props.ready) this.clear()
+      // Released even though nothing animated: this commit cannot draw an entry (not armed yet,
+      // reduced motion, a reset, or no Web Animations), so holding the keys would make a later,
+      // unrelated commit draw them instead.
+      release()
       return
     }
 
@@ -86,13 +118,17 @@ export class AnimatedRows extends Component<AnimatedRowsProps> {
     const viewport = list.getBoundingClientRect()
     const origin = overlay.getBoundingClientRect()
     const positions = this.readPositions()
+    const arriving = new Set(entering)
 
     for (const [key, row] of positions) {
       this.removeExit(key)
       const previousRow = snapshot.positions.get(key)
       if (!intersects(row.rect, viewport)
         && (previousRow === undefined || !intersects(previousRow.rect, viewport))) continue
-      if (previousRow === undefined) {
+      // Two ways to be an entry. A key that was not here last commit is new by construction; a key
+      // the caller listed as arriving is a New Session that reused a blank Session already in the
+      // tree, which the key cannot show because the key is now the Session alone.
+      if (previousRow === undefined || arriving.has(key)) {
         this.move(row.element, [{ opacity: 0 }, { opacity: 1 }], ROW_FADE_MS)
         continue
       }
@@ -121,6 +157,8 @@ export class AnimatedRows extends Component<AnimatedRowsProps> {
       this.exits.set(key, { element, animation })
       animation.onfinish = () => { this.removeExit(key) }
     }
+
+    release()
   }
 
   override componentWillUnmount(): void {

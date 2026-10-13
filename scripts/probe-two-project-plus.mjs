@@ -71,9 +71,9 @@ const sessionRows = () => page.evaluate(() => {
     const key = node.getAttribute('data-row-key')
     if (key.startsWith('workspace:')) { group = key.slice('workspace:'.length); continue }
     if (!key.startsWith('session:')) continue
-    const rest = key.slice('session:'.length)
-    const at = rest.indexOf('@')
-    found.push({ id: rest.slice(0, at), drawnUnder: group, key })
+    // The key is the Session alone; which project a row is drawn under comes from the DOM
+    // position (the `workspace:` heading above it), not from the key.
+    found.push({ id: key.slice('session:'.length), drawnUnder: group, key })
   }
   return found
 })
@@ -97,8 +97,9 @@ const clickPlus = async (title) => {
 
 const report = async (label, keyA, keyB) => {
   const rows = await sessionRows()
-  const a = rows.filter(r => r.key.endsWith(`@${keyA}`))
-  const b = rows.filter(r => r.key.endsWith(`@${keyB}`))
+  // Filtered by the group each row is drawn under, since the key no longer carries it.
+  const a = rows.filter(r => r.drawnUnder === keyA)
+  const b = rows.filter(r => r.drawnUnder === keyB)
   console.log(`\n--- ${label}`)
   console.log(`    A 名下会话: ${a.length === 0 ? '(无)' : a.map(r => r.id.slice(-8)).join(',')}`)
   console.log(`    B 名下会话: ${b.length === 0 ? '(无)' : b.map(r => r.id.slice(-8)).join(',')}`)

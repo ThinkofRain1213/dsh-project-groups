@@ -136,9 +136,12 @@ source with a comment naming the seam.
 | `navigation.ts` | `startSession` without a target resolves the Host's default Workspace instead of guessing (**behaviour change**, see below) | restore the shipped guess, or re-apply |
 | `navigation.ts` | the service takes an optional `placeUnscoped` callback, applied only when `beforeOpen` is absent, so the caller can file an unscoped New Session (**behaviour change**, see below) | re-add the parameter and the `beforeOpen ??` composition |
 | `index.ts` | `apply` takes an optional `groupingOverride`, an optional `ProjectActions`, and optional `expansionsOverride` / `ordersOverride`, forwarding all into the inject face | re-add the parameters and the hook/verb fields |
-| `rows/Rows.tsx` | adds `sessionRowKey(id, groupKey)`: a Session row's animation identity carries its owning group (`session:<id>@<groupKey>`) instead of the bare id (**behaviour change**, see below) | re-add the helper and its doc block |
+| `rows/Rows.tsx` | adds `sessionRowKey(id)`: a Session row's animation identity is the Session itself (`session:<id>`), kept as one shared constructor so the ordered `rowKeys` array and the rendered attribute cannot drift | re-add the helper and its doc block |
 | `rows/Rows.tsx` | `SessionNodeItem` takes an optional `rowKey`, and its `data-row-key` is `rowKey ?? sessionRowKey(node.id)` | re-add the prop and the fallback |
-| `rows/WorkspaceBrowser.tsx` | the grouped view passes `sessionRowKey(node.id, group.key)` twice — into `rowKeys` and into the row's `rowKey` — in the same order | re-apply both call sites together |
+| `rows/WorkspaceBrowser.tsx` | the grouped view passes `sessionRowKey(node.id)` twice — into `rowKeys` and into the row's `rowKey` — in the same order | re-apply both call sites together |
+| `rows/AnimatedRows.tsx` | takes `enteringKeys` / `onEnteringKeysDrawn`: a New Session that **reuses a blank Session** keeps its row key, so its entry fade is announced instead of inferred (**behaviour change**, see below) | drop both props and the `arriving` branch |
+| `contract/slots.ts` | adds `newSessionLanded` to `WorkspaceBrowserInjected['hooks']`: `{ sessionId, seq } \| null`, the Session every New Session flow landed on, sequenced because the reused blank re-announces one id | drop the field |
+| `navigation.ts` | the service takes an optional `onNewSession` callback, called from `startSession` for every entry, composed with `beforeOpen` rather than replacing it (**behaviour change**, see below). Omitted, the flow is unchanged | re-add the parameter and the two compositions |
 | `contract/slots.ts` | adds `BaseWorkspaceMissingRequest` / `BaseWorkspaceDialogInjected` / `BaseWorkspaceDialogProps`: the report a New Session raises when its 底层工作区 is gone | re-add the three declarations |
 | `navigation.ts` | the service takes an optional `onBaseWorkspaceMissing` callback, raised where `startSessionInDefaultWorkspace` previously returned silently (**behaviour change**, see below). Omitted, the flow is unchanged | re-add the parameter and the one call |
 | `session-actions/BaseWorkspaceMissing.tsx` | **new file**: the `shell.overlay` dialog that reports that case and offers the two repairs | re-add the file and its `shell.overlay` registration |
@@ -365,27 +368,44 @@ Three supporting changes:
     the shipped strays-only rule, and the archived-only view still hides an empty
     bucket.
 
-**6. A Session row's animation key carries its group.**
+**6. A Session row's animation key is the Session; a New Session is announced separately.**
 
 Shipped: a Session row's `data-row-key` is `session:<id>`, and `AnimatedRows` reads
 that attribute to decide, per commit, whether a row is new (entry fade) or merely
 moved (glide). Upstream gets away with a key that says nothing about the group,
 because a Session's group there is its Workspace — assigned at creation and never
-re-filed — so a row never changes group at all.
+re-filed — so a row never changes group at all. Here it does: every project shares the
+one default Workspace (a project has no directory), and the blank New Session is a
+single Session the front end re-files between projects.
 
-Here it does. Every project shares the one default Workspace (a project has no
-directory), and the blank New Session is a single Session that the front end
-re-files between projects. Under the shipped key, A's ＋ then B's ＋ is the same key
-in a new position, which `AnimatedRows` renders as a **glide**: the row travels
-across the sidebar from one project to the other. Measured frame by frame, that
-transition has twelve intermediate positions and a
-`transform+opacity→transform+opacity` animation. Upstream's own cross-Workspace
-transition, by contrast, fades: `opacity→opacity`, no transform.
+An earlier patch folded the group into the key (`session:<id>@<groupKey>`) so that
+re-filing became a different key, which `AnimatedRows` renders as an exit-and-enter
+fade. **That was wrong and has been reverted.** The key cannot answer the question it
+was being asked to answer: a New Session and any other re-filing change the key in
+exactly the same way, so the same mechanism that faded "A's ＋ then B's ＋" also faded
+**deleting a project** (its Sessions lose their group and drop into Ungrouped) and
+**"Ungrouped's ＋"** (which returns a Session to no project) — cases where the official
+sidebar glides. The two are indistinguishable from the key alone, and no rule over
+"same id, different group" can separate them, because the *cause* differs while the
+key change is identical.
 
-So the grouped view now passes `sessionRowKey(node.id, group.key)`, which yields
-`session:<id>@<groupKey>`. The same Session under a new group becomes a *different*
-key — the old one leaves and the new one arrives, both fading — and the Session id
-itself is untouched, so nothing outside `AnimatedRows` can tell the difference.
+So the key is identity again — `sessionRowKey(id)` is `session:<id>` — and the one case
+that genuinely is an arrival is stated rather than inferred:
+
+- **A New Session fades.** Every entry that starts one passes through
+  `UiWorkspace.startSession`, which calls an optional `onNewSession(sessionId)`; the
+  browser turns that into `enteringKeys` for `AnimatedRows`. A Session that is actually
+  new would fade on its own (its key is absent from the previous commit), but a New
+  Session that **reuses the blank Session** is already in the tree under its old group —
+  so without the announcement it would glide, which is the bug this replaces.
+- **Everything else glides.** A drag, a deletion, a return to Ungrouped: the row is the
+  same row in a new place, which is what the official sidebar draws.
+
+The announcement carries a sequence number because the common case announces the *same*
+id twice (the blank is reused); a store compares by value, so without it the second
+arrival would read as no change. `AnimatedRows` reports back through
+`onEnteringKeysDrawn` once the commit that drew the fade has run, so a later scroll or
+expansion does not re-fade the row.
 
 `blank` is deliberately **not** folded into the key: a blank New Session becoming
 real stays in its group, so its key does not change and the row is patched in place
@@ -393,13 +413,14 @@ with **no** animation. That is what upstream does, measured as one surviving DOM
 node with zero movement and zero fade, and folding `blank` in would replace it with
 a cross-fade on every first prompt.
 
-The flat "In one list" view is left on the shipped key: its rows have no group to
-change, so it keeps upstream's string byte for byte.
+The flat "In one list" view needs no change: its rows have no group to change, and it
+now builds the same string upstream does by construction rather than by omission.
 
 Both call sites must agree — `rowKeys` (the ordered array `AnimatedRows` diffs) and
 the row's own `data-row-key` — because the two are paired by position. They call the
-same helper for that reason. `scripts/probe-row-key-motion.mjs` asserts the four
-transitions, and fails two of its cross-project checks against the shipped key.
+same helper for that reason. `scripts/probe-row-key-motion.mjs` asserts all five
+transitions, including that a cross-group drag **glides**; the reverted version failed
+that check and the deletion case it stands for.
 
 **7. A New Session with no resolvable Workspace says so.**
 

@@ -52,31 +52,30 @@ function displayTitle(node: SessionNode, t: RowTranslate): string {
 /**
  * One Session row's animation identity: `session:<id>@<groupKey>`.
  *
- * `AnimatedRows` chooses between an entry fade and a glide by whether a key was
- * present in the previous commit. A Session that changes group under an unchanged
- * key is therefore **glided** — the same row travelling from its old position to
- * its new one, straight across the sidebar — which the official sidebar never
- * shows, because there a Session's group is its Workspace and belongs to it from
- * creation rather than being re-filed later. Carrying the owning group makes the
- * same Session under a new group a *different* key: the old key leaves (exit fade)
- * and the new one arrives (entry fade), which is what the official cross-Workspace
- * transition does.
+ * The key is the Session and nothing else.
  *
- * `blank` is deliberately **not** part of the key. A blank New Session becoming
- * real stays in its group, so its key is unchanged, `sameRows` holds, and the row
- * is patched in place with no animation — matching the official transition, which
- * measured as one surviving DOM node with zero movement and zero fade.
+ * It deliberately does **not** carry the owning group. A Session re-filed under another project is
+ * the same row that moved, and `AnimatedRows` renders that as exactly what it is: a glide from the
+ * old position to the new one. A New Session is the one case that should fade in instead, and it is
+ * not expressed here — either it really is new, in which case its id was absent from the previous
+ * commit and the entry fade happens on its own, or it reused an existing blank Session, and the
+ * caller says so through `AnimatedRows`'s `enteringKeys`.
  *
- * The `session:` prefix stays because the group views' selectors key off it. The
- * separator is `@`: a Session id is `session-<uuid>` and a group key is a uuid or
- * the empty Ungrouped key, none of which contain it — so Ungrouped (`''`) still
- * changes the key, as it must.
+ * An earlier version appended `@<groupKey>`. That made a re-filed Session a different key, which
+ * faded it in and out — but it could not tell a New Session from any other re-filing, so **deleting
+ * a project** also faded the Sessions it released into Ungrouped, where the official sidebar glides
+ * them. The group is not part of a row's identity, and encoding it there was a way of asking the
+ * key a question the key cannot answer.
+ *
+ * `blank` stays out of the key: a blank New Session becoming real stays in its group, so the row is
+ * patched in place with no animation, matching the official transition.
+ *
+ * The `session:` prefix stays because the group views' selectors key off it.
  * @param id - the Session id.
- * @param groupKey - owning group key; omitted by the flat list, which has no groups.
  * @returns the value for that row's `data-row-key`.
  */
-export function sessionRowKey(id: SessionNode['id'], groupKey?: string): string {
-  return groupKey === undefined ? `session:${id}` : `session:${id}@${groupKey}`
+export function sessionRowKey(id: SessionNode['id']): string {
+  return `session:${id}`
 }
 
 /* Overflow this small hides no meaningful tail; scrolling for it reads as an
@@ -639,8 +638,8 @@ export function SearchResultItem({ result, currentId, onOpen, onUnarchive, t }: 
  * its leading decoration, and its hover-card section.
  * @param props.onReveal - scroll this row into view after search navigation, then acknowledge it.
  * @param props.drag - optional row-drag target wiring; blank rows cannot start a drag.
- * @param props.rowKey - animation identity for this row; see {@link sessionRowKey}.
- * Omitted by the flat list, whose rows have no group to change.
+ * @param props.rowKey - animation identity for this row; see {@link sessionRowKey}. Callers pass it
+ * explicitly so the ordered `rowKeys` array and the rendered attribute come from one expression.
  * @param props.t - the browser root's locale seat.
  * @returns the session row.
  */

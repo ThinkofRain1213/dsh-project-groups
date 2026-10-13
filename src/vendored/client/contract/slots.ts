@@ -266,6 +266,29 @@ export type WorkspaceBrowserInjected = {
      */
     orders: HostObservable<Readonly<Record<string, readonly string[]>>>
     /**
+     * The Session a New Session flow just landed on, or `null` when none has.
+     *
+     * Every entry that starts a New Session passes through `UiWorkspace.startSession` — the
+     * sidebar shell's button and its shortcut, ui-schedule, ui-agent-preset, a project row's ＋,
+     * the Ungrouped bucket's ＋, and creating a project — so the caller hears about all of them
+     * through one value instead of six callbacks.
+     *
+     * It exists because the row key cannot carry this: a New Session that **reuses a blank
+     * Session** already has a key that was present in the previous commit, so the sidebar would
+     * glide that row from its old group rather than fading it in. See `AnimatedRows`'s
+     * `enteringKeys`.
+     *
+     * `seq` distinguishes two announcements of the **same** Session, which is the common case —
+     * the blank Session is reused, so clicking one project's ＋ and then another's announces one id
+     * twice. A store compares by value; without the sequence the second arrival would read as no
+     * change and glide.
+     *
+     * Mandatory as a hook, like `grouping` / `expansions` / `orders`: the renderer binds hooks from
+     * the observable's identity, so a composition without one supplies an observable answering
+     * `null`, which reads as "no arrival to animate".
+     */
+    newSessionLanded: HostObservable<{ sessionId: SessionId; seq: number } | null>
+    /**
      * Whether creating a caller-supplied project also opens a Session inside it.
      *
      * Mandatory as a hook, like the three above: the renderer binds hooks from the
