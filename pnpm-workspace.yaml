@@ -1,3 +1,4 @@
+virtualStoreDirMaxLength: 60
 minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-agent-default-model@0.2.0-rc.2'
   - '@deepseek-ai/dsh-agent-preset-registry@0.2.0-rc.2'
