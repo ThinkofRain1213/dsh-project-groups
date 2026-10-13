@@ -606,15 +606,16 @@ export function ProjectGroupsCard({
       )}
 
       {/*
-        A rule above what this plugin injects, and one below it. Together they set the injection
-        preview apart as a section of its own: the switches above describe behaviour, this shows
-        what that behaviour produces.
+        A rule above what this plugin injects, and one below it; the panel adds a third between its
+        two groups. Together they bound the preview: the switches above describe behaviour, this
+        shows what that behaviour produces, and the inner rule separates "what is injected" from
+        "how each state differs".
 
-        The rules cost no space. A rule carries `margin: 0`, so it falls in the middle of the 32px
+        Every rule costs no space. A rule carries `margin: 0`, so it falls in the middle of the 32px
         that two neighbouring blocks already leave between their contents — 16px above it from the
         upper block's padding and 16px below from the lower one's. Content-to-content spacing is
-        therefore the same 32px on a ruled boundary as on an unruled one, which is what makes these
-        two lines read as marks rather than as gaps.
+        therefore the same 32px on a ruled boundary as on an unruled one, which is what makes the
+        lines read as marks rather than as gaps.
       */}
       <div className={css.rule} role="separator" />
 
@@ -622,8 +623,8 @@ export function ProjectGroupsCard({
         What this plugin injects.
 
         It sits after the injection chain it describes, so the card reads: the switches, what they
-        produce, then where Sessions land. The panel returns one `.group` — the same shape the
-        文档规范 row uses — whose own `gap` spaces its parts, with no enclosing surface of its own.
+        produce, then where Sessions land. The panel returns two `.group`s — the same shape the
+        文档规范 row uses — with a rule of its own between them, and no enclosing surface.
       */}
       <InjectionPanel
         injectInfo={injectInfo}

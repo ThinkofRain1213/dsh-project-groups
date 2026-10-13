@@ -623,28 +623,7 @@
 }
 
 /*
- * A label for one part of the injection group — 当前注入 or 各差分.
- *
- * 13px/500/19.5px, the card's row-name scale exactly: same size, weight and line-height as
- * `.title`. The group heading above is 13px/**600** and the diff row names below are 13px/**400**
- * in `label-secondary`, so this group's three levels are the same three the card uses everywhere —
- * 600 / 500 / 400 — and its parts read as rows of the same system rather than as a private
- * vocabulary.
- *
- * It carries **no margin**: the group's `gap: 8px` is this group's single rhythm, and an earlier
- * version gave this label 8px more so that it sat 16px below the note. The weight step now does
- * the job that extra distance was doing — it stops the label reading as a continuation of the
- * bracket note — so the exception is gone and the group is back to one value.
- */
-.injectionSubTitle {
-  color: var(--dsw-alias-label-primary);
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 19.5px;
-}
-
-/*
- * One segment: a child of the injection group, not a block of its own.
+ * One segment: a child of the diff group, not a block of its own.
  *
  * No `padding` — and that is the point. The rows sit inside `.group`, so `.group`'s `gap: 8px`
  * spaces them from the heading above and from each other. A 16px padding here would add to that

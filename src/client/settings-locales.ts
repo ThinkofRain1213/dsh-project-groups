@@ -134,11 +134,10 @@ export const zh = {
   // injected. Without that sentence the preview invites the opposite reading, since the switch
   // sits several rows above it.
   //
-  // The group holds two labelled parts (user's decision, 2026-10-13): 当前注入 is the text the
-  // current switches produce, 各差分 is the per-state differences. The group heading names the
-  // whole of it, which is why it reads 注入内容 rather than naming either part.
+  // The preview is two groups (user's decision, 2026-10-13): 注入内容 is the text the current
+  // switches produce, 各差分 is the per-state differences. Each is a heading over its own content,
+  // with a rule between them — so there is no longer a second-level label under either heading.
   injectionTitle: '注入内容',
-  injectionCurrent: '当前注入',
   injectionOff: '「注入项目信息」已关闭，本插件不向请求注入任何内容。',
   injectionNote: '[方括号] 内是你设置的内容，实际注入时按项目数据替换。校验开关只影响编辑时的标记，不影响注入。',
   injectionDiffTitle: '各差分',
@@ -224,10 +223,8 @@ export const en: Record<ProjectGroupsSettingsKey, string> = {
   confirm: 'Confirm',
   cancel: 'Cancel',
   close: 'Close',
-  // The injection preview; see the zh block for why the note says what it says and what the two
-  // part labels name.
+  // The injection preview; see the zh block for why it is two groups and what the note says.
   injectionTitle: 'Injected content',
-  injectionCurrent: 'Current injection',
   injectionOff: '"Inject project info" is off, so this plugin injects nothing.',
   injectionNote: 'Text in [brackets] is your own content, substituted from the project at request time. The validate switch only marks links while editing; it does not change what is injected.',
   injectionDiffTitle: 'Per-state differences',
