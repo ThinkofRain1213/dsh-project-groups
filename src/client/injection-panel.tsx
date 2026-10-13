@@ -98,53 +98,72 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
          * sentence explains how to read the brackets *inside* the block, so it can only be read
          * after the block exists. On other rows the note says what the setting is, which belongs
          * above its control.
+         *
+         * Shown only while there is a block: with the master switch off there is no frame and no
+         * brackets, so the sentence would have nothing to refer to. The off-state line says the
+         * one thing that is true then.
          */}
-        <div className={css.desc}>{t('injectionNote')}</div>
+        {main !== null && <div className={css.desc}>{t('injectionNote')}</div>}
       </div>
 
       {/*
-       * The rule between the halves, and only there: it marks where "what is injected" ends and
-       * "how the states differ" begins, which is the seam the user wanted visible.
+       * Everything below the first group belongs together: the seam rule and the differences group
+       * are the preview's second half, and the second half exists only when there are states to
+       * compare. With the master switch off `injectionDiffGroups` returns nothing, so both go — a
+       * rule with no group under it would be a line with nothing on either side of it, and an
+       * empty group would be a heading over no rows.
        *
-       * Like the card's other rules it costs no space — `margin: 0`, so it drops into the middle of
-       * the 32px the two groups already leave between their contents (16px of bottom padding above,
-       * 16px of top padding below).
+       * The rule is part of this half rather than the card's: the two rules the card renders around
+       * the panel bound the whole section, and with this half gone they end up one either side of
+       * the first group, which is exactly the pair the panel needs then.
        */}
-      <div className={css.rule} role="separator" />
+      {groups.length > 0 && (
+        <>
+          {/*
+           * The rule between the halves, and only there: it marks where "what is injected" ends and
+           * "how the states differ" begins, which is the seam the user wanted visible.
+           *
+           * Like the card's other rules it costs no space — `margin: 0`, so it drops into the middle
+           * of the 32px the two groups already leave between their contents (16px of bottom padding
+           * above, 16px of top padding below).
+           */}
+          <div className={css.rule} role="separator" />
 
-      <div className={css.group}>
-        <div className={css.groupTitle}>{t('injectionDiffTitle')}</div>
-        {/*
-         * One row per segment, each a child of this group so `gap: 8px` spaces them. The rows carry
-         * no padding of their own: an 8px gap plus a 16px padding would read as 24px where every
-         * other gap in the group reads 8px.
-         */}
-        {groups.map(group => (
-          <div key={group.key} className={css.injectionDiffRow}>
-            <button
-              type="button"
-              className={css.injectionDiffToggle}
-              aria-expanded={open.has(group.key)}
-              onClick={() => { toggle(group.key) }}
-            >
-              <IconChevronDownOutlineRegular
-                className={open.has(group.key) ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
-              />
-              {t(group.titleKey)}
-            </button>
-            {open.has(group.key) && (
-              <div className={css.injectionDiffBody}>
-                {group.variants.map(variant => (
-                  <div key={variant.key} className={css.injectionVariant}>
-                    <div className={css.injectionVariantLabel}>{t(variant.labelKey)}</div>
-                    <pre className={css.injectionText}>{variant.text}</pre>
+          <div className={css.group}>
+            <div className={css.groupTitle}>{t('injectionDiffTitle')}</div>
+            {/*
+             * One row per segment, each a child of this group so `gap: 8px` spaces them. The rows
+             * carry no padding of their own: an 8px gap plus a 16px padding would read as 24px
+             * where every other gap in the group reads 8px.
+             */}
+            {groups.map(group => (
+              <div key={group.key} className={css.injectionDiffRow}>
+                <button
+                  type="button"
+                  className={css.injectionDiffToggle}
+                  aria-expanded={open.has(group.key)}
+                  onClick={() => { toggle(group.key) }}
+                >
+                  <IconChevronDownOutlineRegular
+                    className={open.has(group.key) ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
+                  />
+                  {t(group.titleKey)}
+                </button>
+                {open.has(group.key) && (
+                  <div className={css.injectionDiffBody}>
+                    {group.variants.map(variant => (
+                      <div key={variant.key} className={css.injectionVariant}>
+                        <div className={css.injectionVariantLabel}>{t(variant.labelKey)}</div>
+                        <pre className={css.injectionText}>{variant.text}</pre>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                )}
               </div>
-            )}
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      )}
     </>
   )
 }

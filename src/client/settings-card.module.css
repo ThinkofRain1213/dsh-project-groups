@@ -612,10 +612,18 @@
   overflow-wrap: anywhere;
 }
 
-/* The master switch being off: a statement, not an example. */
+/*
+ * The master switch being off: a statement, not an example.
+ *
+ * Dashed, where `.injectionText` above it is solid. The two say different things: a solid box holds
+ * content, a dashed one marks a place content would be and states why it is not there. This is the
+ * same distinction the preview's per-state samples used to draw with a dashed box of their own —
+ * that one was removed when an unset link gained a real sentence, so this is a second use of the
+ * language, not the same rule restored.
+ */
 .injectionOff {
   padding: 12px;
-  border: 0.5px solid var(--dsw-alias-border-l2);
+  border: 0.5px dashed var(--dsw-alias-border-l2);
   border-radius: var(--dsw-radius-lg);
   color: var(--dsw-alias-label-tertiary);
   font-size: 12px;
