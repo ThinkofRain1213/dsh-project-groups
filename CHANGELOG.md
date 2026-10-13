@@ -47,6 +47,14 @@
 - vendored 上游客户端源码现有 **75 条登记 patch、涉及 12 个文件**。
 - `verify:release` 继续守住发布事实：版本号三处一致、`locale` 描述与功能同步、
   两版 README 结构对等、`files` 覆盖新增文件。
+- **构建产物现在跨平台一致**：`pnpm-workspace.yaml` 里钉住
+  `virtualStoreDirMaxLength: 60`。此前该值按平台取默认（Windows 60、其他 120），
+  而 tsdown 会把解析到的模块路径写进 `lib/client.js` 的 `//#region` 注释——
+  同一份源码因此在 Windows 与 Linux 上构建出不同字节，CI 的 `lib/` 同步校验
+  会失败（0.3.0 首次发布正是卡在这里）。钉成 60 后各平台截断一致，
+  且不改变任何已提交产物。新增 `.github/workflows/`：`validate.yml`（3 平台 ×
+  2 个 Node 版本跑门禁）与 `publish.yml`（走 npm Trusted Publishing / OIDC 发布，
+  不存长期 token、带 provenance）。
 
 ## [0.2.0] — 2026-10-06
 
