@@ -5,10 +5,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![DSH](https://img.shields.io/badge/DSH-0.2.0--rc.2-5965d8)](https://github.com/deepseek-ai/deepseek-harness)
 
-一个为 [DSH](https://github.com/deepseek-ai/deepseek-harness)（DeepSeek Harness）打造的插件，做两件事：
+一个为 [DSH](https://github.com/deepseek-ai/deepseek-harness)（DeepSeek Harness）打造的插件，做四件事：
 
 1. **接管侧栏的「工作区」浏览区**，把分组从**目录**上摘下来，变成**纯前端的项目归属**；
-2. **给每个项目一份工作文档**，并把它的**格式规范**注入会话——规范一变就提醒模型先问再迁移。
+2. **给每个项目一份工作文档**，并把它的**格式规范**注入会话——规范一变就提醒模型先问再迁移；
+3. **登记关联链接**：把项目联系到它的上游仓库（GitHub 等），并随会话一起注入；
+4. **让你看见注入了什么**：设置页显示插件此刻真正写进运行时上下文的那段文字，以及各状态下的分块差异。
 
 > **插件关掉即完全恢复官方行为**：注入与监听器随插件 fiber 销毁，零残留。
 
@@ -46,7 +48,11 @@ DSH 官方的工作区是**目录所有权**记录：一个会话属于某工作
 - **拖拽归类**——会话在项目之间拖动，或拖回「未分组」；
 - **项目自身的增删改排**——新建 / 重命名 / 删除 / 拖拽排序，标题唯一；
 - **新会话落点**——项目行 ＋ / 未分组 ＋ / 顶栏按钮，都落在「底层工作区」；
-- **搜索结果归属**——结果行显示所属**项目**，不是工作区。
+- **搜索结果归属**——结果行显示所属**项目**，不是工作区；
+- **关联链接**——给项目登记上游链接（GitHub 等），与「关联目录」并列在编辑对话框里；
+  **只作标记、不做拦截**：格式不对只提示，内容不改写、也不会因此存不进去；
+- **注入预览**——设置页直接显示插件**此刻真正会注入**的内容，
+  内容取自真实的渲染器而非另写的样本；并按段列出「空 / 一条 / 多条」各形态的差异。
 
 官方的 `@deepseek-ai/dsh-client-ui-workspace` 行由 `cordis.patch.yml` **禁用**——
 单槽位双占用、服务双提供是硬启动错误，不是合并。也因此界面 1:1 才成立。
@@ -184,21 +190,29 @@ pnpm check            # typecheck + build + 11 个校验脚本 + 探针（718 �
 
 ```bash
 # 1. 改版本号：package.json 的 version + CHANGELOG.md 加一段
-# 2. 全量门禁
+# 2. 全量门禁（其中 verify:release 会守住版本号/CHANGELOG/locale/打包清单一致）
 pnpm check
 # 3. 提交并打 tag
 git commit -am "chore: release vX.Y.Z"
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push && git push --tags
-# 4. 发布（prepublishOnly 会再跑一次 check）
-npm publish
+# 4. 建 GitHub Release —— 之后由 CI 发布，不再在本机跑 npm publish
+gh release create vX.Y.Z --verify-tag --title "vX.Y.Z" --notes-file <说明.md>
 ```
+
+**发布走 GitHub Actions + npm Trusted Publishing（OIDC），不存长期 token。**
+`.github/workflows/publish.yml` 在 Release 发布时触发 `npm publish --provenance`；
+本地 `npm publish` 只在 npm 侧尚未配置 trusted publisher 时用于首次发布
+（npm 没有"待生效的发布者"概念，第一次必须手工发）。
+
+排障时先看 `Publish npm` 工作流是否真的发布了——历史上它可能报
+`Report idempotent skip` 就结束，那说明该版本已存在，不是发布成功。
 
 ## 维护这份 fork
 
 `src/vendored/` **起点**是上游 `packages/client/ui-workspace/src/`（`dsh-v0.1.7-rc.2`）
 的逐字节副本，**但现在已不再逐字节一致**：项目分组需要分组缝，
-现有 **60 条结构性 patch、涉及 11 个文件**。当前来源版本是 **0.2.0-rc.2**。
+现有 **75 条结构性 patch、涉及 12 个文件**。当前来源版本是 **0.2.0-rc.2**。
 
 每一处都满足同一条不变量——**不传即等官方行为**——并且全部登记在
 [`src/vendored/README.md`](src/vendored/README.md) 的 patch 表里。

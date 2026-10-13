@@ -5,12 +5,16 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![DSH](https://img.shields.io/badge/DSH-0.2.0--rc.2-5965d8)](https://github.com/deepseek-ai/deepseek-harness)
 
-A [DSH](https://github.com/deepseek-ai/deepseek-harness) plugin that does two things:
+A [DSH](https://github.com/deepseek-ai/deepseek-harness) plugin that does four things:
 
 1. it **owns the sidebar's Workspace browser** and takes grouping off the **directory** model,
    making it a pure **front-end project assignment**;
 2. it gives every project a **work document** and injects that document's **format spec** into the
-   session — so when the spec changes, the model is told to ask before migrating.
+   session — so when the spec changes, the model is told to ask before migrating;
+3. it **registers related links** — pointing a project at its upstream repository (GitHub and the
+   like) — and injects those alongside the rest;
+4. it **shows you what gets injected**: the settings card renders the exact text this plugin writes
+   into the runtime context right now, plus how each segment differs between states.
 
 > **Disable the plugin and stock DSH is exactly what you get back**: injections and listeners are
 > torn down with the plugin's fiber, leaving nothing behind.
@@ -54,7 +58,13 @@ copy), with these layered on top:
 - **project CRUD** — create / rename / delete / drag-reorder, with unique titles;
 - **where New Session lands** — a project row's ＋, Ungrouped's ＋, and the shell button all land in
   the base Workspace;
-- **search result context** — a result row names its **project**, not a Workspace.
+- **search result context** — a result row names its **project**, not a Workspace;
+- **related links** — register a project's upstream links (GitHub and the like) beside its
+  directories in the edit dialog; they are **marked, never blocked**: a malformed one is flagged but
+  its text is kept, and it can always be saved;
+- **injection preview** — the settings card shows exactly what the plugin injects **right now**,
+  rendered by the real renderer rather than a second copy of the text, and lists how each segment
+  differs across the empty / one / several states.
 
 The official `@deepseek-ai/dsh-client-ui-workspace` row is **disabled** by `cordis.patch.yml`:
 two claimants of the single slot (and two providers of those services) would be a hard startup
@@ -207,21 +217,31 @@ argument.)
 
 ```bash
 # 1. bump: package.json's version + a new CHANGELOG.md section
-# 2. the full gate
+# 2. the full gate (verify:release checks version / CHANGELOG / locale / pack list agree)
 pnpm check
 # 3. commit and tag
 git commit -am "chore: release vX.Y.Z"
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push && git push --tags
-# 4. publish (prepublishOnly runs the gate again)
-npm publish
+# 4. create the GitHub Release — CI publishes from there, not this machine
+gh release create vX.Y.Z --verify-tag --title "vX.Y.Z" --notes-file <notes.md>
 ```
+
+**Publishing goes through GitHub Actions and npm Trusted Publishing (OIDC); no long-lived token is
+stored.** `.github/workflows/publish.yml` runs `npm publish --provenance` when a Release is
+published. A local `npm publish` is only for the very first release, before the npm side has a
+trusted publisher configured — npm has no "pending publisher" concept, so the first one has to be
+published by hand.
+
+When diagnosing, check whether the `Publish npm` run actually published: it may end with
+`Report idempotent skip`, which means the version already existed rather than that publishing
+succeeded.
 
 ## Maintaining the fork
 
 `src/vendored/` **started** as a byte-identical copy of upstream
 `packages/client/ui-workspace/src/` at `dsh-v0.1.7-rc.2`, but is **no longer byte-identical**:
-project grouping needed a grouping seam, and there are now **60 structural patches across 11 files**.
+project grouping needed a grouping seam, and there are now **75 structural patches across 12 files**.
 The current source version is **0.2.0-rc.2**.
 
 Every one satisfies the same invariant — **omitted means upstream behaviour** — and all are listed

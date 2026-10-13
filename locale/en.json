@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Project Groups",
-    "description": "Group sidebar sessions by project — a label, not a directory — and give each one a work document whose format follows a spec. Disabling the plugin restores the official sidebar."
+    "description": "Group sidebar sessions by project — a label, not a directory — give each one a work document whose format follows a spec, and register its related links. The settings card previews exactly what the plugin injects into the runtime context. Disabling the plugin restores the official sidebar."
   }
 }

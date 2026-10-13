@@ -1,0 +1,80 @@
+name: Validate
+
+# A build and contract gate rather than a behavioural one.
+#
+# `pnpm check` is the full gate, and CI runs all of it **except `verify:bundle`**:
+# that one reads the locally installed DSH's `app.asar` to compare the bundle's
+# resolved externals, so it only runs on a machine with DSH — which is also where
+# a release is cut. Everything else in the gate is pure Node, including the
+# browser probes: they stand up their own fake environment rather than driving a
+# live DSH, so they are safe to run here.
+#
+# The probes that DO drive a live instance (`probe:settings-card`,
+# `probe:cross-group`, `probe:row-key-motion` and friends) are not in `pnpm check`
+# and are not run here; they are hand-run against a real DSH.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Node ${{ matrix.node }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # tsdown 0.22 requires ^22.18.0 || >=24.11.0, so neither older Node 22
+        # nor Node 23 is usable here. The floor matches `engines`.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [22.18.0, 24]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Type-check the sources
+        run: pnpm run typecheck
+      - name: Build the node and client bundles
+        run: pnpm run build
+      - name: Assert the committed bundles are in sync with src/
+        # The build is deterministic, so a dirty `lib/` here means a source
+        # change was committed without its regenerated artifact.
+        run: git diff --exit-code -- lib/
+      - name: Verify the vendored patch ledger
+        # Every patch id must still match a row, and the official ui-workspace
+        # row must still be disabled rather than replaced.
+        run: pnpm run verify:patch
+      - name: Verify the grouping seam
+        run: pnpm run verify:grouping
+      - name: Verify New Session placement
+        run: pnpm run verify:new-session
+      - name: Verify the project model
+        run: pnpm run verify:projects
+      - name: Verify the Host surface
+        run: pnpm run verify:project-host
+      - name: Verify directory handling
+        run: pnpm run verify:project-directories
+      - name: Verify the injected runtime context
+        run: pnpm run verify:project-injection
+      - name: Verify document specs
+        run: pnpm run verify:doc-spec
+      - name: Verify the locale dictionaries
+        # zh/en key parity, placeholder parity, and no unreferenced key.
+        run: pnpm run verify:locales
+      - name: Verify the release facts
+        # Version agreement across package.json / CHANGELOG / tarball name,
+        # locale descriptions matching the feature set, the two READMEs staying
+        # structurally equal, and `files` covering what ships.
+        run: pnpm run verify:release
+      - name: Run the self-contained probes
+        run: pnpm run probe
