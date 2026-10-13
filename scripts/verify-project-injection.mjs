@@ -20,7 +20,7 @@ import { register } from 'node:module'
 
 register('./lib/ts-loader.mjs', import.meta.url)
 
-const { renderProjectInjection, shouldAskSpecDrift, PROJECT_CONTEXT_OPEN, PROJECT_CONTEXT_CLOSE, DIRECTORY_UNSET, matchSpecDriftChoice, SPEC_DRIFT_LABELS, specDriftQuestion, SPEC_DRIFT_QUESTION_ID } = await import('../src/injection.ts')
+const { renderProjectInjection, shouldAskSpecDrift, PROJECT_CONTEXT_OPEN, PROJECT_CONTEXT_CLOSE, DIRECTORY_UNSET, LINK_UNSET, matchSpecDriftChoice, SPEC_DRIFT_LABELS, specDriftQuestion, SPEC_DRIFT_QUESTION_ID } = await import('../src/injection.ts')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -136,11 +136,11 @@ const withDoc = (document) => renderProjectInjection({ project: project('项目�
 
   const filed = render(project('项目一', []))
   check('a filed project announces its directories too',
-    filed.includes(decl('`owning project` `relevant directories`')), JSON.stringify(filed))
+    filed.includes(decl('`owning project` `relevant directories` `related links`')), JSON.stringify(filed))
 
   const documented = withDoc({ docPath: DOC, specMode: 'none' })
   check('the document feature adds its segment to the declaration',
-    documented.includes(decl('`owning project` `relevant directories` `work document`')),
+    documented.includes(decl('`owning project` `relevant directories` `related links` `work document`')),
     JSON.stringify(documented))
 
   // A project WITH links announces them, and the segment sits between the directories and
@@ -157,20 +157,26 @@ const withDoc = (document) => renderProjectInjection({ project: project('项目�
       decl('`owning project` `relevant directories` `related links` `work document`'),
     ))
 
-  check('a project with no links never announces the segment',
-    !filed.includes('related links') && !documented.includes('related links'),
+  // A filed project announces both of its list fields whether or not they carry anything: the
+  // declaration names the fields the block is about, not the ones that happen to be non-empty.
+  check('a project with no links still announces the segment',
+    filed.includes(decl('`owning project` `relevant directories` `related links`'))
+    && documented.includes(decl('`owning project` `relevant directories` `related links` `work document`')),
     JSON.stringify(filed))
 }
 
 console.log('\n=== renderer: the link lines ===')
 
-// No links, no line at all — unlike the directory block, which states its unset case.
-// A project with no links is the normal state, so a placeholder would put a line about an
-// absent thing into every request.
+// No links: a sentence, exactly as the directory block does. The two fields are equal members of
+// one record, edited through the same dialog, so an unset link is a state to name rather than a
+// reason to drop the segment. (An earlier version rendered nothing here, and its comment claimed
+// the asymmetry was deliberate — it was not the user's specification.)
 {
   const text = render(project('项目一', ['C:\\a']))
-  check('a project with no links renders no link line',
-    !text.includes('Related link'), JSON.stringify(text))
+  check('a project with no links states the unset link',
+    text.includes(`Related link: ${LINK_UNSET}`), JSON.stringify(text))
+  check('...and prints it under the directory line',
+    text.includes(`Relevant directory: C:\\a\nRelated link: ${LINK_UNSET}`), JSON.stringify(text))
 }
 
 // The label follows the count, the same rule the directory lines use.
@@ -197,26 +203,21 @@ console.log('\n=== renderer: the link lines ===')
     JSON.stringify(text))
 }
 
-// Blank entries never reach the model, and the declaration agrees about it.
-//
-// The renderer filters rather than trusting the store, because records written before the
-// Host dropped blanks do exist — one of them produced a bare `- ` in this session's own
-// runtime context. The consistency half matters as much as the filtering: a declaration that
-// announced `related links` while rendering nothing would promise a field the block does not
-// carry, which is the one thing `declaredSegments` exists to prevent.
+// Blank entries never reach the model: the renderer filters rather than trusting the store,
+// because records written before the Host dropped blanks do exist — one of them produced a bare
+// `- ` in this session's own runtime context. What survives filtering is then rendered by count,
+// so an all-blank list lands on the unset sentence rather than on an empty list or bare dashes.
 {
   const allBlank = render(project('项目一', ['C:\\a'], ['', '   ', '\t']))
-  check('an all-blank list renders no link line',
-    !allBlank.includes('Related link'), JSON.stringify(allBlank))
+  check('an all-blank list renders the unset link sentence',
+    allBlank.includes(`Related link: ${LINK_UNSET}`), JSON.stringify(allBlank))
   check('...and the block carries no bare dash line',
     !allBlank.includes('\n- '), JSON.stringify(allBlank))
-  check('...and the declaration does NOT announce the segment',
-    !allBlank.includes('`related links`'), JSON.stringify(allBlank))
-  check('...while the directories segment is still announced',
-    allBlank.includes(decl('`owning project` `relevant directories`')), JSON.stringify(allBlank))
+  check('...and the declaration announces the segment',
+    allBlank.includes(decl('`owning project` `relevant directories` `related links`')),
+    JSON.stringify(allBlank))
 
-  // Mixed: the blanks vanish, the real link stays, and the segment is announced — because
-  // after filtering there IS something to announce.
+  // Mixed: the blanks vanish, the real link stays, and the singular label is used.
   const mixed = render(project('项目一', ['C:\\a'], ['', 'https://example.com/only', '  ']))
   check('a mixed list keeps only the real link',
     mixed.includes('Related link: https://example.com/only') && !mixed.includes('Related links:'),
@@ -231,6 +232,29 @@ console.log('\n=== renderer: the link lines ===')
     padded.includes('Related link:   https://example.com/padded  '), JSON.stringify(padded))
 }
 
+// Shape for shape, the link segment mirrors the directory segment.
+//
+// This is the property the user specified and an earlier implementation broke: 「空或一个就单数，
+// 多个就复数」 applies to both fields, and 「不存在四段都为空」 — an unset field is named rather than
+// dropped. Asserted as a parallel, so a future change to one segment alone fails here.
+{
+  const both = (dirs, links) => render(project('项目一', dirs, links))
+  const unset = both([], [])
+  const single = both(['C:\\a'], ['https://example.com/x'])
+  const multiple = both(['C:\\a', 'C:\\b'], ['https://example.com/x', 'https://example.com/y'])
+
+  check('unset: both segments name themselves',
+    unset.includes(`Relevant directory: ${DIRECTORY_UNSET}`)
+    && unset.includes(`Related link: ${LINK_UNSET}`), JSON.stringify(unset))
+  check('single: both segments take the singular label',
+    single.includes('Relevant directory: C:\\a')
+    && single.includes('Related link: https://example.com/x'), JSON.stringify(single))
+  check('multiple: both segments take the plural label over a list',
+    multiple.includes('Relevant directories:') && multiple.includes('Related links:')
+    && multiple.includes('- C:\\a\n- C:\\b')
+    && multiple.includes('- https://example.com/x\n- https://example.com/y'), JSON.stringify(multiple))
+}
+
 // The frame is what bounds a block that now carries user-supplied names and paths.
 // Asserted as the boundary itself: counting `<` would pass on any markup at all.
 {
@@ -242,7 +266,8 @@ console.log('\n=== renderer: the link lines ===')
     text.split(PROJECT_CONTEXT_OPEN).length === 2
     && text.split(PROJECT_CONTEXT_CLOSE).length === 2, JSON.stringify(text))
   check('the declaration is the first content inside the frame',
-    text.split('\n')[1] === decl('`owning project` `relevant directories`'), JSON.stringify(text))
+    text.split('\n')[1] === decl('`owning project` `relevant directories` `related links`'),
+    JSON.stringify(text))
 }
 
 // The unreachable combination, pinned so a refactor cannot quietly allow it: a
@@ -409,16 +434,19 @@ console.log('\n=== renderer: the document lines ===')
     && render(project('x', [])).length > 0)
 }
 
-// For a FILED project the shape depends only on the directory count, so the model
-// sees the same block regardless of which project it is. The counts include the
-// frame (2 lines), the declaration (1) and a blank line before the frame's close.
+// For a FILED project the shape depends only on the two list counts, so the model sees
+// the same block regardless of which project it is. The counts include the frame (2
+// lines), the declaration (1), a blank line before the frame's close, the owning-project
+// line, one directory line (or a heading plus one per entry) and one link line (or a
+// heading plus one per entry) — a filed project always has both list lines now, even when
+// a list is empty and states itself as unset.
 {
   const lines = (text) => text.split('\n').length
-  check('a filed block’s shape depends only on the directory count',
-    lines(render(project('a', []))) === 6
-    && lines(render(project('b', []))) === 6
-    && lines(render(project('a', ['x']))) === 6
-    && lines(render(project('b', ['y', 'z']))) === 8)
+  check('a filed block’s shape depends only on the two list counts',
+    lines(render(project('a', []))) === 7
+    && lines(render(project('b', []))) === 7
+    && lines(render(project('a', ['x']))) === 7
+    && lines(render(project('b', ['y', 'z']))) === 9)
   check('the unfiled block is shorter than any filed block',
     lines(render(undefined)) === 5)
 }

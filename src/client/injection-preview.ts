@@ -130,10 +130,8 @@ export interface InjectionVariant {
   readonly key: string
   /** The label's dictionary key. */
   readonly labelKey: ProjectGroupsSettingsKey
-  /** The rendered segment; `''` for the one shape that renders nothing. */
+  /** The rendered segment, always non-empty — every shape states something. */
   readonly text: string
-  /** The explanation shown instead of text, for that shape only. */
-  readonly hintKey?: ProjectGroupsSettingsKey | undefined
 }
 
 /** One segment's shapes. */
@@ -146,19 +144,44 @@ export interface InjectionDiffGroup {
 }
 
 /**
+ * The labels that open a segment, in the order the block renders them.
+ *
+ * `segmentFrom` needs these because the renderer returns one string for the whole block: a
+ * segment runs from its own opening label to whichever label comes next. This is therefore the
+ * **second** place that knows the block's segment order, and the one that can drift — the
+ * renderer's own order is the first. Kept beside the samples rather than in the renderer because
+ * the renderer has no reason to expose its internals for a preview.
+ */
+const SEGMENT_STARTS = [
+  'Owning project:',
+  'Relevant directory:',
+  'Relevant directories:',
+  'Related link:',
+  'Related links:',
+  'Project document:',
+] as const
+
+/**
  * Take one segment out of a rendered block.
  *
  * The panel shows segments, so it does not repeat the frame and the declaration paragraph once per
  * group — the block as a whole is what the main display is for.
+ *
+ * The segment ends at the next known start, not at the end of the block. An earlier version sliced
+ * to the last line, which made the directory segment swallow the link lines that follow it — the
+ * two lists sit adjacent in the block by design, so every directory sample showed a link line too.
  * @param text - a rendered block.
  * @param from - the first line of the segment wanted.
- * @returns that line to the end of the block, frame excluded.
+ * @returns that segment, frame excluded.
  */
 function segmentFrom(text: string, from: string): string {
   const lines = text.split('\n')
   const at = lines.findIndex(line => line.startsWith(from))
-  // The last line is always the closing frame; dropping it keeps the sample to the segment.
-  return at === -1 ? text : lines.slice(at, -1).join('\n').trimEnd()
+  if (at === -1) return text
+  // The last line is always the closing frame; start by dropping it, then stop at the next start.
+  const body = lines.slice(at, -1)
+  const next = body.findIndex((line, index) => index > 0 && SEGMENT_STARTS.some(start => line.startsWith(start)))
+  return (next === -1 ? body : body.slice(0, next)).join('\n').trimEnd()
 }
 
 /**
@@ -214,9 +237,9 @@ export function injectionDiffGroups(
       key: 'links',
       titleKey: 'diffLinksTitle',
       variants: [
-        // The one shape with nothing to show: unlike an unset directory, an empty link list renders
-        // **no line at all** (`renderLinkLines` returns `[]`). That contrast is why it is listed.
-        { key: 'none', labelKey: 'diffLinksNone', text: '', hintKey: 'diffLinksNoneHint' },
+        // Three shapes for three counts, matching the directory group above: an unset link states
+        // itself rather than vanishing, so no shape here is empty and none needs a substitute note.
+        { key: 'none', labelKey: 'diffLinksNone', text: segmentFrom(renderProject([dir], []), 'Related link:') },
         { key: 'one', labelKey: 'diffLinksOne', text: segmentFrom(renderProject([dir], [link]), 'Related link:') },
         { key: 'many', labelKey: 'diffLinksMany', text: segmentFrom(renderProject([dir], PREVIEW.links), 'Related links:') },
       ],

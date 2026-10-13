@@ -64,6 +64,16 @@ export const PROJECT_CONTEXT_CLOSE = '</project-context>'
  */
 export const DIRECTORY_UNSET = 'The user has not yet set up the relevant directory.'
 
+/**
+ * Shown when a filed project has no link yet.
+ *
+ * The directory sentence one field over, and deliberately the same shape: a directory and a link
+ * are equal members of one record, edited through the same dialog, and the block names an unset
+ * field rather than dropping its segment for either of them. The label follows the count for both
+ * — singular for one, plural for more — so the two segments stay symmetrical in every state.
+ */
+export const LINK_UNSET = 'The user has not yet set up the relevant link.'
+
 /** Locales this plugin renders user-facing text for. */
 export type InjectionLocale = 'zh' | 'en'
 
@@ -308,15 +318,12 @@ export function renderProjectInjection(input: ProjectInjectionInput): string {
 function declaredSegments(input: ProjectInjectionInput): string {
   const segments = ['`owning project`']
   if (input.project !== undefined) segments.push('`relevant directories`')
-  // Already conditional on the project existing: a Session in no project has no record to
-  // hang links off. The **same filter `renderLinkLines` applies** is applied here, and the
-  // two call it independently rather than passing a filtered list around — one shared
-  // function called twice cannot disagree with itself, whereas a threaded parameter can be
-  // dropped at either end. Without it, a list of blank entries would announce the segment
-  // while rendering nothing: a declaration promising a field the block does not carry.
-  if (input.project !== undefined && nonBlankLinks(input.project.links).length > 0) {
-    segments.push('`related links`')
-  }
+  // Same rule as the directories above, and for the same reason: a filed project *has* both
+  // fields, so both segments exist whether or not they carry anything yet. The declaration names
+  // the fields the block is about, not the fields that happen to be non-empty — and since
+  // `renderLinkLines` now always prints a line for a filed project, there is nothing for this to
+  // disagree with.
+  if (input.project !== undefined) segments.push('`related links`')
   if (input.document !== undefined) segments.push('`work document`')
   return segments.join(' ')
 }
@@ -366,23 +373,26 @@ function renderDirectoryLines(directories: readonly string[]): string[] {
 /**
  * The link lines, whose label follows the count on the same rule as the directories.
  *
- * A project with no links contributes **nothing at all** — no heading, no placeholder.
- * That asymmetry with the directory block is deliberate: an unset directory is a state
- * the user can act on in «编辑项目», so naming it is useful, whereas "no links" is the
- * normal state of a project and stating it would put a line about an absent thing into
- * every request for no benefit.
+ * Three shapes for three counts, exactly as the directory block has: an unset link states itself
+ * with a sentence, one link takes the singular label, and several take the plural over a list.
+ *
+ * ⚠️ The unset case used to render **nothing at all**, and a comment here claimed the asymmetry
+ * with the directory block was deliberate. It was not the user's decision: the 2026-10-08
+ * blank-filtering fix implemented "drop the blank entries" as "drop the whole segment", and the
+ * rationale was written afterwards to fit. The user's own specification — 「空或一个就单数，多个就复数」
+ * and 「不存在四段都为空…只是没有目录，没有链接没有文档」 — is that both fields behave alike.
  *
  * Joined to the directory lines rather than separated by a blank line: both describe the
  * same project at the same level, and a blank line would read as a second section.
  * @param links - the project's associated links, in display order.
- * @returns one or more lines, or none.
+ * @returns one or more lines.
  */
 function renderLinkLines(links: readonly string[]): string[] {
   // Filtered here rather than trusting the caller: the injected block must never depend on
   // the store being clean. Records written before the Host dropped blanks do exist — one of
   // them put a bare `- ` in this session's own runtime context.
   const present = nonBlankLinks(links)
-  if (present.length === 0) return []
+  if (present.length === 0) return [`Related link: ${LINK_UNSET}`]
   if (present.length === 1) return [`Related link: ${present[0]}`]
   return ['Related links:', ...present.map(link => `- ${link}`)]
 }

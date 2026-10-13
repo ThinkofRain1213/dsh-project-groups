@@ -137,13 +137,7 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
                 {group.variants.map(variant => (
                   <div key={variant.key} className={css.injectionVariant}>
                     <div className={css.injectionVariantLabel}>{t(variant.labelKey)}</div>
-                    {variant.text === ''
-                      ? (
-                        <div className={css.injectionVariantEmpty}>
-                          {variant.hintKey === undefined ? '' : t(variant.hintKey)}
-                        </div>
-                      )
-                      : <pre className={css.injectionText}>{variant.text}</pre>}
+                    <pre className={css.injectionText}>{variant.text}</pre>
                   </div>
                 ))}
               </div>

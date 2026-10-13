@@ -710,13 +710,3 @@
   font-size: 12px;
   line-height: 18px;
 }
-
-/* The one shape that renders nothing; says so instead of showing an empty box. */
-.injectionVariantEmpty {
-  padding: 8px 12px;
-  border: 0.5px dashed var(--dsw-alias-border-l2);
-  border-radius: var(--dsw-radius-lg);
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
-  line-height: 18px;
-}
