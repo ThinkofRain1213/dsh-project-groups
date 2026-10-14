@@ -212,7 +212,12 @@ try {
   // failure: a request left standing is seen again when the card **remounts**, and the chooser
   // pops open with nobody having asked for it.
   const cancel = chooserDialog().getByRole('button', { name: '取消' }).first()
-  if (await cancel.count() > 0) {
+  const cancelCount = await cancel.count()
+  // Asserted rather than skipped. The line right below asserts the chooser ended up closed, which a
+  // chooser that was never open also satisfies — so a silent skip here made that assertion pass for
+  // the wrong reason instead of reporting the precondition that failed.
+  check('选择弹窗已打开（取消的前提）', cancelCount > 0, `${String(cancelCount)} 个`)
+  if (cancelCount > 0) {
     await cancel.click({ force: true })
     await page.waitForTimeout(1200)
   }
@@ -235,7 +240,12 @@ try {
   await newSession().click({ force: true })
   await page.waitForTimeout(5000)
   await dismiss()
-  if (await missingDialog().count() > 0) {
+  const missingCount = await missingDialog().count()
+  // Asserted where it happens. As a bare `if` this was a silent skip: had the dialog failed to
+  // appear, the cancel click simply never happened and nothing said so — the run went on and any
+  // later complaint would point at whatever section consumed the state, not at this precondition.
+  check('打开新会话后出现缺失弹窗（本节的起点）', missingCount > 0, `${String(missingCount)} 个`)
+  if (missingCount > 0) {
     await missingDialog().getByRole('button', { name: '取消' }).first().click({ force: true })
     await page.waitForTimeout(1200)
   }
@@ -247,7 +257,12 @@ try {
   await page.waitForTimeout(3000)
   await dismiss()
   const entry = page.locator('text=dsh-project-groups').first()
-  if (await entry.count() > 0) {
+  const entryCount = await entry.count()
+  // The one the review called out by name. This selector is a localized text match, so a rename or
+  // a translation change made the click silently vanish and the failure surfaced later as the
+  // misleading 「卡片确实重新挂载了（前提成立）」 — blaming the remount instead of the selector.
+  check('插件面板里能找到 dsh-project-groups 行（重新挂载的前提）', entryCount > 0, `${String(entryCount)} 个`)
+  if (entryCount > 0) {
     await entry.click({ force: true })
     await page.waitForTimeout(3000)
     await dismiss()
