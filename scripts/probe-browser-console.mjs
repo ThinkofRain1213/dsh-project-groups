@@ -10,6 +10,7 @@
  * Usage: node scripts/probe-browser-console.mjs <baseUrlWithToken>
  */
 import { chromium } from 'playwright-core'
+import { redactToken } from './lib/redact.mjs'
 
 const url = process.argv[2]
 if (url === undefined) {
@@ -23,7 +24,9 @@ const lines = []
 page.on('console', (message) => { lines.push(`[${message.type()}] ${message.text()}`) })
 page.on('pageerror', (error) => { lines.push(`[pageerror] ${error.message}`) })
 page.on('requestfailed', (request) => {
-  lines.push(`[requestfailed] ${request.method()} ${request.url()} — ${request.failure()?.errorText ?? ''}`)
+  // Redacted: the dev-server URL carries `?token=...`, and this fires exactly when
+  // a request is failing — i.e. on the runs whose output someone reads and pastes.
+  lines.push(`[requestfailed] ${request.method()} ${redactToken(request.url())} — ${request.failure()?.errorText ?? ''}`)
 })
 
 await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })

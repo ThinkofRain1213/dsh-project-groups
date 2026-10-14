@@ -14,12 +14,20 @@ import { openSync, readSync, closeSync, existsSync } from 'node:fs'
 
 /**
  * Locate the installed DSH `app.asar`, if this machine has one.
+ *
+ * Resolved from the environment rather than a literal path: `C:/Users/<name>/...`
+ * is only right on the machine that wrote it, and it puts a real username in the
+ * repository. `LOCALAPPDATA` is where the installer places a per-user install on
+ * Windows; the `Program Files` entry covers a machine-wide one. A caller that
+ * knows the path can still pass it explicitly.
  * @returns the absolute path, or undefined when no install is present.
  */
 export function findInstalledAsar() {
+  const local = process.env.LOCALAPPDATA ?? ''
+  const programFiles = process.env.ProgramFiles ?? 'C:/Program Files'
   const candidates = [
-    'C:/Users/Think/AppData/Local/Programs/DeepSeek Harness/resources/app.asar',
-    `${process.env.LOCALAPPDATA ?? ''}/Programs/DeepSeek Harness/resources/app.asar`,
+    local === '' ? '' : `${local}/Programs/DeepSeek Harness/resources/app.asar`,
+    `${programFiles}/DeepSeek Harness/resources/app.asar`,
   ]
   return candidates.find(candidate => candidate !== '' && existsSync(candidate))
 }

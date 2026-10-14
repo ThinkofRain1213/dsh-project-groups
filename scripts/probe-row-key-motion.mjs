@@ -36,6 +36,7 @@
 import { spawn } from 'node:child_process'
 import { chromium } from 'playwright-core'
 import { installRowKeyHelpers } from './lib/row-key.mjs'
+import { redactToken } from './lib/redact.mjs'
 
 const [exe, asarRoot, dshHome, profile = 'pg'] = process.argv.slice(2)
 if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
@@ -57,7 +58,7 @@ const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--
 })
 let out = ''
 const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${out.slice(-1500)}`)), 120_000)
+  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
   child.stdout.on('data', (chunk) => {
     out += String(chunk)
     const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
@@ -177,6 +178,19 @@ const startSampler = (windowMs) => page.evaluate((windowMs) => {
   }
   sample()
   window.__sampler = { samples, animations, restore: () => { Element.prototype.animate = original } }
+  // Safety net for the case `restore()` never runs: it is called from
+  // `readSampler()`, so a throw between `startSampler()` and that call — a failing
+  // `clickPlus`, a timeout — would otherwise leave `Element.prototype.animate`
+  // patched for the rest of the page's life, silently corrupting every later
+  // measurement window. `page.evaluate` cannot be relied on to run then, so the
+  // restore is also registered on `pagehide`, which fires on navigation and close.
+  //
+  // Patching `Element.prototype` is still against the usual rule; it stays because
+  // a fade and a glide are both `element.animate` calls and the keyframes are the
+  // only place the two are distinguishable. This net bounds the damage.
+  window.addEventListener('pagehide', () => {
+    if (Element.prototype.animate !== original) Element.prototype.animate = original
+  })
 }, windowMs)
 
 const readSampler = () => page.evaluate(() => {

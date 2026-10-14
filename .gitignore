@@ -5,3 +5,15 @@ Thumbs.db
 
 # Pack output (pnpm pack / npm pack) — released via npm, never committed.
 *.tgz
+
+# Local credentials and key material. This project reads `DSH_HOME` and
+# `NODE_ENV` from the environment, so a local `.env` is a normal thing to create
+# while developing — and a committed one would leak configuration along with
+# anything else stashed in it. `*.example` stays tracked so a template can ship.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx

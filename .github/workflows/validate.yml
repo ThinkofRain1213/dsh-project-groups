@@ -33,7 +33,10 @@ jobs:
         node: [22.18.0, 24]
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      # Third-party action pinned to a commit SHA rather than the mutable `v4`
+      # tag, so a tag move cannot change what runs here. The trailing comment
+      # records the human-readable version; update both together.
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 12.4.1
       - uses: actions/setup-node@v7

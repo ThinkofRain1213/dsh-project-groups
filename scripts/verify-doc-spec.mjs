@@ -91,12 +91,26 @@ console.log('\n=== $DSH_HOME resolution ===')
 {
   const ctx = { get: () => undefined }
   check('the document path is under the feature directory',
-    documentPath(ctx, 'p1').includes('project-groups'), documentPath(ctx, 'p1'))
-  check('the document path carries the .md extension', documentPath(ctx, 'p1').endsWith('p1.md'))
+    (documentPath(ctx, 'p1') ?? '').includes('project-groups'), String(documentPath(ctx, 'p1')))
+  check('the document path carries the .md extension', (documentPath(ctx, 'p1') ?? '').endsWith('p1.md'))
   check('the built-in spec path points at spec/PROJECT-SPEC.md',
     BUILT_IN_SPEC_PATH.endsWith('PROJECT-SPEC.md'))
   check('the rewrite flow path points at spec/REWRITE-FLOW.md',
     REWRITE_FLOW_PATH.endsWith('REWRITE-FLOW.md'))
+}
+
+// The two path builders enforce one boundary. `projectId` is generated as a UUID
+// and read back from a stored record, so an id carrying a separator or a parent
+// hop is not reachable through this plugin's own writes — but a record edited on
+// disk could carry one, and joining it would address a file outside the feature
+// directory. Asserted here so the guard cannot be dropped silently.
+{
+  const ctx = { get: () => undefined }
+  const bad = ['..', '../x', 'a/b', 'a\\b', '', '.hidden', 'x'.repeat(129), 'a\u0000b']
+  for (const id of bad) {
+    check(`documentPath rejects ${JSON.stringify(id)}`, documentPath(ctx, id) === undefined)
+  }
+  check('documentPath still accepts a UUID', documentPath(ctx, 'f47ac10b-58cc-4372-a567-0e02b2c3d479') !== undefined)
 }
 
 console.log('\n=== resolveSpec: override, global, and the stale cases ===')

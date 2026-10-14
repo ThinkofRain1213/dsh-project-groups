@@ -22,7 +22,8 @@
  */
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
+import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
 
 const [exe, asarRoot, dshHome, profile = 'pg'] = process.argv.slice(2)
@@ -45,7 +46,7 @@ const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--
 })
 let out = ''
 const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${out.slice(-1500)}`)), 120_000)
+  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
   child.stdout.on('data', (chunk) => {
     out += String(chunk)
     const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
@@ -228,6 +229,24 @@ try {
   const initial = await rpc('workspace/initializeDefault', {})
   const defaultWorkspace = initial.value?.workspace ?? null
   console.log(`  默认工作区: ${String(defaultWorkspace?.path)}`)
+  // Guarded before `workspace/delete`: this section removes a real registration so
+  // the dialog has something to repair, and the default directory derives from the
+  // OS Documents folder rather than `DSH_HOME` — so on an ordinary machine it is
+  // the user's own `~/Documents/.../default-workspace`. Mutating that is a real
+  // side effect on state outside this probe's sandbox, and it is not worth a check
+  // the surrounding comment already records as unable to detect the ordering bug
+  // (the directory exists, so `create` succeeds either way).
+  //
+  // Sections 1, 2 and 5 cover the same ordering with directories this probe makes.
+  // Skipping here is therefore a coverage decision, not a gap: the alternative is
+  // damaging the user's install to re-test what those three already test.
+  const defaultPath = typeof defaultWorkspace?.path === 'string' ? defaultWorkspace.path : ''
+  const insideSandbox = defaultPath !== '' && resolve(defaultPath).startsWith(resolve(dshHome) + sep)
+  if (!insideSandbox) {
+    console.log(`  ⚠️ 跳过第 6 节：默认工作区不在隔离的 DSH_HOME 内（${defaultPath}）`)
+    console.log('     —— 这一节会删除真实注册，代价高于它覆盖的那条断言（见上方注释）')
+    check('6) 默认工作区在沙箱外 ⇒ 跳过删除（不损坏用户数据）', true)
+  } else {
   await rpc('workspace/delete', { request: { workspaceId: defaultWorkspace.workspaceId } })
   await rpc('projectGroups/setBaseWorkspace', { request: { mode: 'default' } })
   await page.waitForTimeout(1200)
@@ -269,6 +288,7 @@ try {
   console.log(`  落在: ${String(defaultLanded)}  弹窗: ${String(await missingDialog().count())}`)
   check('6) 不再弹缺失弹窗', await missingDialog().count() === 0)
   check('6) ＋ 落在重建后的工作区', defaultLanded !== null, String(defaultLanded))
+  }
 
   console.log('')
   console.log('=== 结果 ===')

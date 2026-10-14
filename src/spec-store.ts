@@ -82,10 +82,41 @@ export function specsDirectory(ctx: Context): string {
 /**
  * @param ctx - Host context.
  * @param projectId - owning project.
- * @returns the absolute path of that project's document.
+ * @returns the absolute path of that project's document, or undefined when the id
+ * is not a usable path segment. Returned rather than thrown: this runs while
+ * assembling an injection, and a corrupt record must drop the document half
+ * instead of failing the request.
  */
-export function documentPath(ctx: Context, projectId: string): string {
+export function documentPath(ctx: Context, projectId: string): string | undefined {
+  if (!isSafePathSegment(projectId)) return undefined
   return join(harnessHome(ctx), FEATURE_DIR, `${projectId}${SPEC_EXTENSION}`)
+}
+
+/**
+ * Whether an id is safe as a single path segment.
+ *
+ * The same boundary {@link isSafeSpecName} draws for uploaded specs, applied to a
+ * value that reaches a path builder from somewhere else. `projectId` is generated
+ * as a UUID, but it is read back from a stored domain record, and the domain
+ * parses `projects` keys as plain strings — so a record edited on disk (or a
+ * future caller passing a user-influenced id) could carry `..`, a separator, or a
+ * control character and resolve outside `$DSH_HOME/project-groups`.
+ *
+ * Unreachable through this plugin's own writes today; checked anyway, because the
+ * two path builders should enforce one rule rather than one enforcing it and the
+ * other trusting its input.
+ * @param id - candidate path segment.
+ * @returns true when the id may be joined onto the feature directory.
+ */
+export function isSafePathSegment(id: string): boolean {
+  if (id.length === 0 || id.length > 128) return false
+  if (id.includes('/') || id.includes('\\')) return false
+  // A bare `.`/`..` is a directory reference, not an id; a leading dot would also
+  // hide the document from a listing.
+  if (id.startsWith('.')) return false
+  /* eslint-disable-next-line no-control-regex -- rejecting control characters is the point */
+  if (/[\u0000-\u001f]/.test(id)) return false
+  return true
 }
 
 /** @returns the absolute path of one uploaded spec, or undefined for a bad name. */

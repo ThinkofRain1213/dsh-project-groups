@@ -40,36 +40,56 @@ try {
   // A blank document: nothing else can log, so every captured line belongs to React.
   await page.setContent('<!doctype html><html><body><div id="root"></div></body></html>')
 
-  const result = await page.evaluate(async ({ reactSource, reactDomSource, schedulerSource }) => {
-    // React's development build reads `process.env.NODE_ENV`; the browser has no
-    // `process`, so the shim is what makes the dev build runnable here at all.
-    window.process = { env: { NODE_ENV: 'development' } }
+  // React's development builds are CommonJS and the browser has no loader, so each
+  // one is wrapped in a real `<script>` element by `addScriptTag` rather than run
+  // through the `Function` constructor.
+  //
+  // Functionally the two are close — both execute source that came from
+  // `node_modules` — but a script tag is how a browser normally evaluates a
+  // bundle, and it keeps an eval-shaped construct out of the probes. A reader
+  // copying this file as a template copies a loader, not `new Function(...)`.
+  //
+  // The wrapper supplies the three names a CJS module expects:
+  //   - `module` / `exports`, captured back onto `window` after the source runs;
+  //   - `require`, closed over the modules already loaded, in dependency order
+  //     (`react` → `scheduler` → `react-dom`).
+  //
+  // `process` is shimmed because the development builds read
+  // `process.env.NODE_ENV`; without it the dev build throws on load and the probe
+  // would report "no nesting warning" for a reason unrelated to nesting.
+  const loadModule = async (name, source, deps) => {
+    const depMap = Object.entries(deps)
+      .map(([spec, value]) => `${JSON.stringify(spec)}: window[${JSON.stringify(value)}]`)
+      .join(', ')
+    await page.addScriptTag({
+      content: `
+        window.process = window.process || { env: { NODE_ENV: 'development' } };
+        (function () {
+          var module = { exports: {} };
+          var exports = module.exports;
+          var __deps = { ${depMap} };
+          var require = function (spec) {
+            if (Object.prototype.hasOwnProperty.call(__deps, spec)) return __deps[spec];
+            throw new Error(${JSON.stringify(name)} + ' requires ' + spec);
+          };
+          ${source}
+          window[${JSON.stringify(name)}] = module.exports;
+        })();
+      `,
+    })
+  }
 
-    /** Load one CommonJS source into a module object. */
-    const loadModule = (source, requireFn) => {
-      const module = { exports: {} }
-      const factory = new Function('module', 'exports', 'require', source)
-      factory(module, module.exports, requireFn)
-      return module.exports
-    }
+  await loadModule('__react', reactSource, {})
+  await loadModule('__scheduler', schedulerSource, {})
+  await loadModule('__reactDom', reactDomSource, { react: '__react', scheduler: '__scheduler' })
 
+  const result = await page.evaluate(async () => {
     let React
     let ReactDOM
     try {
-      // Order matters: ReactDOM resolves both `react` and `scheduler` through the
-      // require function handed to it, so both must already be loadable.
-      let scheduler
-      React = loadModule(reactSource, (spec) => {
-        throw new Error(`react requires ${spec}`)
-      })
-      scheduler = loadModule(schedulerSource, (spec) => {
-        throw new Error(`scheduler requires ${spec}`)
-      })
-      ReactDOM = loadModule(reactDomSource, (spec) => {
-        if (spec === 'react') return React
-        if (spec === 'scheduler') return scheduler
-        throw new Error(`react-dom requires ${spec}`)
-      })
+      React = window.__react
+      ReactDOM = window.__reactDom
+      if (React === undefined || ReactDOM === undefined) throw new Error('a module failed to define its exports')
     } catch (error) {
       return { error: error.message }
     }
@@ -126,7 +146,7 @@ try {
 
     root.unmount()
     return { nestedMarkup, cardMarkup, siblingMarkup, spanMarkup }
-  }, { reactSource, reactDomSource, schedulerSource })
+  })
 
   console.log('=== 渲染结果 ===')
   if (result.error !== undefined) {

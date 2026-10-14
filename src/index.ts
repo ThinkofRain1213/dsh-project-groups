@@ -785,16 +785,24 @@ export class ProjectController extends TypertRemoteService {
    * @param domain - the open domain.
    * @param projectId - the owning project id.
    * @param project - its record.
-   * @returns the document lines, including the drift prompt when it applies.
+   * @returns the document lines, including the drift prompt when it applies, or
+   * undefined when the project id is not usable as a path segment. Absent is the
+   * honest answer there: the document half exists to name a file, and it cannot
+   * name one without a directory to put it in.
    */
   private documentInjection(
     domain: Domain<typeof projectDomainSpec>,
     projectId: string,
     project: ProjectRecord,
-  ): DocumentInjection {
+  ): DocumentInjection | undefined {
     const global = domain.global.get()
-    const spec = specIdentity(this.ctx, global, project)
     const docPath = documentPath(this.ctx, projectId)
+    // A stored id that is not a single path segment cannot name a document, and
+    // joining it anyway is what would let a hand-edited record address a file
+    // outside `$DSH_HOME/project-groups`. Dropping the document half keeps the
+    // project half — which needs no path — intact.
+    if (docPath === undefined) return undefined
+    const spec = specIdentity(this.ctx, global, project)
 
     // The drift decision lives in `shouldAskSpecDrift` (pure, and covered directly
     // by `verify-project-injection.mjs`) because its effect is an ABSENCE — no

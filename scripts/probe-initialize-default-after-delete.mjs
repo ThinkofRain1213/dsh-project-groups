@@ -32,6 +32,7 @@
  */
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
 
 const [exe, asarRoot, dshHome, profile = 'pg'] = process.argv.slice(2)
@@ -48,7 +49,7 @@ const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--
 })
 let out = ''
 const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${out.slice(-1500)}`)), 120_000)
+  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
   child.stdout.on('data', (chunk) => {
     out += String(chunk)
     const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
