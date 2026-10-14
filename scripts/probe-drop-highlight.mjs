@@ -22,6 +22,7 @@
 import { spawn } from 'node:child_process'
 import { chromium } from 'playwright-core'
 import { installRowKeyHelpers } from './lib/row-key.mjs'
+import { redactToken } from './lib/redact.mjs'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
 const PORT = 17657
@@ -39,7 +40,7 @@ const child = spawn(exe, [BIN, '--profile', 'pg', '--port', String(PORT), '--no-
 })
 let out = ''
 const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout: ${out.slice(-300)}`)), 120_000)
+  const timer = setTimeout(() => reject(new Error(`boot timeout: ${redactToken(out.slice(-300))}`)), 120_000)
   child.stdout.on('data', (chunk) => {
     out += String(chunk)
     const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)

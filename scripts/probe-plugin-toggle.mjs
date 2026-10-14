@@ -26,6 +26,7 @@
 import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
@@ -61,7 +62,7 @@ function boot(profile) {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''
-    const timer = setTimeout(() => reject(new Error(`timed out booting ${profile}: ${out.slice(-400)}`)), 120_000)
+    const timer = setTimeout(() => reject(new Error(`timed out booting ${profile}: ${redactToken(out.slice(-400))}`)), 120_000)
     child.stdout.on('data', (chunk) => {
       out += String(chunk)
       const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
@@ -74,7 +75,7 @@ function boot(profile) {
     child.stderr.on('data', (chunk) => { out += String(chunk) })
     child.on('exit', (code) => {
       clearTimeout(timer)
-      reject(new Error(`${profile} exited early with ${code}: ${out.slice(-400)}`))
+      reject(new Error(`${profile} exited early with ${code}: ${redactToken(out.slice(-400))}`))
     })
   })
 }

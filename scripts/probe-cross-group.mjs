@@ -20,6 +20,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 import { installRowKeyHelpers } from './lib/row-key.mjs'
+import { redactToken } from './lib/redact.mjs'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
 if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
@@ -43,7 +44,7 @@ function boot(profile) {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''
-    const timer = setTimeout(() => reject(new Error(`timed out booting ${profile}: ${out.slice(-400)}`)), 120_000)
+    const timer = setTimeout(() => reject(new Error(`timed out booting ${profile}: ${redactToken(out.slice(-400))}`)), 120_000)
     child.stdout.on('data', (chunk) => {
       out += String(chunk)
       const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)

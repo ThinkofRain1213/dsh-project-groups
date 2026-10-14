@@ -32,6 +32,19 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
 const PORT = profile === 'pg' ? 17970 : 17971
 const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
 
+/**
+ * The checkout this probe's fixture Workspaces point at.
+ *
+ * This was a literal `C:\Users\Think\Desktop\项目\dsh-project-groups...` string, which baked
+ * one developer's filesystem into the probe: on any other machine the Workspace either failed
+ * to register or registered the **wrong** directory, and the sections below then measured
+ * something else with nothing in the output to say so.
+ *
+ * Defaults to the working directory, which is how the usage line already expects this to be
+ * run, and can be overridden with `DSH_PROBE_REPO_ROOT`.
+ */
+const repoRoot = process.env.DSH_PROBE_REPO_ROOT ?? process.cwd()
+
 const failures = []
 const check = (label, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail === undefined ? '' : ` — ${detail}`}`)
@@ -159,8 +172,8 @@ try {
   await page.waitForTimeout(8000)
   await dismiss()
 
-  const alpha = 'C:\\Users\\Think\\Desktop\\项目\\dsh-project-groups\\scripts'
-  const beta = 'C:\\Users\\Think\\Desktop\\项目\\dsh-project-groups'
+  const alpha = join(repoRoot, 'scripts')
+  const beta = repoRoot
   const wsA = await createWorkspace(alpha)
   const wsB = await createWorkspace(beta)
   console.log(`=== 工作区 A: ${JSON.stringify(wsA)}`)

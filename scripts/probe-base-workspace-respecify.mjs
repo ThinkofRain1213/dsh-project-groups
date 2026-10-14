@@ -16,6 +16,7 @@
  * Usage: node probe-base-workspace-respecify.mjs <dshExe> <asarRoot> <dshHome> [profile]
  */
 import { spawn } from 'node:child_process'
+import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
 
@@ -26,6 +27,19 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
 }
 const PORT = profile === 'pg' ? 17985 : 17986
 const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+
+/**
+ * The checkout this probe's fixture Workspaces point at.
+ *
+ * This was a literal `C:\Users\Think\Desktop\项目\dsh-project-groups...` string, which baked one
+ * developer's filesystem into the probe: on any other machine the Workspace either failed to
+ * register or registered the **wrong** directory, and the sections below then measured something
+ * else with nothing in the output to say so.
+ *
+ * Defaults to the working directory, which is how the usage line already expects this to be run,
+ * and can be overridden with `DSH_PROBE_REPO_ROOT`.
+ */
+const repoRoot = process.env.DSH_PROBE_REPO_ROOT ?? process.cwd()
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -115,7 +129,7 @@ try {
   // A second Workspace, so the chooser has something to list once the default's registration is
   // gone. Without it the isolated profile ends up with an **empty** registry and the chooser
   // correctly shows 「暂无工作区」 — which is a different assertion, not this one.
-  const scratch = 'C:\\Users\\Think\\Desktop\\项目\\dsh-project-groups\\scripts'
+  const scratch = join(repoRoot, 'scripts')
   const extra = await rpc('workspace/create', { request: { path: scratch } })
   console.log(`  另建工作区: ${String(extra?.workspace?.workspaceId)}`)
   check('已建第二个工作区供弹窗列出', extra?.workspace?.workspaceId !== undefined)
