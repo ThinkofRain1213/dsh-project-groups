@@ -10,7 +10,7 @@
  * at `8 + headerLength + offset`. The header's trailing pickle padding is not
  * part of the JSON, so the text is trimmed to the last `}`.
  */
-import { openSync, readSync, closeSync, existsSync } from 'node:fs'
+import { openSync, readSync, closeSync, existsSync, fstatSync } from 'node:fs'
 
 /**
  * Locate the installed DSH `app.asar`, if this machine has one.
@@ -32,18 +32,38 @@ export function findInstalledAsar() {
   return candidates.find(candidate => candidate !== '' && existsSync(candidate))
 }
 
-/** Open an asar and return its header plus the data-section base offset. */
+/** Open an asar and return its header, the data-section base offset, and the file size. */
 function readHeader(asarPath) {
   const fd = openSync(asarPath, 'r')
   try {
+    const fileSize = fstatSync(fd).size
     const sizeBuf = Buffer.alloc(8)
-    readSync(fd, sizeBuf, 0, 8, 0)
+    if (fileSize < 8 || readSync(fd, sizeBuf, 0, 8, 0) !== 8) {
+      throw new Error(`asar: ${asarPath} is too short to hold an 8-byte header (${fileSize} bytes)`)
+    }
     const headerLength = sizeBuf.readUInt32LE(4)
+    // The length comes from the file itself, so it is checked against the file rather than
+    // trusted. Without this a corrupt or hostile value drives `Buffer.alloc` — up to ~4 GB —
+    // and a truncated header read would hand `JSON.parse` a zero-padded buffer, failing with a
+    // syntax error that says nothing about the actual problem.
+    if (headerLength < 2 || 8 + headerLength > fileSize) {
+      throw new Error(
+        `asar: ${asarPath} declares a ${headerLength}-byte JSON header, `
+        + `which does not fit in its ${fileSize} bytes`,
+      )
+    }
     const headerBuf = Buffer.alloc(headerLength)
-    readSync(fd, headerBuf, 0, headerLength, 8)
+    const read = readSync(fd, headerBuf, 0, headerLength, 8)
+    // Checked, not assumed: a short read leaves the tail zero-filled, and JSON.parse then
+    // reports an unexpected end of input rather than naming the truncated file.
+    if (read !== headerLength) {
+      throw new Error(
+        `asar: short read for the header of ${asarPath} (${read} of ${headerLength} bytes)`,
+      )
+    }
     const text = headerBuf.toString('utf8')
     const header = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1))
-    return { fd, header, base: 8 + headerLength }
+    return { fd, header, base: 8 + headerLength, fileSize }
   } catch (error) {
     closeSync(fd)
     throw error
@@ -54,11 +74,18 @@ function readHeader(asarPath) {
  * Read one file out of an asar.
  * @param asarPath - the archive path.
  * @param entryPath - POSIX path inside the archive, leading slash optional.
- * @returns the file contents as a UTF-8 string.
- * @throws {Error} when the entry does not exist.
+ * @param options - optional settings.
+ * @param options.encoding - `'utf8'` (the default) decodes the entry as text; `null`
+ * returns the raw `Buffer`. Every entry used to be decoded as UTF-8 unconditionally, which
+ * silently mangles a binary entry — a `.png` or `.node` in the archive comes back as lossy
+ * text rather than an error. Pass `null` for those.
+ * @returns the entry contents, as a string or a `Buffer` per `encoding`.
+ * @throws {Error} when the entry does not exist, is a directory, is an `unpacked` entry, or
+ * the archive's own bounds do not contain it.
  */
-export function readAsarFile(asarPath, entryPath) {
-  const { fd, header, base } = readHeader(asarPath)
+export function readAsarFile(asarPath, entryPath, options = {}) {
+  const { encoding = 'utf8' } = options
+  const { fd, header, base, fileSize } = readHeader(asarPath)
   try {
     let node = header
     for (const segment of entryPath.replace(/^\//, '').split('/')) {
@@ -66,11 +93,40 @@ export function readAsarFile(asarPath, entryPath) {
       if (node === undefined) throw new Error(`asar: no such entry "${entryPath}" in ${asarPath}`)
     }
     if (node.files !== undefined) throw new Error(`asar: "${entryPath}" is a directory`)
+    // An unpacked entry's header carries no `offset` and no usable `size` — its bytes live
+    // beside the archive, in `app.asar.unpacked/`. Falling through would produce `NaN` from
+    // `Number(undefined)` and an opaque `RangeError` from `Buffer.alloc`, so it is named here.
+    if (node.unpacked === true) {
+      throw new Error(
+        `asar: "${entryPath}" is an unpacked entry; its bytes are in app.asar.unpacked/, `
+        + 'not in the archive',
+      )
+    }
+    // Both values come from the archive's own header, so they are validated against the file
+    // rather than trusted: a corrupt header otherwise yields NaN, a negative number, or a huge
+    // one, and `Buffer.alloc` answers with `ERR_OUT_OF_RANGE` — an error that names none of the
+    // three. The read itself is checked too, or a truncated read returns a zero-padded buffer
+    // and a silently wrong string.
     const size = Number(node.size)
     const offset = Number(node.offset)
+    if (!Number.isInteger(size) || size < 0) {
+      throw new Error(`asar: "${entryPath}" declares a non-integer or negative size (${node.size})`)
+    }
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new Error(`asar: "${entryPath}" declares a non-integer or negative offset (${node.offset})`)
+    }
+    if (base + offset + size > fileSize) {
+      throw new Error(
+        `asar: "${entryPath}" runs past the end of ${asarPath} `
+        + `(data ends at ${base + offset + size}, file is ${fileSize} bytes)`,
+      )
+    }
     const buf = Buffer.alloc(size)
-    readSync(fd, buf, 0, size, base + offset)
-    return buf.toString('utf8')
+    const read = readSync(fd, buf, 0, size, base + offset)
+    if (read !== size) {
+      throw new Error(`asar: short read for "${entryPath}" (${read} of ${size} bytes)`)
+    }
+    return encoding === null ? buf : buf.toString(encoding)
   } finally {
     closeSync(fd)
   }

@@ -15,23 +15,25 @@
  *
  * Two forms are exported, because a probe runs this in two places:
  *
- *   - {@link parseRowKey} for Node-side code;
- *   - {@link PARSE_ROW_KEY_SOURCE} for injection into a `page.evaluate` body, where
- *     a Node import is not available.
+ *   - {@link parseRowKey} / {@link sessionIdOf} for Node-side code;
+ *   - {@link PARSE_ROW_KEY_SOURCE} / {@link SESSION_ID_OF_SOURCE} for injection into a
+ *     `page.evaluate` body, where a Node import is not available.
  */
-
-/** The literal prefix every Session row shares. */
-export const SESSION_ROW_PREFIX = 'session:'
 
 /**
  * Split one Session row key into its Session id.
  *
  * Self-contained — it references no module-level binding — so its own source can be
- * injected into a page (see {@link PARSE_ROW_KEY_SOURCE}). Inlining the literal is
- * what makes that possible; a closure over {@link SESSION_ROW_PREFIX} would throw
- * `ReferenceError` in the browser, where that binding does not exist.
+ * injected into a page (see {@link PARSE_ROW_KEY_SOURCE}). That is why the `'session:'`
+ * literal is written twice here rather than shared through a constant: a closure over a
+ * module-level binding would throw `ReferenceError` in the browser, where that binding does
+ * not exist, and the injection is the whole reason this function is shaped this way.
+ *
+ * (There *was* an exported `SESSION_ROW_PREFIX` constant alongside it. Nothing imported it —
+ * it was dead in the repository — and it could not be used here anyway, so it was removed
+ * rather than left as a second, unreachable answer to "what is the prefix".)
  * @param rowKey - the `data-row-key` attribute value.
- * @returns the id, or `null` when this is not a Session row.
+ * @returns `{ id }` for a Session row, or `null` when this is not one.
  */
 export function parseRowKey(rowKey) {
   if (typeof rowKey !== 'string' || !rowKey.startsWith('session:')) return null
@@ -40,8 +42,14 @@ export function parseRowKey(rowKey) {
 
 /**
  * The Session id inside a row key, or `null` when this is not a Session row.
+ *
+ * Kept as its own function — rather than each caller reaching for `parseRowKey(...)?.id` —
+ * so the injected page-side helper can be this function's own source text
+ * (see {@link SESSION_ID_OF_SOURCE}) instead of a hand-written copy of the same expression.
+ * The two had already diverged once (`?.id ?? null` here against `parsed === null ? null :
+ * parsed.id` in the page), which is the class of drift this module exists to prevent.
  * @param rowKey - the `data-row-key` attribute value.
- * @returns the Session id.
+ * @returns the Session id, or `null`.
  */
 export function sessionIdOf(rowKey) {
   return parseRowKey(rowKey)?.id ?? null
@@ -57,6 +65,17 @@ export function sessionIdOf(rowKey) {
 export const PARSE_ROW_KEY_SOURCE = `(${String(parseRowKey)})`
 
 /**
+ * {@link sessionIdOf} as source text, for the same reason as
+ * {@link PARSE_ROW_KEY_SOURCE}.
+ *
+ * It calls `parseRowKey` as a bare identifier, so {@link installRowKeyHelpers} publishes that
+ * function under its own name on the page global first — a global property is resolvable as a
+ * bare identifier in the page's scope, which is what lets this be the real function's source
+ * instead of a rewritten copy of it.
+ */
+export const SESSION_ID_OF_SOURCE = `(${String(sessionIdOf)})`
+
+/**
  * Install `window.__parseRowKey` / `window.__sessionIdOf` on every page this context
  * loads.
  *
@@ -64,17 +83,23 @@ export const PARSE_ROW_KEY_SOURCE = `(${String(parseRowKey)})`
  * probe may reload the page and a helper installed by a one-off `evaluate` would be
  * gone for the frames after that — leaving exactly the assertions that run on a
  * refreshed page with no parser.
+ *
+ * The assignment shape matters. This used to splice the page global into the function text
+ * with `PARSE_ROW_KEY_SOURCE.replace('function parseRowKey', 'window.__parseRowKey =
+ * function parseRowKey')`, which depends on that exact substring existing: turning the
+ * declaration into a `const` arrow, renaming it, or minifying the file would make the
+ * `replace` a silent no-op, leaving a bare declaration and no `window.__parseRowKey`, so
+ * every probe would fail later with an opaque `window.__sessionIdOf is not a function`.
+ * Assigning whole expressions cannot silently do nothing.
  * @param page - the Playwright page to install into.
  * @returns a promise that resolves once the script is registered.
  */
 export function installRowKeyHelpers(page) {
-  return page.addInitScript(`${PARSE_ROW_KEY_SOURCE.replace('function parseRowKey', 'window.__parseRowKey = function parseRowKey')}
-window.__sessionIdOf = key => { const parsed = window.__parseRowKey(key); return parsed === null ? null : parsed.id };`)
+  return page.addInitScript([
+    // Published under its own name too, because `SESSION_ID_OF_SOURCE` calls it as a bare
+    // identifier — see that constant.
+    `window.parseRowKey = ${PARSE_ROW_KEY_SOURCE};`,
+    'window.__parseRowKey = window.parseRowKey;',
+    `window.__sessionIdOf = ${SESSION_ID_OF_SOURCE};`,
+  ].join('\n'))
 }
-
-/**
- * A `page.evaluate`-safe expression that resolves a row key to its Session id.
- *
- * Declared as text so a probe can drop it directly into an in-page function body.
- */
-export const SESSION_ID_OF_SOURCE = `(key => { const p = ${PARSE_ROW_KEY_SOURCE}(key); return p === null ? null : p.id })`
