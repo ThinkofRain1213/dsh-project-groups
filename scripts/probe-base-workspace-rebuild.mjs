@@ -35,6 +35,8 @@ const PORT = profile === 'pg' ? 17973 : 17974
 const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
 
 const failures = []
+/** Outcomes that were deliberately not measured, recorded so the summary cannot read as full coverage. */
+const skipped = []
 const check = (label, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail === undefined ? '' : ` — ${detail}`}`)
   if (!ok) failures.push(label)
@@ -47,6 +49,20 @@ const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--
 let out = ''
 const url = await new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+  // A failed `spawn` emits `'error'` (and crashes the process if unhandled), and a process that
+  // dies early emits `'close'`; neither produces the `dsh web:` line, so without these the promise
+  // stayed pending until the 120 s timeout and reported 'boot timeout' for a bad exe path.
+  child.on('error', (error) => {
+    clearTimeout(timer)
+    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+  })
+  child.on('close', (code, signal) => {
+    clearTimeout(timer)
+    reject(new Error(
+      `backend exited before printing its URL (code ${String(code)}, signal ${String(signal)}):\n`
+      + redactToken(out.slice(-1500)),
+    ))
+  })
   child.stdout.on('data', (chunk) => {
     out += String(chunk)
     const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
@@ -55,21 +71,15 @@ const url = await new Promise((resolve, reject) => {
   child.stderr.on('data', (chunk) => { out += chunk })
 })
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
-page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+// Declared here because the helpers below close over them; **assigned** inside the `try` (below
+// the helper definitions), so a launch failure reaches the `finally` that kills the child and
+// closes the browser. Launching at this point threw straight out of the script, leaving the
+// spawned dsh server and the browser running.
+let browser
+let page
 
 /** Every New Session call, with the workspaceId it asked for. */
 const requests = []
-page.on('request', (request) => {
-  const target = request.url()
-  if (!target.includes('/api/')) return
-  const method = target.split('/api/')[1]
-  if (!/^(workspace|session)\//.test(method)) return
-  let body = null
-  try { body = JSON.parse(request.postData() ?? 'null') } catch { body = null }
-  requests.push({ method, args: body?.payload?.args ?? {} })
-})
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -87,6 +97,17 @@ const dismiss = async () => {
   }
 }
 
+/**
+ * POST one `/api/<method>` client-request from inside the page.
+ *
+ * This used to read `JSON.parse(await response.text())` with no check on `response.ok`, so a
+ * non-JSON error page (an HTML error, a proxy response) threw out of the helper, and a failed RPC
+ * returned `{ ok: undefined, value: undefined }` — which the `check(...)` calls below then treated
+ * as real data, making a broken transport indistinguishable from a probe result.
+ * @param method - the Remote method name.
+ * @param args - its arguments object.
+ * @returns `{ status, ok, value, error, text }`.
+ */
 const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
   const token = new URL(location.href).searchParams.get('token') ?? ''
   const response = await fetch(`${location.origin}/api/${method}`, {
@@ -97,8 +118,16 @@ const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
       method, payload: { args },
     }),
   })
-  const parsed = JSON.parse(await response.text())
-  return { ok: parsed?.result?.ok, value: parsed?.result?.value, error: parsed?.result?.error }
+  const text = await response.text()
+  let parsed = null
+  try { parsed = JSON.parse(text) } catch { /* surfaced through status + text */ }
+  return {
+    status: response.status,
+    ok: parsed?.result?.ok,
+    value: parsed?.result?.value,
+    error: parsed?.result?.error,
+    text: text.slice(0, 300),
+  }
 }, { method, args })
 
 const registry = () => {
@@ -149,8 +178,28 @@ const pressRebuild = async () => {
   return { appeared: true, hint }
 }
 
-let running = child
 try {
+  // Inside the `try` (after the helpers that close over them), so a launch failure reaches the
+  // `finally` that kills the child and closes the browser.
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
+  page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+
+  /**
+   * Every New Session call, with the workspaceId it asked for.
+   *
+   * Registered here rather than at the top level because it closes over `page`.
+   */
+  page.on('request', (request) => {
+    const target = request.url()
+    if (!target.includes('/api/')) return
+    const method = target.split('/api/')[1]
+    if (!/^(workspace|session)\//.test(method)) return
+    let body = null
+    try { body = JSON.parse(request.postData() ?? 'null') } catch { body = null }
+    requests.push({ method, args: body?.payload?.args ?? {} })
+  })
+
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismiss()
@@ -201,6 +250,14 @@ try {
   const again = await pressRebuild()
   const afterRows = registry().filter(row => row.path === target)
   console.log(`  重建前条数=${String(beforeIdempotent)} 重建后条数=${String(afterRows.length)} 弹窗=${String(again.appeared)}`)
+  // The premise first. `pressRebuild` returns `{ appeared: false }` **without pressing anything**
+  // when the missing-workspace dialog does not show — and once section 1 has created and registered
+  // the directory, that dialog is not expected to appear. So `afterRows.length === 1` was trivially
+  // true whether or not a rebuild happened, and the check claimed idempotency for a rebuild that
+  // never ran. `again.appeared` was only *logged*, never asserted, which is how that stayed
+  // invisible.
+  check('4) 前置：这次确实弹出了重建对话框（否则幂等无从谈起）', again.appeared === true,
+    `appeared=${String(again.appeared)}`)
   check('4) 幂等：该路径仍只有一条', afterRows.length === 1, `${String(afterRows.length)} 条`)
 
   console.log('')
@@ -245,7 +302,13 @@ try {
   if (!insideSandbox) {
     console.log(`  ⚠️ 跳过第 6 节：默认工作区不在隔离的 DSH_HOME 内（${defaultPath}）`)
     console.log('     —— 这一节会删除真实注册，代价高于它覆盖的那条断言（见上方注释）')
-    check('6) 默认工作区在沙箱外 ⇒ 跳过删除（不损坏用户数据）', true)
+    // An **informational** outcome, recorded and repeated in the summary.
+    //
+    // This was `check('6) …跳过删除…', true)` — the same defect class as the idempotency premise
+    // above: a literal `true` cannot fail, so it inflated the pass count without asserting
+    // anything. No check replaces it: inside this branch `!insideSandbox` is true by construction,
+    // so any assertion here would be as vacuous as the one it replaced.
+    skipped.push('6) 沙箱外的默认工作区：跳过删除（不损坏用户数据）')
   } else {
   await rpc('workspace/delete', { request: { workspaceId: defaultWorkspace.workspaceId } })
   await rpc('projectGroups/setBaseWorkspace', { request: { mode: 'default' } })
@@ -287,14 +350,28 @@ try {
   const defaultLanded = defaultCreates[0]?.args?.request?.workspaceId ?? null
   console.log(`  落在: ${String(defaultLanded)}  弹窗: ${String(await missingDialog().count())}`)
   check('6) 不再弹缺失弹窗', await missingDialog().count() === 0)
-  check('6) ＋ 落在重建后的工作区', defaultLanded !== null, String(defaultLanded))
+  // Compared against the rebuilt workspace's **id**, not merely non-null.
+  //
+  // The old form only required `defaultLanded !== null`, so a regression that sent the Session to
+  // an unrelated Workspace would still pass — the exact wrong-target failure this section exists to
+  // catch. Check 2 in section 1 already compares ids; this one now matches it.
+  const rebuiltId = registry().find(row => row.path === defaultPath)?.id ?? null
+  check('6) ＋ 落在重建后的工作区', rebuiltId !== null && defaultLanded === rebuiltId,
+    `landed=${String(defaultLanded)} rebuilt=${String(rebuiltId)}`)
   }
 
   console.log('')
   console.log('=== 结果 ===')
+  if (skipped.length > 0) {
+    console.log(`跳过 ${String(skipped.length)} 项（未测量，不计入通过）:`)
+    for (const s of skipped) console.log(`  [跳过] ${s}`)
+  }
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
 } finally {
-  running.kill()
-  await browser.close()
+  // `child` directly — `let running = child` was an alias that was never reassigned.
+  child.kill()
+  // Guarded: the launch itself is inside the `try`, and its failure is a case this `finally`
+  // exists to handle.
+  if (browser !== undefined) await browser.close()
 }
 process.exit(failures.length === 0 ? 0 : 1)

@@ -13,11 +13,18 @@
  *   3. clicking a card writes immediately (that gesture is the commit);
  *   4. 更换… opens a dialog listing every Workspace, each with name *and* path;
  *   5. clicking a row does **not** write — selection is staged;
- *   6. 确认 writes; 取消 does not;
- *   7. 更换… does not switch the card's mode (the `stopPropagation` requirement);
- *   8. a `'specified'` setting whose Workspace is gone reads "已不存在" and is not
- *      silently cleared;
- *   9. no nested-`<button>` React error reaches the console.
+ *   6. 取消 does not write;
+ *   7. 确认 writes, and stores the path that was chosen;
+ *   8. 更换… does not switch the card's mode (the `stopPropagation` requirement);
+ *   9. a `'specified'` setting whose Workspace is gone reads "已不存在" and is not
+ *      silently cleared, and the chooser stops offering the deleted row;
+ *  10. 更换… is visibly a button on the selected card (the first reported defect);
+ *  11. switching default → specified keeps the remembered choice (the second);
+ *  12. no nested-`<button>` React error reaches the console.
+ *
+ * (This list stopped at 9 while the script grew to 12 sections, so a failure labelled `9)`
+ * could mean the missing-Workspace scenario or the console-error one — the two most
+ * different outcomes in the file. Labels and this list are aligned now.)
  *
  * Usage: node probe-base-workspace-card.mjs <dshExe> <asarRoot> <dshHome> [profile]
  */
@@ -35,6 +42,19 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
 const PORT = profile === 'pg' ? 17910 : 17911
 const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
 
+/**
+ * The checkout the probe's fixture Workspaces point at.
+ *
+ * These paths used to be literal `C:\Users\Think\Desktop\项目\dsh-project-groups...` strings,
+ * which baked one developer's filesystem into the probe: on any other machine the Workspace either
+ * failed to register (the path does not exist) or registered the *wrong* directory, and the probe's
+ * later sections then measured something else with nothing in the output to say so.
+ *
+ * Defaults to the working directory, which is how the usage line already expects this to be run
+ * (`node scripts/probe-...` from the checkout), and can be overridden with `DSH_PROBE_REPO_ROOT`.
+ */
+const repoRoot = process.env.DSH_PROBE_REPO_ROOT ?? process.cwd()
+
 const failures = []
 const check = (label, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail === undefined ? '' : ` — ${detail}`}`)
@@ -48,6 +68,21 @@ const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--
 let out = ''
 const url = await new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+  // Two ways the backend fails without ever printing its URL, neither of which produced a
+  // `dsh web:` line: a failed `spawn` emits `'error'`, and a process that dies early emits
+  // `'close'`. Without these handlers the promise stayed pending and the run reported a
+  // misleading 'boot timeout' two minutes later for what was really a bad exe path.
+  child.on('error', (error) => {
+    clearTimeout(timer)
+    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+  })
+  child.on('close', (code, signal) => {
+    clearTimeout(timer)
+    reject(new Error(
+      `backend exited before printing its URL (code ${String(code)}, signal ${String(signal)}):\n`
+      + redactToken(out.slice(-1500)),
+    ))
+  })
   child.stdout.on('data', (chunk) => {
     out += String(chunk)
     const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
@@ -56,12 +91,14 @@ const url = await new Promise((resolve, reject) => {
   child.stderr.on('data', (chunk) => { out += chunk })
 })
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
+// Declared here because the helpers below close over them; **assigned** inside the `try`, so a
+// launch failure reaches the `finally` that kills the child and closes the browser. Launching at
+// this point threw straight out of the script, leaving the backend running and the browser open.
+let browser
+let page
 const consoleErrors = []
 page.on('pageerror', (error) => consoleErrors.push(error.message))
 page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()) })
-
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
 const dismiss = async () => {
@@ -104,26 +141,54 @@ const card = () => page.locator('[data-plugin-config]').first()
 /** The base-workspace row's two cards, by their own accessible text. */
 const modeCard = (label) => card().locator('button[aria-pressed]').filter({ hasText: label }).first()
 
-let running = child
+/**
+ * POST one `/api/<method>` client-request from inside the page.
+ *
+ * The envelope — token from `location`, the `x-dsh-token` header, the `client-request` body shape —
+ * was copy-pasted four times (two `workspace/create`s, `projectGroups/setBaseWorkspace`,
+ * `workspace/delete`), so a change to the header or the body had to be made in four places and a
+ * miss would surface as an unexplained RPC failure in one section only.
+ *
+ * Returns the **status** and the raw text alongside the parsed result, so a caller can tell "the
+ * RPC answered no" from "the transport failed or returned a non-JSON body" instead of reading
+ * `undefined` as data.
+ * @param method - the Remote method name.
+ * @param args - its arguments object.
+ * @returns `{ status, ok, value, error, text }`.
+ */
+const callApi = (method, args) => page.evaluate(async ({ method, args }) => {
+  const token = new URL(location.href).searchParams.get('token') ?? ''
+  const response = await fetch(`${location.origin}/api/${method}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-dsh-token': token },
+    body: JSON.stringify({
+      type: 'client-request', rpcId: `p-${Math.random().toString(36).slice(2)}`,
+      method, payload: { args },
+    }),
+  })
+  const text = await response.text()
+  let parsed = null
+  try { parsed = JSON.parse(text) } catch { /* surfaced through status + text */ }
+  return {
+    status: response.status,
+    ok: parsed?.result?.ok,
+    value: parsed?.result?.value,
+    error: parsed?.result?.error,
+    text: text.slice(0, 300),
+  }
+}, { method, args })
+
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
+
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismiss()
 
   // A second Workspace, so the chooser has a real choice to offer.
-  const created = await page.evaluate(async () => {
-    const token = new URL(location.href).searchParams.get('token') ?? ''
-    const response = await fetch(`${location.origin}/api/workspace/create`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-dsh-token': token },
-      body: JSON.stringify({
-        type: 'client-request', rpcId: 'w', method: 'workspace/create',
-        payload: { args: { request: { path: 'C:\\Users\\Think\\Desktop\\项目\\dsh-project-groups' } } },
-      }),
-    })
-    return { status: response.status, body: (await response.text()).slice(0, 200) }
-  })
-  console.log(`另建一个工作区: ${String(created.status)} ${created.body}`)
+  const created = await callApi('workspace/create', { request: { path: repoRoot } })
+  console.log(`另建一个工作区: ${String(created.status)} ${created.text.slice(0, 200)}`)
 
   await openCard()
 
@@ -205,7 +270,15 @@ try {
   const beforeStage = JSON.stringify(storedBase())
   // Pick the row that is NOT currently stored.
   const rows = await options.evaluateAll(nodes => nodes.map(node => node.textContent ?? ''))
-  const targetIndex = rows.findIndex(text => !text.includes(afterMode?.name ?? '@@@'))
+  // Asserted, not masked with `?? 0`. When the earlier commit did not persist, `afterMode?.name`
+  // is undefined, the sentinel never matches, `findIndex` returns -1 — and falling back to index 0
+  // made sections 5 and 7 assert against an unintended row, so they could pass for the wrong
+  // reason instead of failing clearly.
+  const targetName = afterMode?.name
+  check('5) 上一个提交已落盘（可定位目标行）', typeof targetName === 'string' && targetName !== '',
+    String(targetName))
+  const targetIndex = rows.findIndex(text => !text.includes(targetName ?? '@@@'))
+  check('5) 找到目标行', targetIndex >= 0, `index=${String(targetIndex)} rows=${String(rows.length)}`)
   await options.nth(targetIndex >= 0 ? targetIndex : 0).click({ force: true })
   await page.waitForTimeout(1200)
   check('5) 点行后磁盘未变', JSON.stringify(storedBase()) === beforeStage,
@@ -279,56 +352,26 @@ try {
   // Only the *registration* is deleted; files and Sessions stay. The card matches by
   // path, so this is also the delete-and-re-add case the stored path is designed to
   // survive: the note appears, and the plugin must not rewrite the user's choice.
-  const scratch = 'C:\\Users\\Think\\Desktop\\项目\\dsh-project-groups\\scripts'
-  const createdWorkspace = await page.evaluate(async ({ path }) => {
-    const token = new URL(location.href).searchParams.get('token') ?? ''
-    const response = await fetch(`${location.origin}/api/workspace/create`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-dsh-token': token },
-      body: JSON.stringify({
-        type: 'client-request', rpcId: 'wc', method: 'workspace/create',
-        payload: { args: { request: { path } } },
-      }),
-    })
-    const text = await response.text()
-    let parsed = null
-    try { parsed = JSON.parse(text) } catch { /* reported below */ }
-    const value = parsed?.result?.value
-    return { id: value?.workspace?.workspaceId ?? value?.workspaceId ?? null, text: text.slice(0, 200) }
-  }, { path: scratch })
+  const scratch = join(repoRoot, 'scripts')
+  const createdWorkspaceRaw = await callApi('workspace/create', { request: { path: scratch } })
+  const createdWorkspace = {
+    id: createdWorkspaceRaw.value?.workspace?.workspaceId
+      ?? createdWorkspaceRaw.value?.workspaceId ?? null,
+    text: createdWorkspaceRaw.text,
+  }
   console.log(`  临时工作区: ${JSON.stringify(createdWorkspace)}`)
   check('9) 先建一个临时工作区', createdWorkspace.id !== null)
 
   if (createdWorkspace.id !== null) {
     // Point the setting at it, through the plugin's own Remote — the same write the
     // card performs.
-    const pointed = await page.evaluate(async ({ path }) => {
-      const token = new URL(location.href).searchParams.get('token') ?? ''
-      const response = await fetch(`${location.origin}/api/projectGroups/setBaseWorkspace`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-dsh-token': token },
-        body: JSON.stringify({
-          type: 'client-request', rpcId: 'sb', method: 'projectGroups/setBaseWorkspace',
-          payload: { args: { request: { mode: 'specified', path, name: '临时工作区' } } },
-        }),
-      })
-      return (await response.text()).slice(0, 160)
-    }, { path: scratch })
+    const pointed = (await callApi('projectGroups/setBaseWorkspace', {
+      request: { mode: 'specified', path: scratch, name: '临时工作区' },
+    })).text.slice(0, 160)
     console.log(`  setBaseWorkspace: ${pointed}`)
     await page.waitForTimeout(1200)
 
-    const deleted = await page.evaluate(async ({ workspaceId }) => {
-      const token = new URL(location.href).searchParams.get('token') ?? ''
-      const response = await fetch(`${location.origin}/api/workspace/delete`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-dsh-token': token },
-        body: JSON.stringify({
-          type: 'client-request', rpcId: 'wd', method: 'workspace/delete',
-          payload: { args: { request: { workspaceId } } },
-        }),
-      })
-      return (await response.text()).slice(0, 160)
-    }, { workspaceId: createdWorkspace.id })
+    const deleted = (await callApi('workspace/delete', { request: { workspaceId: createdWorkspace.id } })).text.slice(0, 160)
     console.log(`  delete: ${deleted}`)
     await page.waitForTimeout(2500)
 
@@ -426,7 +469,7 @@ try {
   console.log('')
   console.log(`=== console errors: ${consoleErrors.length === 0 ? '(none)' : String(consoleErrors.length)} ===`)
   for (const error of consoleErrors.slice(0, 6)) console.log(`  ${error.slice(0, 200)}`)
-  check('9) 没有嵌套 button 的 React 报错',
+  check('12) 没有嵌套 button 的 React 报错',
     !consoleErrors.some(line => /validateDOMNesting|descendant of/i.test(line)),
     consoleErrors.find(line => /validateDOMNesting/i.test(line))?.slice(0, 160))
 
@@ -434,7 +477,11 @@ try {
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
 } finally {
-  running.kill()
-  await browser.close()
+  // `child` directly: `let running = child` was never reassigned, so the alias only added a layer
+  // between the reader and the process actually being killed.
+  child.kill()
+  // Guarded: the launch itself is inside the `try`, and its failure is a case this `finally`
+  // exists to handle.
+  if (browser !== undefined) await browser.close()
 }
 process.exit(failures.length === 0 ? 0 : 1)
