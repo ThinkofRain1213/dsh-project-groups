@@ -85,6 +85,14 @@ try {
   let out = ''
   const url = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-2000))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
     // A spawn that never produced a process (bad path) or one that died at once
     // rejects here instead of waiting out the full 120 s and then reporting a bare
     // "boot timeout" with no cause.

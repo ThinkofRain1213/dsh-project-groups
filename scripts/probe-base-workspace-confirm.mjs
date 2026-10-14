@@ -47,6 +47,14 @@ const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--
 let out = ''
 const url = await new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+  // the process outright.
+  child.on('error', (error) => {
+    clearTimeout(timer)
+    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+  })
   child.stdout.on('data', (chunk) => {
     out += String(chunk)
     const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
