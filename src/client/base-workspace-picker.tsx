@@ -22,7 +22,7 @@
  * three-action missing-workspace dialog needs (three equal row actions leave about
  * 77px each; two do not).
  */
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import { workspaceDisplayTitle } from '@deepseek-ai/dsh-api-workspace-controller/default-workspace'
 import type { WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
@@ -56,8 +56,21 @@ export function BaseWorkspacePicker({
 }: BaseWorkspacePickerProps) {
   // Staged locally: the card's setting is untouched until 确认.
   const [staged, setStaged] = useState<string | null>(selectedPath ?? null)
-  const listRef = useRef<HTMLDivElement>(null)
-
+  // Re-sync when the parent's choice changes.
+  //
+  // `useState` reads its initial value once, so a `selectedPath` that changed while this
+  // dialog was open — the stored base workspace being rewritten from elsewhere — left the
+  // staged highlight, and therefore the value 确认 writes, pointing at the old row. Today the
+  // caller happens to remount the dialog per open, which is why this was invisible; the
+  // effect makes that assumption unnecessary rather than relying on it.
+  //
+  // Keyed on `selectedPath` alone: an unrelated re-render passes the same prop, so a
+  // deliberate staging by the user survives it.
+  useEffect(() => { setStaged(selectedPath ?? null) }, [selectedPath])
+  // One ref per row, so focusing a row does not depend on DOM order matching this array.
+  // (A container ref used to sit here for that DOM query; nothing read it afterwards, so it
+  // is gone rather than left attached-and-unused.)
+  const rowRefs = useRef<(HTMLDivElement | null)[]>([])
   const stagedIndex = workspaces.findIndex(item => item.path === staged)
   // The row that carries the list's single tab stop. A staged path that is **not** in
   // the list (the setting names a Workspace since deleted) matches no row, so without
@@ -78,6 +91,11 @@ export function BaseWorkspacePicker({
    * So the unstaged anchor is the position *before* the first row (`-1`) when moving
    * forward and *after* the last (`length`) when moving backward, and the clamp turns
    * that into the first/last row. A move from a real row stays relative to it.
+   *
+   * Focus goes through {@link rowRefs}, not a DOM query. `querySelectorAll('[role="option"]')`
+   * assumed the DOM order always equals the `workspaces` array order and that every match was
+   * a focusable option — neither is guaranteed, and a mismatch would focus the wrong row while
+   * the state said otherwise.
    * @param delta - how many rows to move; clamped to the list.
    */
   const move = (delta: number): void => {
@@ -87,10 +105,12 @@ export function BaseWorkspacePicker({
     const row = workspaces[next]
     if (row === undefined) return
     setStaged(row.path)
-    listRef.current?.querySelectorAll<HTMLElement>('[role="option"]')[next]?.focus()
+    rowRefs.current[next]?.focus()
   }
 
-  const stagedWorkspace = workspaces.find(item => item.path === staged) ?? null
+  // From `stagedIndex`, not a second `find`: two walks for the same comparison are two
+  // predicates that can drift, and the index is already computed above.
+  const stagedWorkspace = stagedIndex >= 0 ? workspaces[stagedIndex] ?? null : null
 
   return (
     <Modal
@@ -117,7 +137,6 @@ export function BaseWorkspacePicker({
         <p className={css.pickerEmpty} role="note">{t('basePickerEmpty')}</p>
       ) : (
         <div
-          ref={listRef}
           role="listbox"
           aria-label={t('basePickerAria')}
           className={css.pickerList}
@@ -141,6 +160,7 @@ export function BaseWorkspacePicker({
             return (
               <div
                 key={item.workspaceId}
+                ref={(element) => { rowRefs.current[index] = element }}
                 role="option"
                 aria-selected={active}
                 tabIndex={index === tabStopIndex ? 0 : -1}

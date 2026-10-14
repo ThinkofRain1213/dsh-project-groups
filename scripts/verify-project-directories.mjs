@@ -368,5 +368,29 @@ function bench() {
     JSON.stringify(storedGlobal))
 }
 
+// 15. `isValidLink`: the rule `validateLinks` marks with.
+//
+// This had no coverage at all, which is how the case-sensitivity of the scheme check went
+// unnoticed: RFC 3986 makes URL schemes case-insensitive, so `HTTP://example.com` is a valid
+// link, and rejecting it marked a working link as invalid in the dialog. Asserted here rather
+// than left to the UI probe, because the rule is a pure function and the failure is invisible
+// unless someone types a capitalised scheme.
+{
+  const { isValidLink } = await import('../src/protocol.ts')
+  for (const good of [
+    'http://example.com', 'https://example.com',
+    'HTTP://example.com', 'HTTPS://example.com', 'Http://example.com',
+    '  https://example.com/path?q=1  ',
+  ]) {
+    check(`isValidLink accepts ${JSON.stringify(good)}`, isValidLink(good) === true)
+  }
+  for (const bad of [
+    'ftp://example.com', 'example.com', '//example.com', 'javascript:alert(1)',
+    'httpx://example.com', '',
+  ]) {
+    check(`isValidLink rejects ${JSON.stringify(bad)}`, isValidLink(bad) === false)
+  }
+}
+
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)
 process.exit(failures.length === 0 ? 0 : 1)

@@ -3,7 +3,7 @@
  *
  * ## Why this exists
  *
- * The missing-底层工作区 dialog names the path that is gone, and only the Host can
+ * The missing-base-workspace dialog names the path that is gone, and only the Host can
  * produce it: the path starts at the OS Documents folder, which a browser cannot read.
  * `initializeDefault` is not a substitute — it returns `undefined` once its recorded
  * `defaultWorkspaceId` dangles (measured), and it is a *write* path besides.
@@ -45,6 +45,18 @@ import { DEFAULT_WORKSPACE_DIRECTORY } from '@deepseek-ai/dsh-api-workspace-cont
  * a readable dialog rather than a hang.
  */
 const LOOKUP_TIMEOUT_MS = 3000
+
+/**
+ * The intermediate directory between Documents and the default Workspace.
+ *
+ * Named rather than inlined as a string literal, even though it is a fixed part of the
+ * official layout: the leaf name is imported (`DEFAULT_WORKSPACE_DIRECTORY`) while this
+ * segment was not, so a layout change that renamed it would have left the imported half
+ * correct and this one silently producing an absolute-but-wrong path — the same failure mode
+ * the module doc calls out. A named constant makes the coupling greppable and gives a future
+ * re-sync one place to check.
+ */
+const HARNESS_DIRECTORY = 'deepseek-harness'
 
 /**
  * Run one native command and return its stdout, or `null` when it fails or times out.
@@ -138,5 +150,5 @@ export async function defaultWorkspacePath(
     if (root === '\\' || root === '/') return null
   }
 
-  return paths.join(paths.normalize(documents), 'deepseek-harness', DEFAULT_WORKSPACE_DIRECTORY)
+  return paths.join(paths.normalize(documents), HARNESS_DIRECTORY, DEFAULT_WORKSPACE_DIRECTORY)
 }

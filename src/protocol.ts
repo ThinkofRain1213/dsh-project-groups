@@ -103,8 +103,15 @@ export interface ProjectValue {
    * This project's spec override: `'none'`, an uploaded file name, or absent to
    * inherit the global choice. `null` on the wire is never used — absence is the
    * inheritance signal, so an explicit `null` would be a second spelling of it.
+   *
+   * Typed `string`, not `DocSpecMode | string`. That union is the same type as `string`
+   * (the literal arm is subsumed), so it carried no information while reading as if the
+   * global mode values were meaningful here — and `'default'`/`'custom'` are precisely the
+   * two that are **not**: they belong to the global setting, and a per-project override is
+   * only ever `'none'` or a file name. Expressing that properly would need a branded type;
+   * the doc says it instead.
    */
-  readonly docSpec?: DocSpecMode | string
+  readonly docSpec?: string
   /**
    * The spec content hash the document was last written against, or absent when
    * the document has never been written. The settings surface shows it only as
@@ -518,7 +525,13 @@ export interface ProjectValidateLinksValue {
  */
 export function isValidLink(url: string): boolean {
   const trimmed = url.trim()
-  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) return false
+  // Scheme-matched case-insensitively: RFC 3986 makes URL schemes case-insensitive, so
+  // `HTTP://example.com` is a perfectly valid link. The exact-case test rejected it — and
+  // every other capitalisation — marking a working link as invalid in the dialog, which is
+  // the user-facing failure the `validateLinks` switch produces. The original value is still
+  // what gets stored and shown; only the test is case-folded.
+  const scheme = trimmed.toLowerCase()
+  if (!scheme.startsWith('http://') && !scheme.startsWith('https://')) return false
   try {
     new URL(trimmed)
     return true
@@ -682,7 +695,16 @@ export interface ProjectSetBaseWorkspaceRequest {
   // (it mirrors the whole setting), which is harmless: the Host ignores it.
 }
 
-/** `setBaseWorkspace` result: the stored setting, with `path`/`name` dropped for `'default'`. */
+/**
+ * `setBaseWorkspace` result: the stored setting, with `path`/`name` **retained** for
+ * `'default'` as the remembered Workspace.
+ *
+ * The comment here used to say "dropped for `'default'`", which is the opposite of the
+ * contract. `withDefaultMode` and the Host's `setBaseWorkspace` both keep them deliberately,
+ * so that 默认 → 指定 → 默认 restores the user's last pick. A caller trusting the old wording
+ * would render 未选择 or clear the memory, reintroducing exactly the drift `withDefaultMode`
+ * exists to prevent.
+ */
 export interface ProjectBaseWorkspaceValue {
   readonly mode: BaseWorkspaceSetting['mode']
   readonly path?: string
