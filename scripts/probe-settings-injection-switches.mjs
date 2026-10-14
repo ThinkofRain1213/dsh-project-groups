@@ -5,7 +5,8 @@
  * than the Remote: what is under test is the pair's presentation and their
  * coupling, neither of which a Remote call would observe.
  *
- *   1. both switches render, with the document one on by default;
+ *   1. both switches render, with the **document** switch off by default (check 1 asserts
+ *      `注入项目文档` is unchecked; the master `注入项目信息` is the one that ships on);
  *   2. the document switch is **disabled** while the master is off;
  *   3. turning the master off is persisted (the Host's global says so);
  *   4. the master turning off disables the document control and reports why;
@@ -15,7 +16,7 @@
  * Usage: node probe-settings-injection-switches.mjs <dshExe> <asarRoot> <dshHome> [profile]
  */
 import { spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
@@ -25,8 +26,12 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-settings-injection-switches.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = 17973
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// Overridable: a leftover Host from an aborted run holds the fixed port, and the next probe
+// then reports a boot timeout for what is really an occupied port.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? 17973)
+// `join`, not a `\\`-joined literal: on a POSIX runner a backslash is an ordinary filename
+// character, so the literal path silently never resolves. (`join` was already imported here.)
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -34,32 +39,9 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
-page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+let child
+let browser
+let page
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -69,21 +51,52 @@ const dismiss = async () => {
     for (const label of ['稍后配置', '继续', 'Later']) {
       const button = page.getByRole('button', { name: label, exact: true }).first()
       if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
+        // Logged rather than discarded: a click that never landed leaves the mask up, and the
+        // checks below then measure an intercepted UI for a setup reason with nothing to say so.
+        await button.click({ force: true }).catch((error) => {
+          console.log(`  dismiss: click on "${label}" failed — ${error.message}`)
+        })
         await page.waitForTimeout(1200)
       }
     }
     await page.waitForTimeout(700)
   }
+  if (await isMasked()) console.log('  dismiss: a modal mask is STILL up after 8 rounds — later checks may be measuring an intercepted UI')
 }
 
 /** The stored global, read straight off the Host's durable unit. */
 const storedGlobal = () => {
+  const file = join(dshHome, 'storages', 'project_groups.json')
   try {
-    return JSON.parse(readFileSync(join(dshHome, 'storages', 'project_groups.json'), 'utf8')).global
-  } catch {
+    return JSON.parse(readFileSync(file, 'utf8')).global
+  } catch (error) {
+    // Logged, because a *corrupt* file and a legitimately absent global both read as `undefined`:
+    // a storage failure used to make `g?.injectProjectInfo === false` report "not persisted" with
+    // nothing in the output to say the file could not be read at all.
+    if (existsSync(file)) console.log(`  storedGlobal: ${file} could not be read/parsed — ${error.message}`)
     return undefined
   }
+}
+
+/**
+ * Poll the stored global until `predicate` holds.
+ *
+ * The fixed `waitForTimeout(2000)` after each click was a guess in both directions: on a slow
+ * machine the assertion could run before the Host had written the value, and on a fast one it
+ * wasted the full two seconds. Polling with a bound waits for the fact being asserted instead.
+ * @param predicate - receives the stored global (`undefined` when unreadable), returns whether it
+ * is the expected value yet.
+ * @param timeoutMs - how long to allow.
+ * @returns the last global read.
+ */
+const waitForStored = async (predicate, timeoutMs = 8000) => {
+  const deadline = Date.now() + timeoutMs
+  let latest = storedGlobal()
+  while (!predicate(latest) && Date.now() < deadline) {
+    await page.waitForTimeout(200)
+    latest = storedGlobal()
+  }
+  return latest
 }
 
 /** The switch whose accessible name is `label`. */
@@ -98,6 +111,37 @@ const switchFor = (label) => page.getByRole('switch', { name: label }).first()
  */
 let driverError
 try {
+  // Spawned inside the `try` so the `finally` always reaches `child.kill()` and the browser
+  // close. While this sat above the `try`, a boot timeout — or any throw out of `chromium.launch`
+  // — rejected the top-level await before cleanup ran and left the Host running on the port, which
+  // is exactly the "a crash is never a pass" guarantee this file advertises.
+  child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
+    })
+    child.stderr.on('data', (chunk) => { out += chunk })
+  })
+
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
+  page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismiss()
@@ -135,8 +179,7 @@ try {
   console.log('')
   console.log('=== 3. 关掉 master ⇒ 落盘 + 文档开关变灰 ===')
   await info.click({ force: true })
-  await page.waitForTimeout(2000)
-  const g = storedGlobal()
+  const g = await waitForStored(global => global?.injectProjectInfo === false)
   console.log(`  Host global: ${JSON.stringify({ info: g?.injectProjectInfo, doc: g?.injectProjectDoc })}`)
   check('3) Host 记录了 master 关闭', g?.injectProjectInfo === false, String(g?.injectProjectInfo))
   check('3) 开关显示为关', (await info.isChecked()) === false, String(await info.isChecked()))
@@ -148,8 +191,7 @@ try {
   console.log('')
   console.log('=== 5. 重开 master ⇒ 文档开关恢复可用，且保留原选择 ===')
   await info.click({ force: true })
-  await page.waitForTimeout(2000)
-  const g2 = storedGlobal()
+  const g2 = await waitForStored(global => global?.injectProjectInfo === true)
   check('5) Host 记录了 master 打开', g2?.injectProjectInfo === true, String(g2?.injectProjectInfo))
   check('5) 文档开关恢复可用', (await doc.isDisabled()) === false)
   check('5) 文档的存储值未被联动改写', g2?.injectProjectDoc === false,
@@ -158,15 +200,15 @@ try {
   console.log('')
   console.log('=== 6. master 开着时，文档开关独立写入 ===')
   await doc.click({ force: true })
-  await page.waitForTimeout(2000)
-  const g3 = storedGlobal()
+  const g3 = await waitForStored(global => global?.injectProjectDoc === true)
   check('6) Host 记录了文档开启', g3?.injectProjectDoc === true, String(g3?.injectProjectDoc))
   check('6) master 未受影响', g3?.injectProjectInfo === true, String(g3?.injectProjectInfo))
   check('6) 开关显示为开', (await doc.isChecked()) === true)
 
-  // Put it back so a rerun starts from the shipped defaults.
+  // Put it back so a rerun starts from the shipped defaults — and wait for the Host to have
+  // written it, rather than assuming 1.5 s was enough.
   await doc.click({ force: true })
-  await page.waitForTimeout(1500)
+  await waitForStored(global => global?.injectProjectDoc === false)
 } catch (error) {
   driverError = error
 } finally {
@@ -179,7 +221,7 @@ try {
   }
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`)
-  await browser.close().catch(() => {})
-  child.kill()
+  if (browser !== undefined) await browser.close().catch(() => {})
+  if (child !== undefined) child.kill()
   process.exit(failures.length === 0 ? 0 : 1)
 }

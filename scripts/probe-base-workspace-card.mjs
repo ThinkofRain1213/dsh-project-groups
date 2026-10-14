@@ -97,8 +97,10 @@ const url = await new Promise((resolve, reject) => {
 let browser
 let page
 const consoleErrors = []
-page.on('pageerror', (error) => consoleErrors.push(error.message))
-page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()) })
+// The two listeners are registered inside the `try`, right after `page` is assigned — see below.
+// They used to sit here, which after the launch moved into the `try` meant running against
+// `undefined`: `page.on` on `undefined` is a TypeError before the first navigation, so the probe
+// could not start at all.
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
 const dismiss = async () => {
@@ -181,6 +183,12 @@ const callApi = (method, args) => page.evaluate(async ({ method, args }) => {
 try {
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // Registered here, where `page` exists. Both used to sit at the top level, and once the launch
+  // moved inside this `try` that meant `page.on` ran on `undefined` — a TypeError before the first
+  // navigation, so the probe could never start. They must also precede the first `goto`, since
+  // what they catch is console output produced by the page.
+  page.on('pageerror', (error) => consoleErrors.push(error.message))
+  page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()) })
 
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)

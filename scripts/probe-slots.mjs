@@ -31,7 +31,10 @@ core.register({
   name: 'root',
   children: { 'sidebar.workspaces': { kind: 'single', scope: 'root' } },
 }, () => null)
-const disposeBrowser = core.register({
+// The returned disposer is deliberately not kept: this registration stands in for the
+// shipped sidebar for the whole first section, and every later check reads the ledger
+// expecting it there. Only OUR entry is disposed below (to measure restoration).
+core.register({
   name: 'sidebar.workspaces',
   children: {
     'sidebar.workspaces.session.menu.item': { kind: 'list', scope: 'root' },
@@ -53,6 +56,10 @@ const ours = core.register({ name: 'sidebar.workspaces', priority: -100 }, () =>
 
 // `register` returns a disposer; winner identity is read off the entry.
 // The official entry declares no priority, which the machinery reads as 0.
+//
+// `[0]` is the winner *by contract*, not by luck: `entriesOfSlot` projects each cell to
+// its shadowing winner "in priority order" (single = one cell), and `register` keeps
+// `entries` sorted by priority. So index 0 is the entry that renders.
 const winner = () => core.entriesOfSlot('sidebar.workspaces')[0]
 const winnerPriority = () => winner()?.options.priority ?? 0
 
@@ -78,8 +85,12 @@ try {
 } catch (error) {
   childError = error
 }
+// Both halves are asserted: the phrase alone would pass for any other error that happens
+// to contain it, so the message must also name the child slot that was re-declared.
 check('re-declaring an official child slot is REFUSED',
-  childError !== null && /already declared/.test(childError.message),
+  childError !== null
+    && /already declared/.test(childError.message)
+    && childError.message.includes('sidebar.workspaces.session.menu.item'),
   childError?.message?.slice(0, 96))
 
 // Disposing OUR entry restores the official one untouched. `register` returns
@@ -104,7 +115,9 @@ core2.register({
   name: 'root',
   children: { 'sidebar.workspaces': { kind: 'single', scope: 'root' } },
 }, () => null)
-const official2 = core2.register({
+// Not disposed either: it is the official owner the following checks identify by its
+// `priority === 0` ledger position, so it has to stay registered.
+core2.register({
   name: 'sidebar.workspaces',
   children: { 'sidebar.workspaces.session.menu.item': { kind: 'list', scope: 'root' } },
 }, () => null)
@@ -112,17 +125,27 @@ const official2 = core2.register({
 // The renderer authorises renderSlot against the rendering entry's children.
 // Reproduce that rule exactly (see boundRenderSlot in the shipped renderer:
 // `const declared = entry.children?.[key]`), which is what the renderer throws.
-const owns = (entry, key) => Object.hasOwn(entry.children ?? {}, key)
+// Optional chaining mirrors that guard: a missing winner must be reported by the checks
+// below, not crash the run with a `TypeError`.
+const owns = (entry, key) => Object.hasOwn(entry?.children ?? {}, key)
 const officialEntry2 = core2.entries('sidebar.workspaces').find(e => (e.options.priority ?? 0) === 0)
 check('official entry owns the session-menu child',
   owns(officialEntry2, 'sidebar.workspaces.session.menu.item'))
 
-// Our entry declares no children (it cannot — the slot is already declared).
-const disposeOurs2 = core2.register({ name: 'sidebar.workspaces', priority: -100 }, () => null)
+// Our entry declares no children (it cannot — the slot is already declared). The binding
+// is not kept: this probe ends here, and the point of this registration is the ledger row
+// it leaves behind.
+core2.register({ name: 'sidebar.workspaces', priority: -100 }, () => null)
 const ourEntry2 = core2.entries('sidebar.workspaces').find(e => (e.options.priority ?? 0) === -100)
+// `ourEntry2 !== undefined` is part of the assertion, not decoration: `owns` is
+// null-safe, so a missing entry would otherwise make this check pass vacuously.
 check('our entry does NOT own the session-menu child',
-  !owns(ourEntry2, 'sidebar.workspaces.session.menu.item'),
-  'so renderSlot for it would throw SlotOwnershipError')
+  ourEntry2 !== undefined && !owns(ourEntry2, 'sidebar.workspaces.session.menu.item'),
+  ourEntry2 === undefined
+    ? 'our entry was not found on the ledger'
+    : 'so renderSlot for it would throw SlotOwnershipError')
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)
-process.exit(failures.length === 0 ? 0 : 1)
+// `process.exit()` here would truncate the summary when stdout is a pipe (CI, `| tee`),
+// because those writes are asynchronous; setting the code lets Node flush and exit.
+process.exitCode = failures.length === 0 ? 0 : 1

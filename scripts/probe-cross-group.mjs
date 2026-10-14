@@ -28,8 +28,10 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   process.exit(2)
 }
 
-const PORT = 17648
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// Overridable: a Host leaked by an earlier failed run keeps this port bound, and the only
+// symptom would be an opaque "boot timeout" instead of a clear collision.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? 17648)
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -44,31 +46,34 @@ function boot(profile) {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''
-    const timer = setTimeout(() => reject(new Error(`timed out booting ${profile}: ${redactToken(out.slice(-400))}`)), 120_000)
+    let timer
+    // Every failure path kills the child before rejecting. `server` is only assigned once this
+    // promise resolves, so the caller's `finally` cannot clean up a boot that never returned:
+    // the orphaned Host would keep PORT bound and break every later run.
+    const fail = (error) => {
+      clearTimeout(timer)
+      if (child.exitCode === null) child.kill()
+      reject(error)
+    }
+    timer = setTimeout(() => fail(new Error(`timed out booting ${profile}: ${redactToken(out.slice(-400))}`)), 120_000)
     // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
     // stdout, so without this handler the promise stayed pending until the 120 s timeout and
     // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
     // the process outright.
-    child.on('error', (error) => {
-      clearTimeout(timer)
-      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-    })
+    child.on('error', (error) => fail(new Error(`spawn failed for ${exe}: ${error.message}`)))
     child.stdout.on('data', (chunk) => {
       out += String(chunk)
       const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
       if (match !== null) { clearTimeout(timer); setTimeout(() => resolve({ child, url: match[1] }), 3000) }
     })
     child.stderr.on('data', (chunk) => { out += chunk })
-    child.on('exit', (code) => { clearTimeout(timer); reject(new Error(`${profile} exited with ${code}`)) })
+    child.on('exit', (code) => { fail(new Error(`${profile} exited with ${code}`)) })
   })
 }
 
 let browser
 let page
-await installRowKeyHelpers(page)
 const errors = []
-page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
-page.on('pageerror', (error) => { errors.push(`pageerror: ${error.message}`) })
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -109,17 +114,36 @@ const ungroupedSessions = () => page.evaluate(() => {
 /** The persisted ordering mode. */
 const orderMode = () => page.evaluate(() => {
   const raw = localStorage.getItem('dsh.workspace.view.v5')
-  return raw === null ? null : JSON.parse(raw).orderBy ?? null
+  if (raw === null) return null
+  // A stale/corrupted value used to escape as a raw SyntaxError and abort the run instead of
+  // reporting a result for the mode check.
+  try { return JSON.parse(raw).orderBy ?? null } catch { return '<unparseable>' }
 })
 
-/** The Host's stored assignment + order records, read from the domain file. */
+/**
+ * The Host's stored assignment + order records, read from the domain file.
+ *
+ * A missing file is a legitimate empty domain, but a read or parse failure is not: collapsing
+ * the two made a corrupted/renamed file (or a wrong path) look like "the Host stored nothing",
+ * and the assertions below then failed for a reason with no visible cause.
+ */
 const storedDomain = async () => {
+  let text
   try {
-    const text = await readFile(join(dshHome, 'storages', 'project_groups.json'), 'utf8')
-    const parsed = JSON.parse(text)
-    return { assignments: parsed.tables.assignments ?? {}, orders: parsed.tables.orders ?? {} }
-  } catch {
+    text = await readFile(join(dshHome, 'storages', 'project_groups.json'), 'utf8')
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      check('the Host\'s domain file is readable', false, error.message)
+      return { assignments: {}, orders: {}, unreadable: true }
+    }
     return { assignments: {}, orders: {} }
+  }
+  try {
+    const parsed = JSON.parse(text)
+    return { assignments: parsed.tables?.assignments ?? {}, orders: parsed.tables?.orders ?? {} }
+  } catch (error) {
+    check('the Host\'s domain file is valid JSON', false, error.message)
+    return { assignments: {}, orders: {}, unreadable: true }
   }
 }
 
@@ -146,31 +170,35 @@ const makeProject = async (title) => {
  */
 const seedSession = async (title, message) => {
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    const before = await sessionsUnder(title)
     await dismissModals()
     const row = projectSection(title)
-    await row.hover({ timeout: 5000 }).catch(() => {})
+    // The swallowed error is logged, not discarded: a covered/detached element or a bad
+    // selector otherwise surfaces much later as an unexplained "could not seed a Session".
+    await row.hover({ timeout: 5000 }).catch((error) => console.log(`  (hover 失败: ${error.message.split('\n')[0]})`))
     await page.waitForTimeout(400)
     await row.locator('button[aria-label^="在"]').first().dispatchEvent('click')
     await page.waitForTimeout(3500)
 
     const composer = page.locator('[data-composer-input="true"]').first()
-    if (await composer.count() === 0) continue
-    await composer.click({ force: true }).catch(() => {})
+    if (await composer.count() === 0) {
+      console.log(`  (第 ${String(attempt + 1)} 次: 没有找到输入框，重试)`)
+      continue
+    }
+    await composer.click({ force: true }).catch((error) => console.log(`  (点击输入框失败: ${error.message.split('\n')[0]})`))
     await page.waitForTimeout(600)
     // `type` dispatches real key events, which the editor's own state follows;
     // `fill` sets the DOM text without necessarily updating it.
-    await composer.type(message, { delay: 30 }).catch(() => {})
+    await composer.type(message, { delay: 30 }).catch((error) => console.log(`  (输入失败: ${error.message.split('\n')[0]})`))
     await page.waitForTimeout(400)
     await page.keyboard.press('Enter')
 
-    // Wait for the message to become the row's title.
+    // Wait for the message to become the row's title. Reaching that state is the whole
+    // condition; `rows.length > before.length` was an extra clause that could never decide
+    // anything, because the very next line returns on `named` alone.
     for (let wait = 0; wait < 20; wait += 1) {
       await page.waitForTimeout(700)
-      const rows = await sessionsUnder(title)
       const named = await page.evaluate((text) => [...document.querySelectorAll('[data-row-key^="session:"]')]
         .some(node => (node.textContent ?? '').includes(text)), message)
-      if (named && rows.length > before.length) return
       if (named) return
     }
   }
@@ -192,6 +220,11 @@ let server
 try {
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // These three need a live `page` and therefore run here, not at module scope — at module
+  // scope they executed against an undefined `page` and threw before anything was launched.
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
+  page.on('pageerror', (error) => { errors.push(`pageerror: ${error.message}`) })
+  await installRowKeyHelpers(page)
   server = await boot('pg')
   await page.goto(server.url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(6000)
@@ -216,6 +249,20 @@ try {
   check('甲 holds two Sessions', alphaBefore.length === 2, JSON.stringify(alphaBefore))
   check('乙 holds one Session', betaBefore.length === 1, JSON.stringify(betaBefore))
   if (alphaBefore.length !== 2 || betaBefore.length !== 1) throw new Error('bad seed')
+
+  // The two projects' ids, taken from the Host's own table rather than from a count: the order
+  // assertions below must name the project the drag targeted, because `length === 2` also
+  // describes an unrelated leftover record from another run or profile.
+  const ownerOf = (domain, sessionId) => domain.assignments[sessionId]?.projectId
+  const seededOwners = await storedDomain()
+  const alphaProjectId = ownerOf(seededOwners, alphaBefore[1])
+  const betaProjectId = ownerOf(seededOwners, betaBefore[0])
+  console.log(`项目 id: 甲=${JSON.stringify(alphaProjectId)} 乙=${JSON.stringify(betaProjectId)}`)
+  // Stated as a precondition: every order assertion below is scoped to these ids, so a missing
+  // id would silently weaken them instead of failing.
+  check('前置：能从 Host 的归档表里读出甲/乙的项目 id',
+    alphaProjectId !== undefined && betaProjectId !== undefined,
+    JSON.stringify({ alphaProjectId, betaProjectId }))
 
   // ── Path B: drop 甲's first Session onto 乙's only row. ──
   // A positional drop files the Session AND places it, and selects manual.
@@ -245,13 +292,13 @@ try {
   // a count-only assertion is satisfied by the seed itself and would pass on a
   // bundle where the drag did nothing.
   const moved = alphaBefore[0]
-  const ownerOf = (domain, sessionId) => domain.assignments[sessionId]?.projectId
   check('the Host filed the dragged Session under 乙',
     ownerOf(stored1, moved) !== undefined
     && ownerOf(stored1, moved) === ownerOf(stored1, betaBefore[0]),
     JSON.stringify({ moved, owner: ownerOf(stored1, moved), betaRow: ownerOf(stored1, betaBefore[0]) }))
   check('and recorded 乙\'s order',
-    Object.keys(stored1.orders).length === 2, JSON.stringify(Object.keys(stored1.orders)))
+    betaProjectId !== undefined && Object.hasOwn(stored1.orders, betaProjectId),
+    JSON.stringify({ betaProjectId, orders: Object.keys(stored1.orders) }))
 
   // ── Path A: drop 乙's Session onto 甲's HEADER (the group itself). ──
   // Under manual ordering this goes to the front, and no row is named.
@@ -274,9 +321,12 @@ try {
     JSON.stringify({ headerMoving, alphaHeader, betaHeader }))
   check('and placed it at the front (manual mode names no other position)',
     alphaHeader[0] === headerMoving, JSON.stringify(alphaHeader))
+  // Read once: this assertion used to await `storedDomain()` three times, so the two sides of
+  // the comparison and the diagnostic came from three different file snapshots.
+  const storedAfterHeader = await storedDomain()
   check('and the Host filed it under 甲',
-    ownerOf(await storedDomain(), headerMoving) === ownerOf(await storedDomain(), alphaBefore[1]),
-    JSON.stringify(await storedDomain()))
+    ownerOf(storedAfterHeader, headerMoving) === ownerOf(storedAfterHeader, alphaProjectId),
+    JSON.stringify({ headerMoving, owner: ownerOf(storedAfterHeader, headerMoving), alphaProjectId, domain: storedAfterHeader }))
 
   // ── Drag out to Ungrouped, which must be reachable even when empty. ──
   const ungroupedBefore = await ungroupedSessions()
@@ -297,8 +347,10 @@ try {
     JSON.stringify({ alphaOut, ungroupedAfter }))
 
   const stored2 = await storedDomain()
+  // `unreadable` is part of the condition: an unreadable store reports the same `undefined` a
+  // correct drag-out produces, so without it a broken read passes the check.
   check('the Host dropped the assignment on the way out',
-    stored2.assignments[alphaBefore[0]] === undefined,
+    stored2.unreadable !== true && stored2.assignments[alphaBefore[0]] === undefined,
     JSON.stringify(stored2.assignments))
 
   // ── Everything survives a reload. ──
@@ -326,10 +378,17 @@ try {
   }
   await switchMode('最近更新')
   const modeRecency = await orderMode()
-  const ordersAfterDiscard = Object.keys((await storedDomain()).orders)
-  console.log(`mode for the recency phase: ${JSON.stringify(modeRecency)}; orders: ${JSON.stringify(ordersAfterDiscard)}`)
-  check('switching back to recency discards the orders', ordersAfterDiscard.length === 0,
-    JSON.stringify(ordersAfterDiscard))
+  const domainAfterDiscard = await storedDomain()
+  console.log(`mode for the recency phase: ${JSON.stringify(modeRecency)}; orders: ${JSON.stringify(Object.keys(domainAfterDiscard.orders))}`)
+  // Named per project instead of "no order records at all": an unrelated leftover record from
+  // another run would have failed a count-based check for a reason that has nothing to do with
+  // this switch. The two projects here are the ones that had orders a moment ago.
+  check('switching back to recency discards the orders',
+    domainAfterDiscard.unreadable !== true
+    && alphaProjectId !== undefined && betaProjectId !== undefined
+    && !Object.hasOwn(domainAfterDiscard.orders, alphaProjectId)
+    && !Object.hasOwn(domainAfterDiscard.orders, betaProjectId),
+    JSON.stringify({ alphaProjectId, betaProjectId, orders: Object.keys(domainAfterDiscard.orders) }))
 
   const loose = await ungroupedSessions()
   const betaBeforeHeader = await sessionsUnder(beta)
@@ -341,15 +400,19 @@ try {
   )
   const betaAfterHeader = await sessionsUnder(beta)
   const modeStill = await orderMode()
-  const ordersAfterHeader = Object.keys((await storedDomain()).orders)
+  const domainAfterHeader = await storedDomain()
   console.log(`乙 after recency header drop: ${JSON.stringify(betaAfterHeader)}`)
-  console.log(`mode after: ${JSON.stringify(modeStill)}; orders: ${JSON.stringify(ordersAfterHeader)}`)
+  console.log(`mode after: ${JSON.stringify(modeStill)}; orders: ${JSON.stringify(Object.keys(domainAfterHeader.orders))}`)
   check('a header drop under recency still files the Session',
     betaAfterHeader.length === betaBeforeHeader.length + 1 && betaAfterHeader.includes(loose[0]),
     JSON.stringify({ betaBeforeHeader, betaAfterHeader, loose }))
   check('and does NOT switch the mode to manual', modeStill === 'updated', String(modeStill))
-  check('and stores no order for the target project', ordersAfterHeader.length === 0,
-    JSON.stringify(ordersAfterHeader))
+  // Scoped to the target project: "the orders table is empty" is a different (and weaker)
+  // claim, and it was satisfied by a table that an unrelated record happened to leave alone.
+  check('and stores no order for the target project',
+    domainAfterHeader.unreadable !== true && betaProjectId !== undefined
+    && !Object.hasOwn(domainAfterHeader.orders, betaProjectId),
+    JSON.stringify({ betaProjectId, orders: Object.keys(domainAfterHeader.orders) }))
 
   console.log(`\nconsole errors: ${errors.length === 0 ? '(none)' : errors.join(' | ')}`)
 } finally {

@@ -26,8 +26,10 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   process.exit(2)
 }
 
-const PORT = 17680
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// Overridable: a Host leaked by an earlier failed run keeps this port bound, and the only
+// symptom would be an opaque "boot timeout" instead of a clear collision.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? 17680)
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -35,34 +37,43 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const child = spawn(exe, [BIN, '--profile', 'pg', '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout: ${redactToken(out.slice(-300))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (match !== null) { clearTimeout(timer); setTimeout(() => resolve(match[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
+let child
 let browser
 let page
-await installRowKeyHelpers(page)
+
 const logs = []
-page.on('console', (message) => { if (message.type() === 'error') logs.push(message.text()) })
+
+/**
+ * Boot the Host and resolve the tokenised dev-server URL.
+ *
+ * A function rather than top-level code so the whole boot path runs inside the try/finally
+ * below: a boot timeout used to reject before the guarded region was entered, so the spawned
+ * Host was never killed and kept this port bound for every later run.
+ */
+const boot = async () => {
+  child = spawn(exe, [BIN, '--profile', 'pg', '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout: ${redactToken(out.slice(-300))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (match !== null) { clearTimeout(timer); setTimeout(() => resolve(match[1]), 3000) }
+    })
+    child.stderr.on('data', (chunk) => { out += chunk })
+  })
+}
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -80,13 +91,56 @@ const dismiss = async () => {
   }
 }
 
-/** The Host's assignment table, read from this plugin's own domain file. */
+/** The rendered row keys, in order — the observable the waits below synchronise on. */
+const rowKeys = () => page.evaluate(() => [...document.querySelectorAll('[data-row-key]')]
+  .map(node => node.getAttribute('data-row-key')))
+
+/**
+ * Wait until the rendered rows stop changing, instead of sleeping a flat 4.5 s.
+ *
+ * A fixed sleep either fails on a slow machine or passes for the wrong reason on a fast one.
+ * `minMs` keeps the fast path from reading before the action can have reached the Host at all,
+ * and `timeoutMs` bounds the slow path loudly instead of reading a half-rendered tree.
+ */
+const waitForRowsToSettle = async (label, { minMs = 2500, timeoutMs = 15_000 } = {}) => {
+  const started = Date.now()
+  let previous = null
+  let stable = 0
+  while (Date.now() - started < timeoutMs) {
+    const current = JSON.stringify(await rowKeys())
+    // A change resets the counter, so a row that appears late still extends the wait.
+    stable = current === previous ? stable + 1 : 0
+    if (stable >= 3 && Date.now() - started >= minMs) return true
+    previous = current
+    await page.waitForTimeout(250)
+  }
+  console.log(`  (${label}: 行列表在 ${String(timeoutMs)}ms 内没有稳定下来)`)
+  return false
+}
+
+/**
+ * The Host's assignment table, read from this plugin's own domain file.
+ *
+ * `null` means "could not be read", `{}` means "read, and the table is empty". The two must not
+ * collapse into one value: the decisive check below is `owners[moved] === undefined`, so an
+ * unreadable or corrupted store — or a plugin that stopped writing it — would otherwise report
+ * success on exactly the regression this probe exists to catch. A missing file stays a
+ * legitimate `{}` (nothing has been stored yet).
+ */
 const assignments = async () => {
+  let text
   try {
-    const text = await readFile(join(dshHome, 'storages', 'project_groups.json'), 'utf8')
-    return JSON.parse(text).tables.assignments ?? {}
-  } catch {
-    return {}
+    text = await readFile(join(dshHome, 'storages', 'project_groups.json'), 'utf8')
+  } catch (error) {
+    if (error.code === 'ENOENT') return {}
+    console.log(`  (project_groups.json 无法读取: ${error.message})`)
+    return null
+  }
+  try {
+    return JSON.parse(text).tables?.assignments ?? {}
+  } catch (error) {
+    console.log(`  (project_groups.json 不是合法 JSON: ${error.message})`)
+    return null
   }
 }
 
@@ -112,18 +166,23 @@ const makeProject = async (title) => {
   await page.waitForTimeout(2500)
 }
 
-/** Click a group row's ＋ and wait for the new Session to appear. */
+/** Click a group row's ＋ and wait for the tree to reflect whatever the click did. */
 const clickPlus = async (row) => {
   await dismiss()
   await row.hover({ timeout: 5000 }).catch(() => {})
   await page.waitForTimeout(400)
   await row.locator('button[aria-label^="在"]').first().dispatchEvent('click')
-  await page.waitForTimeout(4500)
+  await waitForRowsToSettle('＋ 之后')
 }
 
 try {
+  const url = await boot()
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // Both of these need a live `page`, so they run here and not at module scope: at module scope
+  // they executed against an undefined `page` and threw before the probe had done anything.
+  page.on('console', (message) => { if (message.type() === 'error') logs.push(message.text()) })
+  await installRowKeyHelpers(page)
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(7000)
   await dismiss()
@@ -153,34 +212,46 @@ try {
   check('the project ＋ put a Session under the project',
     alphaAfterPlus.length === 1, JSON.stringify(alphaAfterPlus))
   check('and the Host filed that Session under the project',
-    moved !== undefined && ownersAfterPlus[moved]?.projectId !== undefined,
+    moved !== undefined && ownersAfterPlus?.[moved]?.projectId !== undefined,
     JSON.stringify(ownersAfterPlus))
 
-  // Step 2: the Ungrouped row's ＋ — the reported failure.
-  await clickPlus(ungroupedRow())
-  const ungroupedAfter = await sessionsUnder('未分组')
-  const alphaFinal = await sessionsUnder(alpha)
-  const owners = await assignments()
+  // Step 2 is only meaningful with a Session to track. Reporting its three checks anyway would
+  // add three FAILs that all restate the missing precondition and say nothing about ownership,
+  // so the skip is stated once, explicitly, next to the state that was actually read.
+  if (moved === undefined) {
+    console.log('SKIP  未分组的 ＋：步骤 1 没有产出可追踪的 Session（见上面的 FAIL）')
+    console.log(`  读数: 甲=${JSON.stringify(alphaAfterPlus)} 未分组=${JSON.stringify(ungroupedAfterPlus)}`)
+  } else {
+    // Step 2: the Ungrouped row's ＋ — the reported failure.
+    await clickPlus(ungroupedRow())
+    const ungroupedAfter = await sessionsUnder('未分组')
+    const alphaFinal = await sessionsUnder(alpha)
+    const owners = await assignments()
 
-  console.log(`未分组 after its ＋: ${JSON.stringify(ungroupedAfter)}`)
-  console.log(`甲 after the Ungrouped ＋: ${JSON.stringify(alphaFinal)}`)
-  console.log(`assignments: ${JSON.stringify(owners)}`)
+    console.log(`未分组 after its ＋: ${JSON.stringify(ungroupedAfter)}`)
+    console.log(`甲 after the Ungrouped ＋: ${JSON.stringify(alphaFinal)}`)
+    console.log(`assignments: ${JSON.stringify(owners)}`)
 
-  // The decisive assertion: the Session now sits under Ungrouped with NO
-  // assignment entry. Counting rows would pass on the broken build too — the
-  // Session renders somewhere either way; what differs is who owns it.
-  check('the Ungrouped ＋ moved the Session under Ungrouped',
-    moved !== undefined && ungroupedAfter.includes(moved),
-    JSON.stringify({ moved, ungroupedAfter, alphaFinal }))
-  check('and the Host holds no assignment for it',
-    moved !== undefined && owners[moved] === undefined,
-    JSON.stringify({ moved, owner: moved === undefined ? null : owners[moved] ?? null }))
-  check('the project no longer holds it',
-    alphaFinal.length === 0, JSON.stringify(alphaFinal))
+    // The decisive assertion: the Session now sits under Ungrouped with NO
+    // assignment entry. Counting rows would pass on the broken build too — the
+    // Session renders somewhere either way; what differs is who owns it.
+    //
+    // `owners !== null` is part of the condition on purpose: an unreadable store made
+    // `owners[moved]` undefined for the wrong reason, which is the same value a correct
+    // Ungrouped ＋ produces.
+    check('the Ungrouped ＋ moved the Session under Ungrouped',
+      ungroupedAfter.includes(moved),
+      JSON.stringify({ moved, ungroupedAfter, alphaFinal }))
+    check('and the Host holds no assignment for it',
+      owners !== null && owners[moved] === undefined,
+      JSON.stringify({ moved, owner: owners === null ? '<assignment table unreadable>' : owners[moved] ?? null }))
+    check('the project no longer holds it',
+      alphaFinal.length === 0, JSON.stringify(alphaFinal))
+  }
 
   console.log(`\nconsole errors: ${logs.length === 0 ? '(none)' : logs.slice(0, 5).join(' | ')}`)
 } finally {
-  child.kill()
+  if (child !== undefined) child.kill()
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 

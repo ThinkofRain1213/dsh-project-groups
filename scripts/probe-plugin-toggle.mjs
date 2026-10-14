@@ -35,8 +35,11 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   process.exit(2)
 }
 
-const PORT = 17641
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// Overridable: a leaked instance from an earlier run keeps this port bound, and because the two
+// profiles share localStorage only when they share the origin, a silent collision would make the
+// whole three-phase design measure the wrong thing.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? 17641)
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -44,12 +47,25 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-/** The Host's own order records, read straight from this plugin's domain file. */
+/**
+ * The Host's own order records, read straight from this plugin's domain file.
+ *
+ * A missing file is a legitimate empty domain; a read or parse failure is not, and collapsing
+ * the two made a corrupted file indistinguishable from "the record was pruned" — the exact
+ * outcome these assertions are trying to detect.
+ */
 const storedOrders = async () => {
+  let text
   try {
-    const text = await readFile(join(dshHome, 'storages', 'project_groups.json'), 'utf8')
-    return JSON.parse(text).tables.orders ?? {}
-  } catch {
+    text = await readFile(join(dshHome, 'storages', 'project_groups.json'), 'utf8')
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.log(`  (project_groups.json 无法读取: ${error.message})`)
+    return {}
+  }
+  try {
+    return JSON.parse(text).tables?.orders ?? {}
+  } catch (error) {
+    console.log(`  (project_groups.json 不是合法 JSON: ${error.message})`)
     return {}
   }
 }
@@ -62,36 +78,59 @@ function boot(profile) {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''
-    const timer = setTimeout(() => reject(new Error(`timed out booting ${profile}: ${redactToken(out.slice(-400))}`)), 120_000)
+    // `settled` stops every later stdout chunk from re-matching the accumulated output and
+    // scheduling another 3 s timer: the URL was matched repeatedly and `resolve` re-queued each
+    // time, leaving uncancellable timers behind for the rest of the run.
+    let settled = false
+    let timer
+    const fail = (error) => {
+      clearTimeout(timer)
+      if (child.exitCode === null) child.kill()
+      reject(error)
+    }
+    timer = setTimeout(() => fail(new Error(`timed out booting ${profile}: ${redactToken(out.slice(-400))}`)), 120_000)
     // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
     // stdout, so without this handler the promise stayed pending until the 120 s timeout and
     // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
     // the process outright.
-    child.on('error', (error) => {
-      clearTimeout(timer)
-      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-    })
+    child.on('error', (error) => fail(new Error(`spawn failed for ${exe}: ${error.message}`)))
     child.stdout.on('data', (chunk) => {
       out += String(chunk)
+      if (settled) return
       const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
       if (match !== null) {
+        settled = true
         clearTimeout(timer)
         // A beat for the client bundles to finish serving.
         setTimeout(() => resolve({ child, url: match[1] }), 3000)
       }
     })
     child.stderr.on('data', (chunk) => { out += String(chunk) })
-    child.on('exit', (code) => {
-      clearTimeout(timer)
-      reject(new Error(`${profile} exited early with ${code}: ${redactToken(out.slice(-400))}`))
-    })
+    child.on('exit', (code) => { fail(new Error(`${profile} exited early with ${code}: ${redactToken(out.slice(-400))}`)) })
   })
 }
 
-/** Stop a booted instance and wait for the port to be released. */
+/**
+ * Stop a booted instance and wait for it to actually exit.
+ *
+ * The next phase boots on the *same fixed port*, so a flat 4 s sleep that ends early leaves the
+ * port occupied and the failure surfaces much later as an unrelated "boot timeout" in the next
+ * phase — with nothing pointing at the real cause.
+ */
 async function stop(child) {
+  if (child.exitCode !== null) return
+  const exited = new Promise((resolve) => { child.once('exit', resolve) })
   child.kill()
-  await new Promise(resolve => setTimeout(resolve, 4000))
+  const released = await Promise.race([
+    exited.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 10_000)),
+  ])
+  if (released) {
+    // A short grace for the OS to release the listening socket.
+    await new Promise(resolve => setTimeout(resolve, 500))
+  } else {
+    console.log('  (警告: 进程 10s 内没有退出，端口可能仍被占用，下一阶段可能启动失败)')
+  }
 }
 
 let browser
@@ -121,6 +160,10 @@ const sections = () => page.evaluate(() => [...document.querySelectorAll('[data-
   })))
 
 let on
+// Declared beside `on`, not inside the try: a throw anywhere between `boot('official')` and its
+// inline `stop` used to leave the official instance running on the fixed port, poisoning every
+// later run of every probe that shares it.
+let off
 try {
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
@@ -153,8 +196,10 @@ try {
     return raw === null ? null : Object.keys(JSON.parse(raw).groupExpansion ?? {})
   })
   console.log(`shared view store groupExpansion keys: ${JSON.stringify(shared)}`)
+  // `row?.key !== undefined` is part of the condition: with no key to look for,
+  // `shared.includes(undefined)` is false and the check PASSed without verifying anything.
   check('the project key is NOT in the shared view store',
-    shared !== null && !shared.includes(row?.key), JSON.stringify(shared))
+    row?.key !== undefined && shared !== null && !shared.includes(row.key), JSON.stringify(shared))
 
   // Switch to manual ordering, which freezes every project into a stored order.
   // The record goes to this plugin's own domain, for the same reason the
@@ -173,14 +218,14 @@ try {
   console.log(`shared sessionOrderByAccount keys: ${JSON.stringify(sharedOrders)}`)
   console.log(`our own order records: ${JSON.stringify(Object.keys(ownOrders))}`)
   check('the project key is NOT in the shared sessionOrderByAccount',
-    sharedOrders !== null && !sharedOrders.includes(row?.key), JSON.stringify(sharedOrders))
+    row?.key !== undefined && sharedOrders !== null && !sharedOrders.includes(row.key), JSON.stringify(sharedOrders))
   check('the frozen order is in this plugin\'s own domain',
-    ownOrders[row?.key] !== undefined, JSON.stringify(Object.keys(ownOrders)))
+    row?.key !== undefined && ownOrders[row.key] !== undefined, JSON.stringify(Object.keys(ownOrders)))
   await stop(on.child)
 
   // --- Phase 2: plugin OFF — the official sidebar mounts and prunes ---------
   console.log('\n=== phase 2: plugin off, official sidebar mounts on the same port ===')
-  const off = await boot('official')
+  off = await boot('official')
   await page.goto(off.url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismissModals()
@@ -190,6 +235,9 @@ try {
     !officialSections.some(section => section.heading.includes(unique)),
     JSON.stringify(officialSections.map(s => s.heading)))
   await stop(off.child)
+  // Marked stopped so the `finally` does not stop it a second time (and so it is obvious that
+  // the phase-2 instance is now the `finally`'s responsibility until this point).
+  off = undefined
 
   // --- Phase 3: plugin ON again — the expansion must come back --------------
   console.log('\n=== phase 3: plugin on again, the row must return expanded ===')
@@ -217,6 +265,9 @@ try {
   check('and so did the project\'s frozen order',
     back !== undefined && ordersBack[back.key] !== undefined, JSON.stringify(Object.keys(ordersBack)))
 } finally {
+  // `off` is stopped here as well as inline: a throw in phase 2 would otherwise skip its inline
+  // stop and leave the official instance holding the fixed port for every later run.
+  if (off?.child !== undefined && off.child.exitCode === null) await stop(off.child)
   if (on?.child !== undefined && on.child.exitCode === null) await stop(on.child)
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }

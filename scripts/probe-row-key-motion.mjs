@@ -34,6 +34,7 @@
  * Usage: node probe-row-key-motion.mjs <dshExe> <asarRoot> <dshHome> [profile]
  */
 import { spawn } from 'node:child_process'
+import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 import { installRowKeyHelpers } from './lib/row-key.mjs'
 import { redactToken } from './lib/redact.mjs'
@@ -43,8 +44,9 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-row-key-motion.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17760 : 17761
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17760 : 17761))
+// `join` rather than Windows-only separators: the literal is an invalid path on a POSIX host.
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -52,33 +54,12 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
+// Spawned inside the `try` below, so a failed spawn, a boot timeout or a launch error all still
+// reach the `finally` that reaps the Host and closes the browser. While the spawn sat above the
+// `try`, a boot timeout rejected the top-level await and left the Electron Host holding `PORT`.
+let child
 let browser
 let page
-// Installed before every navigation, so the in-page parser survives a reload.
-await installRowKeyHelpers(page)
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -88,7 +69,9 @@ const dismiss = async () => {
     for (const label of ['稍后配置', '继续', 'Later']) {
       const button = page.getByRole('button', { name: label, exact: true }).first()
       if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
+        // Logged rather than swallowed: a click that fails leaves the mask up, and the sampled
+        // windows below would then measure the mask rather than the row motion.
+        await button.click({ force: true }).catch((error) => { console.log(`  取消失败（${label}）: ${error.message}`) })
         await page.waitForTimeout(1200)
       }
     }
@@ -107,8 +90,16 @@ const makeProject = async (title) => {
   await page.waitForTimeout(2500)
 }
 
-/** Every rendered Session row: id, group, row key, and y. */
-const sessionRows = () => page.evaluate(() => {
+/**
+ * Collect every rendered Session row: id, group, row key, y and whether it is the blank one.
+ *
+ * Self-contained (it closes over nothing) so its own source can be injected into the page — see
+ * {@link COLLECT_ROWS_SOURCE}. That injection exists because the one-shot reader and the per-frame
+ * sampler used to hold separate copies of this exact loop; a change to either (the blank text, the
+ * group derivation) could then make the assertions disagree with the trajectory they are computed
+ * from, which invalidates the probe without any visible failure.
+ */
+const collectSessionRows = () => {
   const rows = [...document.querySelectorAll('[data-row-key]')]
   let group = null
   const found = []
@@ -131,7 +122,13 @@ const sessionRows = () => page.evaluate(() => {
     })
   }
   return found
-})
+}
+
+/** {@link collectSessionRows} as source text, installed on every navigation. */
+const COLLECT_ROWS_SOURCE = `window.__collectSessionRows = (${String(collectSessionRows)});`
+
+/** Every rendered Session row, through the injected collector. */
+const sessionRows = () => page.evaluate(() => window.__collectSessionRows())
 
 /**
  * Sample every Session row each animation frame, keeping every sample.
@@ -145,26 +142,9 @@ const startSampler = (windowMs) => page.evaluate((windowMs) => {
   const animations = []
   const start = performance.now()
   const sample = () => {
-    const rows = [...document.querySelectorAll('[data-row-key]')]
-    let group = null
-    const seen = []
-    for (const node of rows) {
-      const key = node.getAttribute('data-row-key')
-      if (key.startsWith('workspace:')) {
-        const id = key.slice('workspace:'.length)
-        group = id === '' ? 'ungrouped' : id
-        continue
-      }
-      const id = window.__sessionIdOf(key)
-      if (id === null) continue
-      seen.push({
-        id,
-        group,
-        key,
-        y: Math.round(node.getBoundingClientRect().top),
-        blank: (node.textContent ?? '').includes('新会话'),
-      })
-    }
+    // The same collector `sessionRows()` reads through, so the trajectory and the assertions can
+    // never be computed from two divergent definitions of "a Session row".
+    const seen = window.__collectSessionRows()
     samples.push({ t: Math.round(performance.now() - start), rows: seen })
     if (performance.now() - start < windowMs) window.__samplerRaf = requestAnimationFrame(sample)
   }
@@ -212,9 +192,16 @@ const armList = () => page.evaluate(() => {
 
 const clickPlus = async (title) => {
   const row = projectRow(title)
-  await row.hover({ timeout: 5000 }).catch(() => {})
+  await row.hover({ timeout: 5000 }).catch((error) => { console.log(`  悬停失败（${title}）: ${error.message}`) })
   await page.waitForTimeout(400)
-  await row.locator('button[aria-label^="在"]').first().click({ force: true })
+  const plus = row.locator('button[aria-label^="在"]').first()
+  // Checked before clicking so the failure names the missing control: the label prefix is
+  // localized copy, and a copy change would otherwise surface as an opaque Playwright timeout —
+  // or, worse, as a later assertion measuring a window in which nothing was clicked at all.
+  if (await plus.count() === 0) {
+    throw new Error(`the ＋ button (button[aria-label^="在"]) is not present on ${title}'s row: the row is missing, or its copy changed`)
+  }
+  await plus.click({ force: true })
 }
 
 /** The distinct Session ids rendered at any point in the window. */
@@ -253,8 +240,36 @@ const classify = (label, samples, animations, id) => {
 }
 
 try {
+  child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
+    })
+    child.stderr.on('data', (chunk) => { out += chunk })
+  })
+
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // Both installed before the first navigation, and both need a real page: at module scope `page`
+  // was still `undefined`, so `installRowKeyHelpers(page)` threw `Cannot read properties of
+  // undefined` before the Host was ever spawned.
+  await installRowKeyHelpers(page)
+  await page.addInitScript(COLLECT_ROWS_SOURCE)
   page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(7000)
@@ -337,6 +352,11 @@ try {
     console.log(`    ${String(id).slice(-10)}: 组=${JSON.stringify(groups)} y不同值=${ys.length} ${JSON.stringify(ys)}`)
   }
   const ids3 = idsIn(r3.samples)
+  // `>= 4` is deliberately not symmetric with section 5's `>= 2`, and the asymmetry is the point:
+  // this is the *negative* assertion, so a fade-and-replace — which shows the old y and then the
+  // new y, i.e. exactly two values — must not count as travel. A real glide that produced fewer
+  // than four frames is caught by the transform check below instead (a fade can never carry one),
+  // so lowering this threshold would only convert the intended fade into a false FAIL.
   const travelled = ids3.some(id => groupsOf(r3.samples, id).length > 1 && [...new Set(trajectory(r3.samples, id))].length >= 4)
   console.log(`  是否出现了"同一会话横跨两组且 y 有中间位置": ${travelled}`)
 
@@ -434,7 +454,9 @@ try {
   console.log(`\n=== 结果 ===`)
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
 } finally {
-  child.kill()
+  // Guarded: the spawn is inside the `try` now, so a synchronous spawn failure must not turn the
+  // real error into a `TypeError` from this line.
+  if (child !== undefined) child.kill()
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 process.exit(failures.length === 0 ? 0 : 1)

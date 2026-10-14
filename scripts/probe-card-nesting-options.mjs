@@ -20,14 +20,21 @@
  * inside the card *and* stays valid.
  *
  * Also measured, because "it clicks" is not the same as "it is usable":
- *   - whether the inner button can take focus (a nested interactive inside a button is
- *     the case where browsers historically kept focus outside);
- *   - whether Enter on the focused card selects the mode;
- *   - whether the inner button is reachable by Tab from the card.
+ *   - whether the inner button can take focus programmatically;
+ *   - whether the inner button is reachable from the card by a real Tab press (the
+ *     `tabindex` attribute and `focus()` alone cannot answer this: `tabIndex` is `0`
+ *     for every `<button>` regardless of nesting, and `focus()` only proves
+ *     programmatic focusability);
+ *   - whether Enter on the focused card reaches a handler. Synthetic KeyboardEvents do
+ *     not run a real `<button>`'s activation behaviour, so this only exercises the
+ *     explicit keydown handler the `div` variant needs.
  *
  * Usage: node probe-card-nesting-options.mjs <dshExe> <asarRoot> <dshHome> [profile]
+ *        DSH_PROBE_PORT overrides the port (two concurrent probes would otherwise
+ *        collide on the fixed default and one would attach to the other's server).
  */
 import { spawn } from 'node:child_process'
+import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
 
@@ -36,15 +43,21 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-card-nesting-options.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17870 : 17871
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// `join`, not a literal: the previous escaped-backslash path cannot resolve off
+// Windows, where the backslashes are ordinary filename characters and the spawn
+// fails with an ENOENT that only surfaced as a 120 s boot timeout.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17870 : 17871))
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
   env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 let out = ''
-const url = await new Promise((resolve, reject) => {
+// Created (not awaited) here, awaited inside the `try` below: awaiting it at the top
+// level meant a boot rejection escaped before cleanup, orphaning the host process
+// with the port still bound.
+const boot = new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
   // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
   // stdout, so without this handler the promise stayed pending until the 120 s timeout and
@@ -59,22 +72,30 @@ const url = await new Promise((resolve, reject) => {
     const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
     if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
   })
-  child.stderr.on('data', (chunk) => { out += chunk })
+  child.stderr.on('data', (chunk) => { out += String(chunk) })
 })
 
-let browser
-let page
-const consoleMessages = []
-page.on('console', (message) => consoleMessages.push(`${message.type()}: ${message.text()}`))
-page.on('pageerror', (error) => consoleMessages.push(`pageerror: ${error.message}`))
+/** The verdict suffix for one `dataset.events` string, kept out of the template literal. */
+const innerClickNote = (events) => {
+  if (events === 'inner') return '  ✅ 未透到卡片'
+  if (events.includes('card')) return '  ❌ 透到卡片'
+  return ''
+}
 
+let browser
 try {
+  const url = await boot
   browser = await chromium.launch({ headless: true })
-  page = await browser.newPage()
+  // Inside the `try`: `page.on(...)` used to run before `newPage()`, so the listeners
+  // were attached to `undefined` and the probe crashed before it measured anything.
+  const page = await browser.newPage()
+  const consoleMessages = []
+  page.on('console', (message) => consoleMessages.push(`${message.type()}: ${message.text()}`))
+  page.on('pageerror', (error) => consoleMessages.push(`pageerror: ${error.message}`))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(6000)
 
-  const result = await page.evaluate(() => {
+  const { report, names } = await page.evaluate(() => {
     const sandbox = document.createElement('div')
     sandbox.style.cssText = 'position:fixed;left:-9999px;top:0'
     document.body.append(sandbox)
@@ -133,7 +154,10 @@ try {
     }
 
     const report = {}
-    for (const [name, pair] of Object.entries(variants)) {
+    for (const [index, [name, pair]] of Object.entries(variants).entries()) {
+      // The Tab pass below re-finds each card by id after focus moved between evaluates.
+      pair.card.id = `probe-card-${index}`
+
       // 1. click the inner button
       pair.card.dataset.events = ''
       pair.inner.click()
@@ -144,55 +168,87 @@ try {
       pair.card.click()
       const cardClick = pair.card.dataset.events
 
-      // 3. can the inner button take focus directly?
+      // 3. Enter on the focused card. Dispatched for real, since the handler used to be
+      //    dead code: nothing ever sent a keydown, so its result was never observed.
+      pair.card.dataset.events = ''
+      pair.card.focus()
+      pair.card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      const cardKey = pair.card.dataset.events
+
+      // 4. can the inner button take focus directly? (programmatic only — see the Tab pass)
       pair.inner.focus()
       const innerFocusable = document.activeElement === pair.inner
 
-      // 4. can the card take focus?
+      // 5. can the card take focus?
       pair.card.focus()
       const cardFocusable = document.activeElement === pair.card
-
-      // 5. is the inner button a tab stop? `tabIndex` is the DOM-level answer; a
-      //    negative value or an unset one inside a button would not be reachable.
-      const innerTabIndex = pair.inner.tabIndex
 
       report[name] = {
         innerClick,
         cardClick,
+        cardKey,
         innerFocusable,
         cardFocusable,
-        innerTabIndex,
+        innerTabAttr: pair.inner.getAttribute('tabindex'),
         innerIsDescendant: pair.card.contains(pair.inner),
         cardTag: pair.card.tagName,
       }
     }
 
-    sandbox.remove()
-    return report
+    // The sandbox stays mounted: the Tab pass needs the same live DOM, and a fresh
+    // element in every pass would not tell us anything about these structures.
+    window.__cardNestingSandbox = sandbox
+    return { report, names: Object.keys(variants) }
   })
 
-  for (const [name, entry] of Object.entries(result)) {
+  // Real sequential navigation. A synthetic `.focus()` and the `tabIndex` property both
+  // answer "is this focusable", never "is this *tab-reachable from the card*", which is
+  // the claim the header makes about a nested interactive inside a <button>.
+  const tabReach = {}
+  for (const [index, name] of names.entries()) {
+    const id = `probe-card-${index}`
+    await page.evaluate((cardId) => { document.getElementById(cardId)?.focus() }, id)
+    await page.keyboard.press('Tab')
+    tabReach[name] = await page.evaluate((cardId) => {
+      const card = document.getElementById(cardId)
+      const active = document.activeElement
+      return {
+        activeTag: active === null ? null : active.tagName,
+        reachable: card !== null && active !== null && active !== card && card.contains(active),
+      }
+    }, id)
+  }
+  await page.evaluate(() => { window.__cardNestingSandbox?.remove() })
+
+  for (const [name, entry] of Object.entries(report)) {
+    const tab = tabReach[name] ?? { reachable: undefined, activeTag: undefined }
     console.log(`=== ${name} ===`)
-    console.log(`  点内部按钮 → 触发: ${JSON.stringify(entry.innerClick)}${entry.innerClick === 'inner' ? '  ✅ 未透到卡片' : entry.innerClick.includes('card') ? '  ❌ 透到卡片' : ''}`)
+    console.log(`  点内部按钮 → 触发: ${JSON.stringify(entry.innerClick)}${innerClickNote(entry.innerClick)}`)
     console.log(`  点卡片空白处 → 触发: ${JSON.stringify(entry.cardClick)}`)
-    console.log(`  内部按钮可聚焦: ${entry.innerFocusable}   卡片可聚焦: ${entry.cardFocusable}   inner.tabIndex=${entry.innerTabIndex}`)
+    console.log(`  卡片上按 Enter → 触发: ${JSON.stringify(entry.cardKey)}${entry.cardKey === '' ? '（合成事件不触发真实激活）' : ''}`)
+    console.log(`  内部按钮可聚焦: ${entry.innerFocusable}   卡片可聚焦: ${entry.cardFocusable}`)
+    console.log(`  内部按钮 tabindex 属性: ${entry.innerTabAttr ?? '(未设置)'}   从卡片按 Tab 可到达内部按钮: ${tab.reachable === true ? '是' : `否（焦点落在 ${tab.activeTag ?? '未知'}）`}`)
+    console.log(`  结构: card=<${entry.cardTag.toLowerCase()}> 含内部按钮=${entry.innerIsDescendant}`)
     console.log('')
   }
 
   console.log('=== 判定 ===')
-  const a = result['A button>button + stop']
-  const c = result['C div>button + stop']
+  const a = report['A button>button + stop']
+  const c = report['C div>button + stop']
   console.log(`  stopPropagation 能挡住卡片吗: A=${a.innerClick === 'inner'}  C=${c.innerClick === 'inner'}`)
-  console.log(`  ⇒ ${a.innerClick === 'inner' && c.innerClick === 'inner'
-    ? '能。事件冒泡是可解的，与容器类型无关。'
-    : '不能，需要另找办法。'}`)
+  const stopWorks = a.innerClick === 'inner' && c.innerClick === 'inner'
+  console.log(`  ⇒ ${stopWorks ? '能。事件冒泡是可解的，与容器类型无关。' : '不能，需要另找办法。'}`)
   console.log(`  嵌套在 <button> 内的按钮是否可聚焦: ${a.innerFocusable}`)
   console.log(`  嵌套在 <div role=radio> 内的按钮是否可聚焦: ${c.innerFocusable}`)
+  console.log(`  嵌套在 <button> 内的按钮是否可从卡片按 Tab 到达: ${tabReach['A button>button + stop']?.reachable === true}`)
+  console.log(`  嵌套在 <div role=radio> 内的按钮是否可从卡片按 Tab 到达: ${tabReach['C div>button + stop']?.reachable === true}`)
 
   console.log('')
   console.log(`=== 页面 console（React 是否就嵌套结构告警）===`)
-  const nesting = consoleMessages.filter(message => /nested|validateDOMNesting|button/i.test(message))
-  console.log(`  含 nested/button 的消息: ${nesting.length}`)
+  // Narrowed to the validator's own wording: a filter that also matched the bare word
+  // "button" counted every unrelated log line that mentioned a button.
+  const nesting = consoleMessages.filter(message => /validateDOMNesting|<button> cannot appear/i.test(message))
+  console.log(`  含 React 嵌套告警的消息: ${nesting.length}`)
   for (const message of nesting.slice(0, 8)) console.log(`    ${message}`)
 } finally {
   child.kill()

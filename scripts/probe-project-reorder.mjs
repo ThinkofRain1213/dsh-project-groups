@@ -12,6 +12,7 @@
  * Usage: node probe-project-reorder.mjs <dshExe> <asarRoot> <dshHome>
  */
 import { spawn } from 'node:child_process'
+import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 import { installRowKeyHelpers, sessionIdOf } from './lib/row-key.mjs'
 import { redactToken } from './lib/redact.mjs'
@@ -22,8 +23,10 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   process.exit(2)
 }
 
-const PORT = 17642
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// Overridable: a leftover process on this port makes the probe connect to the wrong instance
+// (or a dead one) and produces misleading PASS/FAIL results rather than an obvious error.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? 17642)
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -38,15 +41,21 @@ function boot(profile) {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''
-    const timer = setTimeout(() => reject(new Error(`timed out booting ${profile}: ${redactToken(out.slice(-400))}`)), 120_000)
+    let timer
+    // Kill before rejecting: `server` is only assigned once this promise resolves, so the
+    // caller's `finally` cannot clean up a boot that never returned, and the orphaned Host keeps
+    // PORT bound for every later run.
+    const fail = (error) => {
+      clearTimeout(timer)
+      if (child.exitCode === null) child.kill()
+      reject(error)
+    }
+    timer = setTimeout(() => fail(new Error(`timed out booting ${profile}: ${redactToken(out.slice(-400))}`)), 120_000)
     // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
     // stdout, so without this handler the promise stayed pending until the 120 s timeout and
     // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
     // the process outright.
-    child.on('error', (error) => {
-      clearTimeout(timer)
-      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-    })
+    child.on('error', (error) => fail(new Error(`spawn failed for ${exe}: ${error.message}`)))
     child.stdout.on('data', (chunk) => {
       out += String(chunk)
       const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
@@ -56,16 +65,13 @@ function boot(profile) {
       }
     })
     child.stderr.on('data', (chunk) => { out += chunk })
-    child.on('exit', (code) => { clearTimeout(timer); reject(new Error(`${profile} exited with ${code}`)) })
+    child.on('exit', (code) => { fail(new Error(`${profile} exited with ${code}`)) })
   })
 }
 
 let browser
 let page
-await installRowKeyHelpers(page)
 const errors = []
-page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
-page.on('pageerror', (error) => { errors.push(`pageerror: ${error.message}`) })
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -94,10 +100,20 @@ const sessionRowsUnder = (headingText) => page.evaluate((text) => {
   const section = [...document.querySelectorAll('[data-row-key^="workspace:"]')]
     .find(node => (node.textContent ?? '').includes(text))
   if (section === undefined) return []
-  const scope = section.closest('div[role="treeitem"]')?.parentElement ?? section.parentElement
+  // The group container, by an explicit class, with the row's own treeitem as the second choice.
+  // `section.parentElement` used to be the last-resort fallback, and it can span every group in
+  // the tree — the before/after comparison would then include other groups' rows and report a
+  // reorder that never happened. Returning `[]` instead turns a missing container into "no
+  // rows", which the caller already fails on loudly.
+  const scope = section.closest('div[class*="groupSection"]')
+    ?? section.closest('div[role="treeitem"]')?.parentElement
+  if (scope === undefined || scope === null) return []
   return [...scope.querySelectorAll('[data-row-key^="session:"]')]
     .map(node => node.getAttribute('data-row-key'))
 }, headingText)
+
+/** The localStorage key the view mode is persisted under (versioned upstream — bump with it). */
+const VIEW_STORE_KEY = 'dsh.workspace.view.v5'
 
 /**
  * The ordering mode, read from the view store that persists it.
@@ -105,15 +121,25 @@ const sessionRowsUnder = (headingText) => page.evaluate((text) => {
  * Reading the menu's DOM would mean guessing which row carries the selection
  * marker; the store is the authoritative record and the menu is a view of it.
  */
-const orderMode = () => page.evaluate(() => {
-  const raw = localStorage.getItem('dsh.workspace.view.v5')
-  return raw === null ? null : JSON.parse(raw).orderBy ?? null
-})
+const orderMode = () => page.evaluate((key) => {
+  const raw = localStorage.getItem(key)
+  if (raw === null) return null
+  // A stale/corrupted value used to escape as a SyntaxError and abort the run instead of
+  // reporting a mode.
+  try { return JSON.parse(raw).orderBy ?? null } catch { return '<unparseable>' }
+}, VIEW_STORE_KEY)
 
 let server
+let aborted = null
 try {
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // All three need a live `page`, so they run here and not at module scope: at module scope the
+  // helper install and the listeners executed against an undefined `page` and threw before the
+  // browser had even launched.
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
+  page.on('pageerror', (error) => { errors.push(`pageerror: ${error.message}`) })
+  await installRowKeyHelpers(page)
   server = await boot('pg')
   await page.goto(server.url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(6000)
@@ -164,8 +190,10 @@ try {
   // comparing the pointer against the row's midpoint (`rowHalf`), so dropping on
   // a row's centre means "after it" — which for row 2 onto row 1 is where the row
   // already is, and the reorder is a no-op that looks like a broken feature.
-  const projectSection = page.locator('[data-row-key^="workspace:"]', { hasText: unique }).first()
-  const scoped = projectSection.locator('xpath=ancestor::div[contains(@class,"groupSection")]')
+  // The point is derived from the row's own box (10% down) rather than a bare `y: 1`, so a
+  // padding/line-height change cannot silently move it past the midpoint and turn the drop into
+  // a no-op that is then reported as a product failure.
+  const scoped = projectRow.locator('xpath=ancestor::div[contains(@class,"groupSection")]')
     .locator('[data-row-key^="session:"]')
   const source = scoped.nth(1)
   const target = scoped.nth(0)
@@ -175,7 +203,7 @@ try {
   const targetBox = await target.boundingBox()
   if (targetBox === null) throw new Error('the target row is not laid out')
   await source.dragTo(target, {
-    targetPosition: { x: targetBox.width / 2, y: 1 },
+    targetPosition: { x: Math.round(targetBox.width / 2), y: Math.max(1, Math.round(targetBox.height * 0.1)) },
     timeout: 20_000,
   })
   await page.waitForTimeout(3000)
@@ -202,7 +230,19 @@ try {
     reloaded.length === 2 && reloaded[0] === before[1] && reloaded[1] === before[0],
     JSON.stringify(reloaded))
 
+  // Collected page errors are a real assertion, not just a printed line: the probe used to
+  // report ALL CHECKS PASSED while the page had thrown. Console *messages* stay diagnostics —
+  // the dev server legitimately logs some — but an uncaught page exception never is.
   console.log(`\nconsole errors: ${errors.length === 0 ? '(none)' : errors.join(' | ')}`)
+  check('the page threw no uncaught error during the run',
+    !errors.some(entry => entry.startsWith('pageerror:')),
+    errors.filter(entry => entry.startsWith('pageerror:')).join(' | ') || '(none)')
+} catch (error) {
+  // The guards above (`cannot reorder without two rows`, `the target row is not laid out`) and
+  // any rejected page call used to escape the `try` and skip the summary and the exit code, so
+  // the probe's outcome was an uncaught exception rather than its own bookkeeping.
+  aborted = error
+  check('the run completed without an unexpected abort', false, String(error?.message ?? error))
 } finally {
   if (server?.child !== undefined && server.child.exitCode === null) {
     server.child.kill()
@@ -212,4 +252,5 @@ try {
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)
+if (aborted !== null) console.log(`  运行在断言中途终止: ${String(aborted?.message ?? aborted)}`)
 process.exit(failures.length === 0 ? 0 : 1)

@@ -10,16 +10,16 @@
  *   - the 指定 card's subtitle text (what it *claims* the chosen Workspace is);
  *   - the class list of the 指定 card (independent of aria, in case only styling moves).
  *
- * Also sampled: every `projectGroups` round trip and every Host `follow` frame, since a
- * flash between an optimistic write and the frame that supersedes it is the shape to look
- * for. The in-page sampler runs on its own interval and pushes into an array, so a
- * transition shorter than the poll interval is still caught.
+ * Also sampled: every `projectGroups` round trip (via the page's responses), since a flash
+ * between an optimistic write and the frame that supersedes it is the shape to look for. The
+ * in-page sampler runs on its own animation frame, so a transition shorter than the poll
+ * interval is still caught.
  *
  * Usage: node probe-base-workspace-toggle-flash.mjs <dshExe> <asarRoot> <dshHome> [profile]
  */
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
 
@@ -28,11 +28,13 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-base-workspace-toggle-flash.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17940 : 17941
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// Overridable: a leaked Host from an earlier failed run keeps this port bound, and a silent
+// collision shows up only as a boot that hangs until the 120 s timeout.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17940 : 17941))
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 /**
- * The checkout this probe's fixture Workspaces point at.
+ * The checkout this probe's fixture Workspace points at.
  *
  * This was a literal `C:\Users\Think\Desktop\项目\dsh-project-groups...` string, which baked
  * one developer's filesystem into the probe: on any other machine the Workspace either failed
@@ -43,6 +45,11 @@ const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
  * run, and can be overridden with `DSH_PROBE_REPO_ROOT`.
  */
 const repoRoot = process.env.DSH_PROBE_REPO_ROOT ?? process.cwd()
+// Resolved on the Node side: this value has to cross into `page.evaluate` as an argument. A
+// `join(repoRoot, 'scripts')` written *inside* the evaluate body ran in the browser, where
+// neither name exists, and threw `join is not defined` before the seed request was sent.
+const seedPath = join(repoRoot, 'scripts')
+const seedName = basename(seedPath)
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -50,39 +57,50 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
+let child
 let browser
 let page
+
+/**
+ * Boot the Host and resolve the tokenised dev-server URL.
+ *
+ * A function, not top-level code, so the boot path runs inside the try/finally below: a boot
+ * timeout used to reject before the guarded region was entered, so neither the spawned Host nor
+ * the browser was ever cleaned up.
+ */
+const boot = async () => {
+  child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
+    })
+    child.stderr.on('data', (chunk) => { out += chunk })
+  })
+}
+
 const traffic = []
-page.on('response', async (response) => {
+const recordResponse = async (response) => {
   if (!response.url().includes('/api/projectGroups/')) return
   const method = response.url().split('/api/')[1]
   let body = ''
   try { body = (await response.text()).slice(0, 160) } catch { body = '(unreadable)' }
   traffic.push({ at: Date.now(), method, status: response.status(), body })
-})
+}
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -92,7 +110,7 @@ const dismiss = async () => {
     for (const label of ['稍后配置', '继续', 'Later']) {
       const button = page.getByRole('button', { name: label, exact: true }).first()
       if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
+        await button.click({ force: true }).catch((error) => console.log(`  (点击「${label}」失败: ${error.message.split('\n')[0]})`))
         await page.waitForTimeout(1200)
       }
     }
@@ -100,11 +118,25 @@ const dismiss = async () => {
   }
 }
 
+/**
+ * The stored memory, or `null` when there is genuinely none.
+ *
+ * "No file / no section yet" and "the file could not be read" used to collapse into the same
+ * `null`, so a corrupted store flowed into the final assertions as a bogus 'no memory' verdict
+ * and hid the real cause. A read/parse failure is now printed.
+ */
 const storedBase = () => {
+  let raw
   try {
-    const parsed = JSON.parse(readFileSync(join(dshHome, 'storages', 'project_groups.json'), 'utf8'))
-    return parsed.global?.baseWorkspace ?? null
-  } catch {
+    raw = readFileSync(join(dshHome, 'storages', 'project_groups.json'), 'utf8')
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.log(`  (project_groups.json 无法读取: ${error.message})`)
+    return null
+  }
+  try {
+    return JSON.parse(raw).global?.baseWorkspace ?? null
+  } catch (error) {
+    console.log(`  (project_groups.json 不是合法 JSON: ${error.message})`)
     return null
   }
 }
@@ -152,14 +184,40 @@ const readSamples = () => page.evaluate(() => {
   return window.__flashLog ?? []
 })
 
+/**
+ * Start the sampler, click `target`, and return the state changes it recorded.
+ *
+ * Extracted because the three scenarios were copy-pasted whole (start → click → wait → read →
+ * print), and the printing loops then had to be kept in sync with each other by hand.
+ */
+const sampleTransition = async (target, label) => {
+  console.log('')
+  console.log(`=== ${label}（逐帧采样）===`)
+  await startSampling()
+  await target.click({ force: true })
+  await page.waitForTimeout(4000)
+  const samples = await readSamples()
+  // Guarded: with no recorded change, `samples[0].t` used to throw a TypeError inside the
+  // report and abort the probe with a stack trace instead of the scenario's verdict.
+  if (samples.length === 0) console.log('  （采样器没有记录到任何状态变化）')
+  for (const sample of samples) {
+    console.log(`  +${(sample.t - samples[0].t).toFixed(1)}ms  pressed=${sample.pressed}  selected=${String(sample.selectedClass)}  副标题=${JSON.stringify(sample.subtitle)}`)
+  }
+  console.log(`  磁盘: ${JSON.stringify(storedBase())}`)
+  return { label, samples }
+}
+
 try {
+  const url = await boot()
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // Registered after `newPage()`, not at module scope: at module scope it ran against an
+  // undefined `page` and threw before the browser had launched.
+  page.on('response', (response) => { void recordResponse(response) })
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismiss()
 
-  await dismiss()
   await page.locator('button[aria-label="插件"], [data-panel-id="plugins"]').first().click()
   await page.waitForTimeout(2500)
   await dismiss()
@@ -178,21 +236,21 @@ try {
   // `workspace/create` (a bad or expired token, a non-2xx status) was silently ignored — and the
   // sampling below then measured a different state than intended, reporting a misleading
   // 'flash'/'no memory' verdict instead of the real setup failure.
-  const seed = await page.evaluate(async () => {
+  const seed = await page.evaluate(async ({ path }) => {
     const token = new URL(location.href).searchParams.get('token') ?? ''
     const response = await fetch(`${location.origin}/api/workspace/create`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-dsh-token': token },
       body: JSON.stringify({
         type: 'client-request', rpcId: 'w', method: 'workspace/create',
-        payload: { args: { request: { path: join(repoRoot, 'scripts') } } },
+        payload: { args: { request: { path } } },
       }),
     })
     const text = await response.text()
     let parsed = null
     try { parsed = JSON.parse(text) } catch { /* reported through status */ }
     return { status: response.status, ok: parsed?.result?.ok, error: parsed?.result?.error, text: text.slice(0, 200) }
-  })
+  }, { path: seedPath })
   check('前置：种子 workspace/create 成功', seed.status === 200 && seed.ok !== false,
     `status=${String(seed.status)} ok=${String(seed.ok)} error=${JSON.stringify(seed.error)} body=${seed.text}`)
   if (seed.status !== 200 || seed.ok === false) {
@@ -211,39 +269,18 @@ try {
   console.log(`  磁盘记忆: ${JSON.stringify(storedBase())}`)
   console.log(`  卡片文字: ${JSON.stringify((await card().innerText()).replace(/\s+/g, ' ').slice(0, 160))}`)
 
-  console.log('')
-  console.log('=== 点击「指定工作区」并逐帧采样 ===')
-  await startSampling()
-  const t0 = Date.now()
-  await specifiedCard.click({ force: true })
-  await page.waitForTimeout(4000)
-  const specSamples = await readSamples()
-  for (const sample of specSamples) {
-    console.log(`  +${(sample.t - specSamples[0].t).toFixed(1)}ms  pressed=${sample.pressed}  selected=${String(sample.selectedClass)}  副标题=${JSON.stringify(sample.subtitle)}`)
-  }
-  console.log(`  磁盘: ${JSON.stringify(storedBase())}`)
-
-  console.log('')
-  console.log('=== 点击「默认工作区」并逐帧采样 ===')
-  await startSampling()
+  // Back to 默认 before the first scenario: the seed above ended on 指定, so clicking the
+  // already-selected 指定 card is a no-op and never produces the 默认→指定 frame this scenario
+  // exists to measure.
   await defaultCard.click({ force: true })
-  await page.waitForTimeout(4000)
-  const defSamples = await readSamples()
-  for (const sample of defSamples) {
-    console.log(`  +${(sample.t - defSamples[0].t).toFixed(1)}ms  pressed=${sample.pressed}  selected=${String(sample.selectedClass)}  副标题=${JSON.stringify(sample.subtitle)}`)
-  }
-  console.log(`  磁盘: ${JSON.stringify(storedBase())}`)
+  await page.waitForTimeout(2000)
 
-  console.log('')
-  console.log('=== 再次点击「指定工作区」（用户说的"切换回来闪烁"）===')
-  await startSampling()
-  await specifiedCard.click({ force: true })
-  await page.waitForTimeout(4000)
-  const backSamples = await readSamples()
-  for (const sample of backSamples) {
-    console.log(`  +${(sample.t - backSamples[0].t).toFixed(1)}ms  pressed=${sample.pressed}  selected=${String(sample.selectedClass)}  副标题=${JSON.stringify(sample.subtitle)}`)
-  }
-  console.log(`  磁盘: ${JSON.stringify(storedBase())}`)
+  const t0 = Date.now()
+  const transitions = [
+    await sampleTransition(specifiedCard, '点击「指定工作区」'),
+    await sampleTransition(defaultCard, '点击「默认工作区」'),
+    await sampleTransition(specifiedCard, '再次点击「指定工作区」（用户说的"切换回来闪烁"）'),
+  ]
 
   console.log('')
   console.log('=== 附带断言：已经是「默认」时再点一次「默认」，不该有写请求 ===')
@@ -255,7 +292,7 @@ try {
   // already-selected 默认 card issued a redundant round trip. Now it is normalised first,
   // so the second click must be zero.
   //
-  // Two clicks are needed: the sequence above ends on `specified`, so the first 默认 click
+  // Two clicks are needed: the sequence above ends on 指定, so the first 默认 click
   // is a real change and must write. Only the repeat is expected to be a no-op.
   await defaultCard.click({ force: true })
   await page.waitForTimeout(2000)
@@ -275,15 +312,9 @@ try {
 
   console.log('')
   console.log('=== 判读 ===')
-  const analysing = [
-    ['切到指定', specSamples],
-    ['切到默认', defSamples],
-    ['切回指定', backSamples],
-  ]
-  for (const [label, samples] of analysing) {
-    const flips = samples.length
+  for (const { label, samples } of transitions) {
     const intermediate = samples.filter((sample, index) => index > 0 && index < samples.length - 1)
-    console.log(`  ${label}: ${String(flips)} 个状态变化${intermediate.length === 0 ? '（无中间态）' : `，含 ${String(intermediate.length)} 个中间态：`}`)
+    console.log(`  ${label}: ${String(samples.length)} 个状态变化${intermediate.length === 0 ? '（无中间态）' : `，含 ${String(intermediate.length)} 个中间态：`}`)
     for (const mid of intermediate) {
       console.log(`      中间态 pressed=${mid.pressed} 副标题=${JSON.stringify(mid.subtitle)}`)
     }
@@ -296,13 +327,11 @@ try {
   // and therefore stepped straight over the offending frame — which is exactly how this
   // defect survived its own acceptance run. `requestAnimationFrame` is what makes the
   // intermediate render observable at all.
-  for (const [label, samples] of analysing) {
-    const labels = samples.map(sample => sample.subtitle)
+  for (const { label, samples } of transitions) {
+    const subtitles = samples.map(sample => sample.subtitle)
     check(`${label}：副标题不出现「未选择」中间态`,
-      !labels.includes('未选择'), JSON.stringify(labels))
-  }
-  // The selected card must never be "neither": exactly one card is pressed after settling.
-  for (const [label, samples] of analysing) {
+      !subtitles.includes('未选择'), JSON.stringify(subtitles))
+    // The selected card must never be "neither": exactly one card is pressed after settling.
     const settled = samples[samples.length - 1]
     check(`${label}：稳定后恰好一张卡片被选中`,
       settled !== undefined && (settled.pressed === 'true/false' || settled.pressed === 'false/true'),
@@ -311,19 +340,21 @@ try {
   check('重复点已选中的卡片不产生写请求', idleWrites.length === 0, `${String(idleWrites.length)} 次`)
   // The memory must still be on disk after the whole sequence, and the toggle must have
   // actually moved: a probe that asserted "no flash" while nothing changed would pass
-  // vacuously.
+  // vacuously. Read once — three separate reads let the file change between the comparison and
+  // the diagnostic, and `path !== undefined` was true for a stored `null`.
+  const finalMemory = storedBase()
   check('整轮结束后磁盘仍带记忆',
-    (storedBase()?.path ?? '') !== '' && storedBase()?.name === 'scripts',
-    JSON.stringify(storedBase()))
+    typeof finalMemory?.path === 'string' && finalMemory.path !== '' && finalMemory.name === seedName,
+    JSON.stringify(finalMemory))
   check('整轮结束后停在「默认」且记忆仍在',
-    storedBase()?.mode === 'default' && storedBase()?.path !== undefined,
-    JSON.stringify(storedBase()))
+    finalMemory?.mode === 'default' && typeof finalMemory?.path === 'string' && finalMemory.path !== '',
+    JSON.stringify(finalMemory))
 
   console.log('')
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
 } finally {
-  child.kill()
+  if (child !== undefined) child.kill()
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 process.exit(failures.length === 0 ? 0 : 1)

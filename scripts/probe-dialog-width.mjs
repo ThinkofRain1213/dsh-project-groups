@@ -26,8 +26,10 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-dialog-width.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = 17975
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+const PORT = Number(process.env.DSH_PROBE_PORT ?? 17975)
+// `join` rather than Windows-only separators: the literal produced an invalid path wherever
+// `asarRoot` is a POSIX path, and it broke silently instead of failing at the boundary.
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -35,32 +37,12 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
-page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+// The spawn, the boot wait and the browser all happen inside the `try` below, so that a
+// failed spawn, a boot timeout or a launch error still reaches the `finally` that reaps the
+// Host (and, before, left it holding the port).
+let child
+let browser
+let page
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -70,7 +52,9 @@ const dismiss = async () => {
     for (const label of ['稍后配置', '继续', 'Later']) {
       const button = page.getByRole('button', { name: label, exact: true }).first()
       if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
+        // Logged rather than swallowed: a click that fails because the control moved leaves
+        // the UI in a state the assertions below misread as a layout regression.
+        await button.click({ force: true }).catch((error) => { console.log(`  取消失败（${label}）: ${error.message}`) })
         await page.waitForTimeout(1200)
       }
     }
@@ -89,7 +73,11 @@ const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
     }),
   })
   const parsed = JSON.parse(await response.text())
-  return { ok: parsed?.result?.ok === true, error: parsed?.result?.error?.message ?? null }
+  return {
+    status: response.status,
+    ok: parsed?.result?.ok === true,
+    error: parsed?.result?.error?.message ?? null,
+  }
 }, { method, args })
 
 const dialogs = () => page.locator('[role="dialog"], [aria-modal="true"]')
@@ -112,7 +100,7 @@ const chromeOf = (dialog, selector) => dialog.locator(selector).first().evaluate
 
 const openEditDialog = async (title) => {
   const row = page.locator('[data-row-key^="workspace:"]').filter({ hasText: title }).first()
-  await row.hover({ timeout: 5000 }).catch(() => {})
+  await row.hover({ timeout: 5000 }).catch((error) => { console.log(`  悬停失败: ${error.message}`) })
   await page.waitForTimeout(400)
   const trigger = row.locator(
     'button[aria-label*="项目"][aria-label*="操作"], button[aria-label*="更多"], button[aria-label*="菜单"]',
@@ -127,17 +115,50 @@ const openEditDialog = async (title) => {
 
 let driverError
 try {
+  child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
+    })
+    child.stderr.on('data', (chunk) => { out += chunk })
+  })
+
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
+  page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismiss()
 
-  await rpc('projectGroups/create', {
+  // The setup call's result is checked: when it failed (duplicate title, an RPC error) the
+  // width/chrome assertions below failed instead with a misleading "the dialog is the wrong
+  // width" report, which pointed at the layout rather than at the failed setup.
+  const created = await rpc('projectGroups/create', {
     // Derived from the probe's own `dshHome` rather than a machine-specific literal:
     // the directory list only has to be long enough to exercise the dialog's
     // wrapping, and `C:\Users\<name>\...` both leaked a real username into the
     // repository and made this unusable on any other machine.
     request: { title: 'widths', directories: [join(dshHome, 'width-fixture', 'A', 'B', 'C')] },
   })
+  check('setup: projectGroups/create',
+    created.status === 200 && created.ok === true,
+    `status=${String(created.status)} error=${String(created.error)}`)
   await page.waitForTimeout(2000)
 
   console.log('=== 1/2/3. 新建对话框 ===')
@@ -163,9 +184,12 @@ try {
     }
   })
   console.log(`  添加目录按钮: ${JSON.stringify(addChrome)}`)
+  // Compared through `parseFloat` rather than by literal string: a computed border width is
+  // still 0 in any unit the UA might report, and `'0px'` as a string couples this to one
+  // serialization. The colour check accepts both spellings of "no fill" for the same reason.
   check('2) 添加按钮没有原生灰底', addChrome.background === 'rgba(0, 0, 0, 0)'
-    || addChrome.background === 'transparent', addChrome.background)
-  check('2) 添加按钮没有原生边框', addChrome.borderWidth === '0px', addChrome.borderWidth)
+    || addChrome.background === 'transparent' || addChrome.background === '', addChrome.background)
+  check('2) 添加按钮没有原生边框', Number.parseFloat(addChrome.borderWidth) === 0, addChrome.borderWidth)
   check('2) 添加按钮是 sm 高度（28px）', addChrome.height === 28, `${addChrome.height}px`)
   await create.getByRole('button', { name: '取消' }).first().click({ force: true })
   await page.waitForTimeout(700)
@@ -178,8 +202,9 @@ try {
   check('4) 编辑对话框同样 480px', editWidth === 480, `${editWidth}px`)
   const removeChrome = await chromeOf(edit, 'li button')
   console.log(`  移除按钮: ${JSON.stringify(removeChrome)}`)
-  check('3) 移除按钮透明无边框', removeChrome.background === 'rgba(0, 0, 0, 0)'
-    && removeChrome.borderWidth === '0px', JSON.stringify(removeChrome))
+  check('3) 移除按钮透明无边框', (removeChrome.background === 'rgba(0, 0, 0, 0)'
+    || removeChrome.background === 'transparent' || removeChrome.background === '')
+    && Number.parseFloat(removeChrome.borderWidth) === 0, JSON.stringify(removeChrome))
   check('3) 移除按钮是 28×28', removeChrome.width === 28 && removeChrome.height === 28,
     `${removeChrome.width}×${removeChrome.height}`)
   await edit.getByRole('button', { name: '取消' }).first().click({ force: true })
@@ -188,10 +213,10 @@ try {
   console.log('')
   console.log('=== 5. 工作区行保持标准宽度 ===')
   const wsRow = page.locator('[data-row-key^="workspace:"]').filter({ hasText: '默认工作区' }).first()
-  await wsRow.hover({ timeout: 5000 }).catch(() => {})
+  await wsRow.hover({ timeout: 5000 }).catch((error) => { console.log(`  悬停失败: ${error.message}`) })
   await page.waitForTimeout(400)
   const wsTrigger = wsRow.locator('button[aria-haspopup="menu"]').first()
-  await wsTrigger.click({ force: true }).catch(() => {})
+  await wsTrigger.click({ force: true }).catch((error) => { console.log(`  打开菜单失败: ${error.message}`) })
   await page.waitForTimeout(700)
   const wsEntry = page.getByRole('menuitem', { name: /重命名/ }).first()
   if (await wsEntry.count() > 0) {
@@ -219,7 +244,11 @@ try {
   }
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`)
-  await browser.close().catch(() => {})
-  child.kill()
+  // Reap the Host first: a close failure must not be able to leave the process running.
+  if (child !== undefined) child.kill()
+  // Plain close, guarded: an error-swallowing close on top of a top-level launch was the shape
+  // that could hide a real close failure; the launch and this close share one try/finally now,
+  // so a close error is reported like any other.
+  if (browser !== undefined) await browser.close()
   process.exit(failures.length === 0 ? 0 : 1)
 }

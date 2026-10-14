@@ -27,12 +27,14 @@
  *
  * The official registry file is compared byte-for-byte before and after each call, and the
  * default directory's existence is checked. A write through any path — a new row, a
- * re-pointed pointer, a `mkdir` — shows up in one of those.
+ * re-pointed pointer, a `mkdir` — shows up in one of those. If that witness cannot be read at
+ * all, the probe says so and fails instead of reporting every "unchanged" check as a pass.
  *
  * Usage: node probe-official-default-probe.mjs <dshExe> <asarRoot> <dshHome> [profile]
  */
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
 
@@ -41,8 +43,10 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-official-default-probe.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17890 : 17891
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// Overridable: a stale process on this port would make the probe talk to the wrong instance, and
+// the symptom is a boot that hangs until the 120 s timeout rather than a clear collision.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17890 : 17891))
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -50,32 +54,78 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
+let child
 let browser
 let page
 
+/**
+ * Boot the Host and resolve the tokenised dev-server URL.
+ *
+ * A function, not top-level code, so the boot path runs inside the try/finally below: a boot
+ * timeout used to reject before the guarded region was entered, so neither the spawned Host nor
+ * the browser was ever cleaned up.
+ *
+ * The URL is not treated as "the server is ready": stdout printing it happens before the client
+ * bundles finish serving, so the server is polled until it answers. The old shape waited a flat
+ * 3 s, which on a slow machine turned into a `goto` failure rather than a clear statement.
+ */
+const boot = async () => {
+  child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  // `out` only has to hold enough context for a failure message; once the URL is matched the
+  // listeners stop appending to it, instead of growing the buffer for the rest of the run.
+  let matched = false
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      if (matched) return
+      out += String(chunk)
+      const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (m !== null) { matched = true; clearTimeout(timer); resolve(m[1]) }
+    })
+    child.stderr.on('data', (chunk) => { if (!matched) out += chunk })
+  })
+
+  const ready = await waitForServer(url)
+  if (!ready) console.log('  (警告: 在 30s 内没有等到 dev server 应答，继续尝试加载页面)')
+  return url
+}
+
+/** Poll the dev server until it answers, instead of assuming a fixed settle time is enough. */
+const waitForServer = async (target, timeoutMs = 30_000) => {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(target, { method: 'GET' })
+      if (response.status < 500) {
+        // Drain the body so the socket is not left open.
+        await response.arrayBuffer()
+        return true
+      }
+    } catch { /* not listening yet */ }
+    await new Promise(resolve => setTimeout(resolve, 250))
+  }
+  return false
+}
+
+/**
+ * One RPC round trip.
+ *
+ * The status is checked and `JSON.parse` guarded: a non-JSON error page or a truncated body used
+ * to throw from inside `page.evaluate`, which surfaced as an unhandled rejection instead of as a
+ * recorded FAIL.
+ */
 const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
   const token = new URL(location.href).searchParams.get('token') ?? ''
   const response = await fetch(`${location.origin}/api/${method}`, {
@@ -86,18 +136,39 @@ const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
       method, payload: { args },
     }),
   })
-  const parsed = JSON.parse(await response.text())
-  return { ok: parsed?.result?.ok, value: parsed?.result?.value, error: parsed?.result?.error }
+  const text = await response.text()
+  let parsed = null
+  try {
+    parsed = JSON.parse(text)
+  } catch { /* reported through `status`/`body` */ }
+  return {
+    status: response.status,
+    ok: response.status === 200 ? parsed?.result?.ok : false,
+    value: parsed?.result?.value,
+    error: parsed?.result?.error ?? (parsed === null ? `non-JSON response (status ${String(response.status)})` : null),
+    body: text.slice(0, 200),
+  }
 }, { method, args })
 
-const registryFile = `${dshHome}/storages/workspace.json`
-/** The registry file's exact bytes, as the "did anything change" witness. */
+const registryFile = join(dshHome, 'storages', 'workspace.json')
+/**
+ * The registry file's exact bytes, as the "did anything change" witness.
+ *
+ * `null` means "could not be read". It must not be compared as if it were content: two `null`s
+ * are equal, so an unreadable registry used to make every "unchanged" check pass without
+ * witnessing anything.
+ */
 const registryBytes = () => {
   try { return readFileSync(registryFile, 'utf8') } catch { return null }
 }
+/** One snapshot, so a comparison and its diagnostic cannot come from two different reads. */
 const registryState = () => {
+  let raw
   try {
-    const parsed = JSON.parse(readFileSync(registryFile, 'utf8'))
+    raw = readFileSync(registryFile, 'utf8')
+  } catch { return null }
+  try {
+    const parsed = JSON.parse(raw)
     return {
       defaultWorkspaceId: parsed.global?.defaultWorkspaceId ?? null,
       ids: parsed.global?.workspaceIds ?? [],
@@ -109,6 +180,7 @@ const registryState = () => {
 }
 
 try {
+  const url = await boot()
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
@@ -117,10 +189,19 @@ try {
   console.log('=== A. 健康安装：探测答 present 且不改动任何东西 ===')
   const beforeHealthy = registryBytes()
   const healthyState = registryState()
+  // The witness itself is asserted first: without it, every "unchanged" check below is vacuous.
+  check('A) 官方注册表可读（"未改动"的见证）',
+    beforeHealthy !== null && healthyState !== null, String(registryFile))
   const healthyDefault = (await rpc('workspace/initializeDefault', {})).value?.workspace ?? null
   check('A) 起点有官方默认工作区', healthyDefault !== null, JSON.stringify(healthyDefault))
-  const defaultPath = healthyDefault?.path ?? ''
-  const existsBefore = existsSync(defaultPath)
+  if (healthyDefault === null || beforeHealthy === null || healthyState === null) {
+    // Both branches below dereference this workspace, and with an empty `defaultPath` the
+    // directory-existence checks would compare `false === false` and pass for the wrong reason.
+    throw new Error('A) 的前提不成立（没有可读的注册表，或没有官方默认工作区）；B/C 的结论将无从谈起')
+  }
+  const defaultPath = healthyDefault.path ?? ''
+  check('A) 默认工作区带 path', defaultPath !== '', JSON.stringify(healthyDefault))
+  const existsBefore = defaultPath === '' ? null : existsSync(defaultPath)
 
   const probeHealthy = await rpc('projectGroups/officialDefaultWorkspace', {})
   console.log(`  探测: ${JSON.stringify(probeHealthy.value ?? null)}`)
@@ -131,30 +212,41 @@ try {
   check('A) 带回路径', probeHealthy.value?.path === defaultPath,
     `${String(probeHealthy.value?.path)} vs ${defaultPath}`)
   check('A) 注册表字节未变', registryBytes() === beforeHealthy)
+  const stateAfterHealthy = registryState()
   check('A) 注册表状态未变',
-    JSON.stringify(registryState()) === JSON.stringify(healthyState),
-    JSON.stringify(registryState()))
-  check('A) 目录存在性未变', existsSync(defaultPath) === existsBefore)
+    JSON.stringify(stateAfterHealthy) === JSON.stringify(healthyState),
+    JSON.stringify(stateAfterHealthy))
+  check('A) 目录存在性未变',
+    existsBefore !== null && existsSync(defaultPath) === existsBefore,
+    String(existsBefore))
 
   console.log('')
   console.log('=== B. 删掉注册（复现缺失）：探测答 missing，且【不重建】===')
   const deleted = await rpc('workspace/delete', { request: { workspaceId: healthyDefault.workspaceId } })
-  check('B) 删除成功', deleted.value?.deleted === true)
+  check('B) 删除成功', deleted.status === 200 && deleted.value?.deleted === true,
+    `status=${String(deleted.status)} value=${JSON.stringify(deleted.value)} error=${JSON.stringify(deleted.error)}`)
   const afterDeleteBytes = registryBytes()
   const afterDeleteState = registryState()
   console.log(`  删后 defaultWorkspaceId=${String(afterDeleteState?.defaultWorkspaceId)}（残留的悬空指针）`)
+  check('B) 删后注册表仍可读（"未改动"的见证）',
+    afterDeleteBytes !== null && afterDeleteState !== null, String(registryFile))
 
   const probeMissing = await rpc('projectGroups/officialDefaultWorkspace', {})
   console.log(`  探测: ${JSON.stringify(probeMissing.value ?? null)}`)
   check('B) 答 missing', probeMissing.value?.status === 'missing', JSON.stringify(probeMissing.value))
   // THE guarantee: branch 3 of `initializeDefault` is what creates the Workspace, and the
   // probe passes a throwing resolver so it can never reach `mkdir`.
+  const stateAfterMissing = registryState()
   check('B) 没有冒出一行新注册',
-    JSON.stringify(registryState()) === JSON.stringify(afterDeleteState),
-    JSON.stringify(registryState()?.rows))
-  check('B) 注册表字节未变', registryBytes() === afterDeleteBytes)
-  check('B) 指针没有被改写', registryState()?.defaultWorkspaceId === afterDeleteState?.defaultWorkspaceId)
-  check('B) 目录没有被重新创建（探测不是写路径）', existsSync(defaultPath) === existsBefore)
+    stateAfterMissing !== null && JSON.stringify(stateAfterMissing) === JSON.stringify(afterDeleteState),
+    JSON.stringify(stateAfterMissing?.rows))
+  check('B) 注册表字节未变',
+    afterDeleteBytes !== null && registryBytes() === afterDeleteBytes)
+  check('B) 指针没有被改写',
+    stateAfterMissing !== null && stateAfterMissing.defaultWorkspaceId === afterDeleteState?.defaultWorkspaceId,
+    JSON.stringify(stateAfterMissing?.defaultWorkspaceId))
+  check('B) 目录没有被重新创建（探测不是写路径）',
+    existsBefore !== null && existsSync(defaultPath) === existsBefore)
 
   console.log('')
   console.log('=== C. 可重复，且不影响后续写操作 ===')
@@ -174,8 +266,12 @@ try {
   console.log('')
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
+} catch (error) {
+  // The premise guards above abort branches A/B; recorded as a failure so the summary and the
+  // exit code are still produced instead of a raw stack trace.
+  check('探针的前提成立并跑完', false, String(error?.message ?? error))
 } finally {
-  child.kill()
+  if (child !== undefined) child.kill()
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 process.exit(failures.length === 0 ? 0 : 1)

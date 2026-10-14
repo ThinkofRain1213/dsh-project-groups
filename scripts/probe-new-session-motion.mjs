@@ -28,7 +28,6 @@
  * linked to the *pre-fix* bundle must make the cross-project assertions fail.
  */
 import { spawn } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 import { installRowKeyHelpers } from './lib/row-key.mjs'
@@ -40,8 +39,13 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   process.exit(2)
 }
 
-const PORT = profile === 'pg' ? 17697 : 17698
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// Overridable: a leftover Host from an aborted run holds the fixed port, and the next probe
+// then reports a boot timeout for what is really an occupied port.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17697 : 17698))
+// `join`, not a `\\`-joined literal: on a POSIX runner a backslash is an ordinary filename
+// character, so the literal path silently never resolves. (`join` was previously imported and
+// never used here, which is how the literal survived.)
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -49,34 +53,44 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout: ${redactToken(out.slice(-300))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
+let child
 let browser
 let page
-await installRowKeyHelpers(page)
 const logs = []
-page.on('pageerror', (error) => { logs.push(`pageerror: ${error.message}`) })
+
+/**
+ * One page-side walk: the group key a Session row currently sits under.
+ *
+ * Self-contained — it references no module-level binding, only `window.__sessionIdOf`, which
+ * {@link installRowKeyHelpers} publishes on every page — so its own source text can be injected
+ * into the page. It exists as one function because `watch`'s `groupOf` and {@link groupKeyOf} were
+ * two copies of this same walk with subtly different session-key checks (`idOf(key)` against an
+ * inline `startsWith` + `__sessionIdOf`), so a fix applied to one could silently diverge from the
+ * other.
+ * @param needle - the Session short id to look for.
+ * @returns the enclosing group key (`'ungrouped'` for the empty id), or `null` when the row is not
+ * rendered at all.
+ */
+function pageGroupKeyOf(needle) {
+  const rows = [...document.querySelectorAll('[data-row-key]')]
+  let group = null
+  for (const node of rows) {
+    const key = node.getAttribute('data-row-key')
+    if (key.startsWith('workspace:')) {
+      const id = key.slice('workspace:'.length)
+      group = id === '' ? 'ungrouped' : id
+    } else if (key.startsWith('session:')) {
+      const id = window.__sessionIdOf(key)?.replace(/^session-/, '') ?? ''
+      if (id.startsWith(needle)) return group
+    }
+  }
+  return null
+}
+
+const PAGE_GROUP_KEY_OF_SOURCE = `(${String(pageGroupKeyOf)})`
+
+/** Publish {@link pageGroupKeyOf} as `window.__groupKeyOf` on every page this context loads. */
+const installGroupKeyHelper = () => page.addInitScript(`window.__groupKeyOf = ${PAGE_GROUP_KEY_OF_SOURCE};`)
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -86,12 +100,17 @@ const dismiss = async () => {
     for (const label of ['稍后配置', '继续', 'Later']) {
       const button = page.getByRole('button', { name: label, exact: true }).first()
       if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
+        // Logged rather than discarded: a click that never landed leaves the mask up, and the
+        // checks below then read an intercepted UI for a setup reason with nothing to say so.
+        await button.click({ force: true }).catch((error) => {
+          console.log(`  dismiss: click on "${label}" failed — ${error.message}`)
+        })
         await page.waitForTimeout(1200)
       }
     }
     await page.waitForTimeout(700)
   }
+  if (await isMasked()) console.log('  dismiss: a modal mask is STILL up after 8 rounds — later checks may be measuring an intercepted UI')
 }
 
 /**
@@ -125,18 +144,7 @@ const armList = () => page.evaluate(() => {
 const watch = (shortId) => page.evaluate((needle) => {
   const idOf = key => key.startsWith('session:') ? window.__sessionIdOf(key)?.replace(/^session-/, '') ?? '' : ''
   const state = { needle, frames: [], animations: [], mark: null }
-  const groupOf = () => {
-    const rows = [...document.querySelectorAll('[data-row-key]')]
-    let group = '(none)'
-    for (const node of rows) {
-      const key = node.getAttribute('data-row-key')
-      if (key.startsWith('workspace:')) {
-        const id = key.slice('workspace:'.length)
-        group = id === '' ? 'ungrouped' : id
-      } else if (idOf(key).startsWith(needle)) return group
-    }
-    return '(absent)'
-  }
+  const groupOf = () => window.__groupKeyOf(needle) ?? '(absent)'
   const tick = () => {
     const value = groupOf()
     const last = state.frames[state.frames.length - 1]
@@ -144,7 +152,13 @@ const watch = (shortId) => page.evaluate((needle) => {
     window.__watchRaf = requestAnimationFrame(tick)
   }
   tick()
-  const original = Element.prototype.animate
+  // The native `animate` is patched to record what the app animates, so it must be put back —
+  // `read()` does that. It also has to be patched **idempotently**: `watch()` runs twice (steps
+  // 3a and 3b), and wrapping the previous wrapper stacked two interceptors that both pushed into
+  // the first call's now-stale `state.animations`. `window.__animateOriginal` keeps the real
+  // native so the second arming starts from it rather than from a wrapper.
+  const original = window.__animateOriginal ?? Element.prototype.animate
+  window.__animateOriginal = original
   Element.prototype.animate = function (keyframes, options) {
     if (idOf(this.getAttribute?.('data-row-key') ?? '').startsWith(needle)) {
       state.animations.push({
@@ -162,6 +176,12 @@ const watch = (shortId) => page.evaluate((needle) => {
 const mark = () => page.evaluate(() => { window.__watch.mark = Math.round(performance.now()) })
 const read = () => page.evaluate(() => {
   cancelAnimationFrame(window.__watchRaf)
+  // Restored, not left patched: the probe exists to measure the app's own animations, and a
+  // native prototype left wrapped would alter every animation for the rest of the session.
+  if (window.__animateOriginal !== undefined) {
+    Element.prototype.animate = window.__animateOriginal
+    window.__animateOriginal = undefined
+  }
   const { frames, animations, mark: at } = window.__watch
   return { frames, animations, mark: at }
 })
@@ -169,7 +189,12 @@ const read = () => page.evaluate(() => {
 const projectRow = (title) => page.locator('[data-row-key^="workspace:"]', { hasText: title }).first()
 const clickPlus = async (title) => {
   const row = projectRow(title)
-  await row.hover({ timeout: 5000 }).catch(() => {})
+  // Logged rather than discarded: when the row is not hoverable (mask still up, row not mounted)
+  // the probe continued in an inconsistent UI state and then reported a product failure for what
+  // was a broken setup.
+  await row.hover({ timeout: 5000 }).catch((error) => {
+    console.log(`  clickPlus: hover failed — ${error.message}`)
+  })
   await page.waitForTimeout(500)
   const plus = row.locator('button[aria-label^="在"]').first()
   const label = await plus.getAttribute('aria-label').catch(() => null)
@@ -184,22 +209,12 @@ const clickPlus = async (title) => {
  * Assertions are written against these keys rather than against visible titles,
  * because the renderer truncates titles — two projects sharing a prefix would
  * compare equal, and a check against the truncated text can never match.
+ *
+ * One implementation, shared with `watch`: it calls the page-side
+ * {@link pageGroupKeyOf} that {@link installGroupKeyHelper} publishes. This used to be a second,
+ * hand-written copy of the same walk.
  */
-const groupKeyOf = (shortId) => page.evaluate((needle) => {
-  const rows = [...document.querySelectorAll('[data-row-key]')]
-  let group = null
-  for (const node of rows) {
-    const key = node.getAttribute('data-row-key')
-    if (key.startsWith('workspace:')) {
-      const id = key.slice('workspace:'.length)
-      group = id === '' ? 'ungrouped' : id
-    } else if (key.startsWith('session:')) {
-      const id = window.__sessionIdOf(key)?.replace(/^session-/, '') ?? ''
-      if (id.startsWith(needle)) return group
-    }
-  }
-  return null
-}, shortId)
+const groupKeyOf = (shortId) => page.evaluate((needle) => window.__groupKeyOf(needle), shortId)
 
 /** The project id behind a project row, found by its visible title. */
 const projectIdOf = (title) => page.evaluate((name) => {
@@ -221,8 +236,40 @@ const fade = (result) => result.animations.some(a => a.keyframes.includes('opaci
 const glide = (result) => result.animations.some(a => a.keyframes.includes('transform'))
 
 try {
+  // Spawned inside the `try` so the `finally` always reaches `child.kill()`. While this sat above
+  // the `try`, a boot timeout — or any throw out of `chromium.launch` — rejected the top-level
+  // await before cleanup ran and left the Host running on the port.
+  child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout: ${redactToken(out.slice(-300))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
+    })
+    child.stderr.on('data', (chunk) => { out += chunk })
+  })
+
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // Installed here, after `page` exists. These two calls used to sit above the `try` on the
+  // `let page` declaration — `page` was still `undefined`, so `addInitScript` threw immediately
+  // and `window.__sessionIdOf` was missing from every read that needed it.
+  await installRowKeyHelpers(page)
+  await installGroupKeyHelper()
+  page.on('pageerror', (error) => { logs.push(`pageerror: ${error.message}`) })
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(7000)
   await dismiss()
@@ -276,6 +323,14 @@ try {
   console.log(`＋ label: ${JSON.stringify(labelA)}`)
   console.log(`blank short id: ${JSON.stringify(parked)}   A=${idA}   B=${idB}`)
   check('both projects have an id', idA !== null && idB !== null, `${idA} / ${idB}`)
+  // The premise of every step below, asserted rather than assumed. `blankShortId()` answers `null`
+  // when the row is not rendered, and a null needle coerces to the string `'null'` inside the
+  // helpers, so `groupKeyOf` also returns null and the collapse check passes without the blank
+  // ever having been found — a vacuous pass that hides the very regression under test.
+  check('the blank Session row is rendered (the premise of steps 2–3)', parked !== null, String(parked))
+  if (parked === null) {
+    throw new Error('the blank Session row was never located; steps 2–3 would measure nothing')
+  }
   check('the blank Session is filed under the first project',
     await groupKeyOf(parked) === idA, String(await groupKeyOf(parked)))
 
@@ -324,7 +379,7 @@ try {
 
   console.log(`\nconsole errors: ${logs.length === 0 ? '(none)' : logs.slice(0, 5).join(' | ')}`)
 } finally {
-  child.kill()
+  if (child !== undefined) child.kill() // guarded: a synchronous `spawn` throw leaves it unset
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 

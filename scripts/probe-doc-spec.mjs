@@ -18,8 +18,10 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-doc-spec.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = 17999
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+const PORT = Number(process.env.DSH_PROBE_PORT ?? 17999)
+// `join`, not a literal: the escaped-backslash path cannot resolve off Windows, where the
+// backslashes are ordinary filename characters and the spawn fails with an ENOENT.
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -27,12 +29,55 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
+/**
+ * The in-page helpers every `evaluate` below shares.
+ *
+ * Installed through `addInitScript`, which re-runs on **every** document. This probe
+ * reloads the page repeatedly (to pick up a changed spec list), so a helper installed once
+ * with `evaluate` would be missing from the second document onward — which is exactly why
+ * the snippets used to be copied into each callback instead. The srgb-vs-rgb parsing inside
+ * `to255` already had to be fixed once for a false failure, and six copies of the card
+ * lookup are six chances for them to drift apart.
+ */
+const DOM_HELPERS = () => {
+  window.__docSpecProbe = {
+    /** `color(srgb …)` and `rgb()/rgba()` → 0..255 ints; `null` when unparsable. */
+    to255: (spec) => {
+      const srgb = /color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/.exec(spec)
+      if (srgb !== null) return [1, 2, 3].map(i => Math.round(Number(srgb[i]) * 255))
+      const rgb = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(spec)
+      return rgb === null ? null : [1, 2, 3].map(i => Number(rgb[i]))
+    },
+    /** The colour the browser computes for one theme token. */
+    tokenColor: (name) => {
+      const probe = document.createElement('div')
+      probe.style.color = `var(${name})`
+      document.body.append(probe)
+      const value = getComputedStyle(probe).color
+      probe.remove()
+      return value
+    },
+    /** The settings card (an `aria-pressed` button) whose title span is exactly `label`. */
+    cardOf: (label) => [...document.querySelectorAll('button[aria-pressed]')]
+      .find(c => (c.querySelector('span')?.textContent ?? '').trim() === label),
+    /** That card's `aria-pressed`, or `undefined` when the card is absent. */
+    pressedOf: (label) => window.__docSpecProbe.cardOf(label)?.getAttribute('aria-pressed'),
+  }
+}
+
+/** A stored spec mode, spelled the way the log lines name it. */
+const MODE_LABELS = { default: '默认', none: '无', custom: '自定义' }
+/** A global spec-file fixture, spelled the way the 3c-2 log line names it. */
+const NAME_LABELS = { '': '空名', 'ghost.md': '悬空名' }
+
 const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
   env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 let out = ''
-const url = await new Promise((resolve, reject) => {
+// Created here, awaited inside the `try` below: awaiting it at the top level meant a boot
+// rejection escaped before `finally`, leaving the host process running and holding the port.
+const boot = new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
   // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
   // stdout, so without this handler the promise stayed pending until the 120 s timeout and
@@ -50,17 +95,13 @@ const url = await new Promise((resolve, reject) => {
   child.stderr.on('data', (chunk) => { out += chunk })
 })
 
-const browser = await chromium.launch({ headless: true })
-// Dark scheme deliberately: the flicker check measures painted pixels, and the
-// dark card fill (53,54,56) sits far from the dark page (21,21,23) so a
-// one-unit dip is unambiguous. The light theme's card is only ~2 units off its
-// page, where the same measurement proves nothing. Every other assertion here
-// resolves theme tokens at run time, so they hold in either scheme.
-const page = await browser.newPage({
-  viewport: { width: 1400, height: 900 },
-  colorScheme: 'dark',
-})
-page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+/** Resolve one theme token against the live document. */
+const tokenColor = (name) => page.evaluate((token) => window.__docSpecProbe.tokenColor(token), name)
+
+let browser
+let page
+/** Whether the stuck-mask failure has already been recorded (see `dismiss`). */
+let maskStuckReported = false
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -70,11 +111,23 @@ const dismiss = async () => {
     for (const label of ['稍后配置', '继续', 'Later']) {
       const button = page.getByRole('button', { name: label, exact: true }).first()
       if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
+        // Logged, not discarded: a click that never landed left the probe driving whatever
+        // sat underneath the mask, and the assertions after it then reported on the wrong
+        // screen instead of surfacing the failure.
+        await button.click({ force: true }).catch((error) => {
+          console.log(`  遮罩点击「${label}」失败: ${String(error?.message ?? error).split('\n')[0]}`)
+        })
         await page.waitForTimeout(1200)
       }
     }
     await page.waitForTimeout(700)
+  }
+  // Still masked after 8 rounds: the onboarding overlay never went away, so every later
+  // assertion may be reading a screen the probe did not intend. Recorded once rather than
+  // on each of `dismiss`'s many calls.
+  if (!maskStuckReported && await isMasked()) {
+    maskStuckReported = true
+    check('dismiss: 遮罩能被关掉', false, '8 轮后遮罩仍在，后续断言可能在错误的界面上')
   }
 }
 
@@ -89,7 +142,16 @@ const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
       method, payload: { args },
     }),
   })
-  const parsed = JSON.parse(await response.text())
+  // Guarded: unguarded `JSON.parse` turned an HTML/empty error body into a SyntaxError that
+  // aborted the whole run, and a never-checked status meant a 500 was read like a reply.
+  const text = await response.text()
+  if (!response.ok) return { ok: false, error: { message: `HTTP ${response.status}: ${text.slice(0, 200)}` } }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    return { ok: false, error: { message: `non-JSON reply: ${String(error?.message ?? error)}` } }
+  }
   return parsed?.result ?? parsed
 }, { method, args })
 
@@ -107,6 +169,19 @@ const specsDir = join(dshHome, 'project-groups', 'specs')
 const storedSpecs = () => existsSync(specsDir) ? readdirSync(specsDir).sort() : []
 
 try {
+  const url = await boot
+  browser = await chromium.launch({ headless: true })
+  // Dark scheme deliberately: the flicker check measures painted pixels, and the
+  // dark card fill (53,54,56) sits far from the dark page (21,21,23) so a
+  // one-unit dip is unambiguous. The light theme's card is only ~2 units off its
+  // page, where the same measurement proves nothing. Every other assertion here
+  // resolves theme tokens at run time, so they hold in either scheme.
+  page = await browser.newPage({
+    viewport: { width: 1400, height: 900 },
+    colorScheme: 'dark',
+  })
+  await page.addInitScript(DOM_HELPERS)
+  page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismiss()
@@ -178,20 +253,10 @@ try {
   // those floats with a digit regex yields garbage (0.132549 → 0,132549,0), which
   // is what made the first version of this check report a false failure.
   const expectedFill = await page.evaluate(() => {
-    const to255 = (spec) => {
-      const srgb = /color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/.exec(spec)
-      if (srgb !== null) return [1, 2, 3].map(i => Math.round(Number(srgb[i]) * 255))
-      const rgb = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(spec)
-      return rgb === null ? null : [1, 2, 3].map(i => Number(rgb[i]))
-    }
-    const read = (name) => {
-      const p = document.createElement('div')
-      document.body.append(p)
-      p.style.color = `var(${name})`
-      const v = getComputedStyle(p).color
-      p.remove()
-      return to255(v)
-    }
+    const { to255 } = window.__docSpecProbe
+    // `to255` on top of the shared token read: Chromium serializes a `color-mix` result as
+    // `color(srgb …)`, so both sides are compared as 0..255 ints.
+    const read = (name) => to255(window.__docSpecProbe.tokenColor(name))
     const module_ = read('--dsw-alias-bg-module-platform')
     const base = read('--dsw-alias-bg-base')
     const gated = [...document.querySelectorAll('button[aria-pressed="true"]')]
@@ -222,14 +287,7 @@ try {
   // Resolve the token the gated style is supposed to use, and read the same
   // token from a control that is genuinely disabled, so the comparison is
   // against the theme rather than against a hard-coded colour.
-  const dimmed = await page.evaluate(() => {
-    const probe = document.createElement('div')
-    probe.style.color = 'var(--dsw-alias-label-dimmed)'
-    document.body.append(probe)
-    const value = getComputedStyle(probe).color
-    probe.remove()
-    return value
-  })
+  const dimmed = await page.evaluate(() => window.__docSpecProbe.tokenColor('--dsw-alias-label-dimmed'))
   console.log(`  每项目标题色: ${labelColor}（dimmed 令牌 = ${dimmed}）`)
   check('2) 每项目标题用的是 dimmed 令牌', labelColor === dimmed, `${labelColor} vs ${dimmed}`)
   // The 注入项目文档 row is gated by the MASTER switch, not by the document
@@ -336,7 +394,11 @@ try {
       }
       return out
     }, { list: during, box: box.card, vw: box.vw, vh: box.vh })
-    await cdp.send('Page.stopScreencast').catch(() => {})
+    // Logged rather than discarded: a screencast that never stopped would keep pushing
+    // frames into `frames` for the rest of the run, and swallowing the error hid that.
+    await cdp.send('Page.stopScreencast').catch((error) => {
+      console.log(`  stopScreencast 失败: ${String(error?.message ?? error).split('\n')[0]}`)
+    })
     if (modes.length < 3) return { frames: modes.length, dark, fill: box.fill }
     // The settled colour is the MODE over all frames, not the last one: taking
     // the last frame as "correct" would make a dip in that frame invisible.
@@ -384,11 +446,7 @@ try {
   const docRow = await page.evaluate(() => {
     const title = [...document.querySelectorAll('div')]
       .find(n => n.textContent?.trim() === '注入项目文档' && n.children.length === 0)
-    const probe = document.createElement('div')
-    probe.style.color = 'var(--dsw-alias-label-dimmed)'
-    document.body.append(probe)
-    const token = getComputedStyle(probe).color
-    probe.remove()
+    const token = window.__docSpecProbe.tokenColor('--dsw-alias-label-dimmed')
     return { color: title === undefined ? null : getComputedStyle(title).color, token }
   })
   console.log(`  注入项目文档 标题色: ${docRow.color}（dimmed = ${docRow.token}）`)
@@ -453,24 +511,25 @@ try {
   // highlighted card; with 无/默认 selected the same empty slot is an ordinary
   // 「未选择」. Warning there would flag a slot nothing depends on.
   const readCardLine = async () => page.evaluate(() => {
-    const cards = [...document.querySelectorAll('button[aria-pressed]')]
-    const custom = cards.find(c => (c.querySelector('span')?.textContent ?? '').trim() === '自定义')
+    const { cardOf, pressedOf } = window.__docSpecProbe
+    const custom = cardOf('自定义')
     const spans = [...(custom?.querySelectorAll('span') ?? [])]
     const line = spans.find(sp => {
       const text = (sp.textContent ?? '').trim()
       return text === '未选择' || text.includes('自动解析为无规范') || /\.md$/.test(text)
     })
-    const pressed = (label) => [...document.querySelectorAll('button[aria-pressed]')]
-      .find(c => (c.querySelector('span')?.textContent ?? '').trim() === label)?.getAttribute('aria-pressed')
     return {
       text: (line?.textContent ?? '').trim(),
       colour: line === undefined ? null : getComputedStyle(line).color,
-      highlighted: ['无', '默认', '自定义'].find(l => pressed(l) === 'true') ?? null,
+      highlighted: ['无', '默认', '自定义'].find(l => pressedOf(l) === 'true') ?? null,
     }
   })
-  const AMBER = 'rgb(245, 158, 11)'
-  /** `--dsw-alias-label-tertiary`, what `.cubePath` paints by default. */
-  const TERTIARY = 'rgb(173, 178, 184)'
+  // Resolved from the live tokens rather than hard-coded: the warn colour is
+  // `--dsw-alias-state-warn-primary` and `.cubePath`'s ordinary colour is
+  // `--dsw-alias-label-tertiary`, so a palette change (or the light scheme) would have
+  // failed these checks for a reason unrelated to the feature.
+  const AMBER = await tokenColor('--dsw-alias-state-warn-primary')
+  const TERTIARY = await tokenColor('--dsw-alias-label-tertiary')
 
   // (i) 自定义 highlighted, no usable spec → amber warning.
   await rpc('projectGroups/setDocSpecFileName', { request: { name: '' } })
@@ -523,6 +582,12 @@ try {
   await rpc('projectGroups/uploadSpec', {
     request: { name: 'btn-probe.md', content: '# button probe\n' },
   })
+  // The precondition this section needs is set HERE rather than inherited from 3b-2's
+  // restore: 自定义 must have NO usable file, so clicking the card opens the chooser
+  // instead of switching the mode. Inheriting it meant reordering the sections — or one
+  // dropped `rpc` above — silently sent this section down the other route.
+  await rpc('projectGroups/setDocSpecFileName', { request: { name: '' } })
+  await rpc('projectGroups/setDocSpecMode', { request: { mode: 'custom' } })
   await page.waitForTimeout(1200)
   // Reload so the client's cached `specs` includes it.
   await page.reload({ waitUntil: 'networkidle' })
@@ -680,7 +745,7 @@ try {
     // global choice is.
     const got = await pillValue(dlg)
     const items = await menuOf(dlg)
-    const label = name === '' ? '空名' : name === 'ghost.md' ? '悬空名' : name
+    const label = NAME_LABELS[name] ?? name
     console.log(`  全局 mode=${mode} name=${label} → 选中 ${JSON.stringify(got)} 列表 ${JSON.stringify(items)}`)
     check(`3c-2) 全局 ${mode}/${label} 时，新项目仍选中「跟随全局」`, got === '跟随全局', String(got))
     check(`3c-2) ...且列表前三位固定、其余全是文件名`,
@@ -689,8 +754,10 @@ try {
     await dlg.getByRole('button', { name: '取消' }).first().click({ force: true })
     await page.waitForTimeout(1200)
   }
-  // Leave the global choice on 自定义 so the sections that follow find a file-based
-  // spec rather than the built-in one.
+  // Leave the global choice on 自定义 with `inherit.md` — the courtesy restore for the
+  // sections that follow. They no longer depend on it: each sets the files and mode it
+  // needs at its own start, so reordering them cannot produce a false pass or a cascading
+  // failure.
   await rpc('projectGroups/setDocSpecMode', { request: { mode: 'custom' } })
   await rpc('projectGroups/setDocSpecFileName', { request: { name: 'inherit.md' } })
   await page.waitForTimeout(1500)
@@ -706,6 +773,13 @@ try {
   // previous value. Its presence here is the regression test for that fix.
   // `rpc` here returns the server's `result` object directly — `{ ok, value }` or
   // `{ ok: false, error }` — so refusals are readable without a second unwrap.
+  //
+  // The `inherit.md` precondition is established here (the upload is refused when it
+  // already exists, which is fine — what matters is that the file is on disk) rather than
+  // inherited from the section above: the 覆盖=inherit.md row selects a FILE, and an
+  // inherited fixture made that assertion depend on execution order.
+  await rpc('projectGroups/uploadSpec', { request: { name: 'inherit.md', content: '# inherit\n' } })
+  await page.waitForTimeout(1000)
   const overrideProbe = await rpc('projectGroups/create', {
     request: { title: '覆盖规则探针', directories: [] },
   })
@@ -724,7 +798,12 @@ try {
   }
   const openOverrideEdit = async () => {
     const row = page.locator('[data-row-key^="workspace:"]').filter({ hasText: '覆盖规则探针' }).first()
-    await row.hover({ timeout: 5000 }).catch(() => {})
+    // Logged, not discarded: the row menu only appears on hover, so a hover that failed
+    // (row not rendered yet, pointer blocked) meant the menu click below targeted nothing —
+    // and the section then failed much further along with no hint of the real cause.
+    await row.hover({ timeout: 5000 }).catch((error) => {
+      console.log(`  行 hover 失败: ${String(error?.message ?? error).split('\n')[0]}`)
+    })
     await page.waitForTimeout(500)
     const trigger = row.locator(
       'button[aria-label*="项目"][aria-label*="操作"], button[aria-label*="更多"], button[aria-label*="菜单"]',
@@ -763,6 +842,10 @@ try {
   // edit dialog was unaffected, which is what made this a one-sided bug — and why
   // the assertion runs the REAL create path rather than calling `create` directly,
   // since the direct verb was never the broken link.
+  // 3c-4's 已上传规范 case picks `inherit.md` from the menu, so the file is established
+  // here for the same reason as in 3c-3 — the section must not depend on a sibling's leftovers.
+  await rpc('projectGroups/uploadSpec', { request: { name: 'inherit.md', content: '# inherit\n' } })
+  await page.waitForTimeout(1000)
   const createPicking = async (title, spec) => {
     await page.locator('button[aria-label="新建项目"]').first().click({ force: true })
     await page.waitForTimeout(2000)
@@ -772,7 +855,7 @@ try {
     if (spec !== null) {
       await dlg.locator('button[aria-haspopup="menu"]').first().click({ force: true })
       await page.waitForTimeout(800)
-      const label = spec === 'default' ? '默认' : spec === 'none' ? '无' : spec
+      const label = MODE_LABELS[spec] ?? spec
       await page.getByRole('menuitem', { name: label, exact: true }).first().click({ force: true })
       await page.waitForTimeout(600)
     }
@@ -931,12 +1014,8 @@ try {
   check('3e-a4) 确认不改变 mode（仍 custom）', specState.docSpecMode === 'custom',
     String(specState.docSpecMode))
   const nonePressed = await page.evaluate(() => {
-    const pick = (label) => [...document.querySelectorAll('button[aria-pressed]')]
-      .find(c => (c.querySelector('span')?.textContent ?? '').trim() === label)
-    return {
-      none: pick('无')?.getAttribute('aria-pressed'),
-      custom: pick('自定义')?.getAttribute('aria-pressed'),
-    }
+    const { pressedOf } = window.__docSpecProbe
+    return { none: pressedOf('无'), custom: pressedOf('自定义') }
   })
   check('3e-a4) 高亮没有跳到「无」（只有点卡片才移动）',
     nonePressed.none === 'false' && nonePressed.custom === 'true', JSON.stringify(nonePressed))
@@ -1001,12 +1080,8 @@ try {
   check('3e-f3) 更换… 不改变 mode（仍 default）', specState.docSpecMode === 'default',
     String(specState.docSpecMode))
   const cardPressed = await page.evaluate(() => {
-    const pick = (label) => [...document.querySelectorAll('button[aria-pressed]')]
-      .find(c => (c.querySelector('span')?.textContent ?? '').trim() === label)
-    return {
-      custom: pick('自定义')?.getAttribute('aria-pressed'),
-      def: pick('默认')?.getAttribute('aria-pressed'),
-    }
+    const { pressedOf } = window.__docSpecProbe
+    return { custom: pressedOf('自定义'), def: pressedOf('默认') }
   })
   check('3e-f4) 卡片高亮没有跳到「自定义」',
     cardPressed.custom === 'false' && cardPressed.def === 'true', JSON.stringify(cardPressed))
@@ -1062,13 +1137,8 @@ try {
   check('3e-b) 确认不改变 mode',
     specState.docSpecMode === modeBeforeB, `${modeBeforeB} → ${specState.docSpecMode}`)
   const afterNone = await page.evaluate(() => {
-    const cards = [...document.querySelectorAll('button[aria-pressed]')]
-      .filter(c => /^无|^默认|^自定义/.test((c.textContent ?? '').trim()))
-    const pick = (label) => cards.find(c => (c.querySelector('span')?.textContent ?? '').trim() === label)
-    return {
-      none: pick('无')?.getAttribute('aria-pressed'),
-      custom: pick('自定义')?.getAttribute('aria-pressed'),
-    }
+    const { pressedOf } = window.__docSpecProbe
+    return { none: pressedOf('无'), custom: pressedOf('自定义') }
   })
   check('3e-b) 高亮仍停在打开前的那张卡（未跳到「无」）',
     afterNone.none === (modeBeforeB === 'none' ? 'true' : 'false')
@@ -1098,11 +1168,7 @@ try {
     specState = await readSpec()
     check(`3e-b2) ${label}：空确认后 mode 仍是 ${mode}`,
       specState.docSpecMode === mode, String(specState.docSpecMode))
-    const pressedNow = await page.evaluate((lab) => {
-      const pick = (label) => [...document.querySelectorAll('button[aria-pressed]')]
-        .find(c => (c.querySelector('span')?.textContent ?? '').trim() === label)
-      return pick(lab)?.getAttribute('aria-pressed')
-    }, label)
+    const pressedNow = await page.evaluate((lab) => window.__docSpecProbe.pressedOf(lab), label)
     check(`3e-b2) ${label}：高亮仍在「${label}」`, pressedNow === 'true', String(pressedNow))
   }
 
@@ -1114,22 +1180,18 @@ try {
   await rpc('projectGroups/setDocSpecFileName', { request: { name: 'ghost.md' } })
   await page.waitForTimeout(2000)
   const ghost = await page.evaluate(() => {
-    const cards = [...document.querySelectorAll('button[aria-pressed]')]
-      .filter(c => /^无|^默认|^自定义/.test((c.textContent ?? '').trim()))
-    const cardOf = (label) => cards.find(c => (c.querySelector('span')?.textContent ?? '').trim() === label)
+    const { cardOf, pressedOf } = window.__docSpecProbe
     const custom = cardOf('自定义')
     const value = [...(custom?.querySelectorAll('span') ?? [])]
       .find(s => /自动解析为无规范|\.md/.test(s.textContent ?? ''))
-    const pick = (label) => [...document.querySelectorAll('button[aria-pressed]')]
-      .find(c => (c.querySelector('span')?.textContent ?? '').trim() === label)
     return {
       text: (value?.textContent ?? '').trim(),
       colour: value === undefined ? null : getComputedStyle(value).color,
       hasTitle: custom?.querySelector('span[title]') !== null
         && custom?.querySelector('span[title]') !== undefined,
-      customPressed: custom?.getAttribute('aria-pressed'),
-      nonePressed: cardOf('无')?.getAttribute('aria-pressed'),
-      warn: [...(pick('自定义')?.querySelectorAll('span') ?? [])]
+      customPressed: pressedOf('自定义'),
+      nonePressed: pressedOf('无'),
+      warn: [...(custom?.querySelectorAll('span') ?? [])]
         .filter(sp => (sp.textContent ?? '').includes('自动解析为无规范'))
         .map(sp => getComputedStyle(sp).color)[0],
     }
@@ -1142,7 +1204,7 @@ try {
   // Amber, and only because 自定义 is highlighted here (asserted below): the line
   // states that the effective spec fell back, which is the same class of message
   // as the Workspace card's "it is gone" line.
-  check('3e-d) 该行用警告色', ghost.colour === 'rgb(245, 158, 11)', String(ghost.colour))
+  check('3e-d) 该行用警告色', ghost.colour === AMBER, `${String(ghost.colour)} vs ${AMBER}`)
   check('3e-d) 悬空名不残留在 title 里', ghost.hasTitle === false)
   // The highlight follows the STORED mode, so a file disappearing must not move
   // it. An earlier version highlighted the resolved spec, which made deleting a
@@ -1216,7 +1278,10 @@ try {
   console.log('')
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`)
-  await browser.close().catch(() => {})
+  // Guarded: when `chromium.launch()` itself threw, `browser` is still undefined, and
+  // dereferencing it here threw out of the `finally` — so the real cause was replaced by
+  // `Cannot read properties of undefined` and `process.exit` never ran at all.
+  if (browser !== undefined) await browser.close().catch(() => {})
   child.kill()
   process.exit(failures.length === 0 ? 0 : 1)
 }

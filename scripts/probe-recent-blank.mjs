@@ -55,7 +55,12 @@ function boot() {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''
-    const timer = setTimeout(() => reject(new Error(`boot timeout: ${redactToken(out.slice(-300))}`)), 120_000)
+    // Both reject paths reap the process first: the caller only receives the child on success, so
+    // a boot that failed here used to leave a Host holding `PORT` and still writing the domain.
+    const timer = setTimeout(() => {
+      child.kill()
+      reject(new Error(`boot timeout: ${redactToken(out.slice(-300))}`))
+    }, 120_000)
     // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
     // stdout, so without this handler the promise stayed pending until the 120 s timeout and
     // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
@@ -74,19 +79,42 @@ function boot() {
   })
 }
 
-const stop = async (child) => {
+/**
+ * Stop the Host, and wait until it is really gone.
+ *
+ * The blind 4 s sleep that used to be here assumed the process exits promptly. When it does not
+ * (a slow shutdown, or a `kill` that does not take effect), it can still flush its in-memory
+ * domain afterwards and clobber the Phase 2 `createdAt` rewrite — which then surfaced as the
+ * confusing "the rewrite survived the restart" failure rather than as "the Host was still up".
+ * @param child - the spawned Host.
+ * @param timeoutMs - how long to wait for `exit` before escalating to SIGKILL.
+ */
+const stop = async (child, timeoutMs = 10_000) => {
+  const gone = () => child.exitCode !== null || child.signalCode !== null
+  if (gone()) return
+  let timer
+  const exited = new Promise((resolve) => { child.once('exit', resolve) })
+  const timeout = new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs) })
   child.kill()
-  await new Promise(resolve => setTimeout(resolve, 4000))
+  const stopped = await Promise.race([exited.then(() => true), timeout.then(() => false)])
+  clearTimeout(timer)
+  if (stopped || gone()) return
+  // Escalate: the caller is about to rewrite the domain file on the assumption that nothing can
+  // write it back, so a process that ignored the first signal must not be left running.
+  let killTimer
+  const killed = new Promise((resolve) => { child.once('exit', resolve) })
+  const killTimeout = new Promise((resolve) => { killTimer = setTimeout(resolve, 3000) })
+  child.kill('SIGKILL')
+  await Promise.race([killed, killTimeout])
+  clearTimeout(killTimer)
 }
 
 const domainPath = () => join(dshHome, 'storages', 'project_groups.json')
 const domain = async () => JSON.parse(await readFile(domainPath(), 'utf8'))
 
+const logs = []
 let browser
 let page
-await installRowKeyHelpers(page)
-const logs = []
-page.on('pageerror', (error) => { logs.push(`pageerror: ${error.message}`) })
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -96,7 +124,9 @@ const dismiss = async () => {
     for (const label of ['稍后配置', '继续', 'Later']) {
       const button = page.getByRole('button', { name: label, exact: true }).first()
       if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
+        // Logged rather than swallowed: a click that fails keeps the mask up, and the placement
+        // readings below would then be taken against the mask instead of the sidebar.
+        await button.click({ force: true }).catch((error) => { console.log(`  取消失败（${label}）: ${error.message}`) })
         await page.waitForTimeout(1200)
       }
     }
@@ -124,10 +154,31 @@ const clickPlus = async (row) => {
   // which then reads as the placement having failed.
   const label = await plus.getAttribute('aria-label', { timeout: 10_000 }).catch(() => null)
   console.log(`clicking ＋: ${JSON.stringify(label)}`)
-  await row.hover({ timeout: 5000 }).catch(() => {})
+  await row.hover({ timeout: 5000 }).catch((error) => { console.log(`  悬停失败: ${error.message}`) })
   await page.waitForTimeout(400)
   await plus.dispatchEvent('click')
   await page.waitForTimeout(4500)
+}
+
+/**
+ * Wait until the blank Session's owner satisfies `isDone`, then report the last reading.
+ *
+ * One helper rather than two near-identical loops — "any owner" and "an owner other than X" are
+ * the same poll with a different predicate, and a fix to the cadence or the deadline could
+ * otherwise land in one copy only. Both callers report the *last* reading even when it still
+ * fails the predicate, so the assertion's detail carries the observed value.
+ * @param isDone - predicate over `{ id, owner }`.
+ * @param timeoutMs - deadline for the poll.
+ * @returns the last reading.
+ */
+const waitForOwner = async (isDone, timeoutMs) => {
+  const deadline = Date.now() + timeoutMs
+  let last = await blankOwner()
+  while (!isDone(last) && Date.now() < deadline) {
+    await page.waitForTimeout(600)
+    last = await blankOwner()
+  }
+  return last
 }
 
 /**
@@ -137,16 +188,7 @@ const clickPlus = async (row) => {
  * sidebar re-renders around it, so a fixed sleep races it and reports "no owner"
  * against a working build.
  */
-const settledOwner = async (timeoutMs = 12_000) => {
-  const deadline = Date.now() + timeoutMs
-  let last = { id: null, owner: undefined }
-  while (Date.now() < deadline) {
-    last = await blankOwner()
-    if (last.owner !== undefined) return last
-    await page.waitForTimeout(600)
-  }
-  return last
-}
+const settledOwner = (timeoutMs = 12_000) => waitForOwner(reading => reading.owner !== undefined, timeoutMs)
 
 /**
  * Wait until the blank Session's owner stops being `from`, then report it.
@@ -156,16 +198,7 @@ const settledOwner = async (timeoutMs = 12_000) => {
  * the first read would return the old value and the assertion would measure the
  * seed rather than the click.
  */
-const ownerAfter = async (from, timeoutMs = 15_000) => {
-  const deadline = Date.now() + timeoutMs
-  let last = await blankOwner()
-  while (Date.now() < deadline) {
-    if (last.owner !== from) return last
-    await page.waitForTimeout(600)
-    last = await blankOwner()
-  }
-  return last
-}
+const ownerAfter = (from, timeoutMs = 15_000) => waitForOwner(reading => reading.owner !== from, timeoutMs)
 
 /** Store the destination over the plugin's own RPC, the endpoint the card uses. */
 const setTarget = async (target) => {
@@ -224,6 +257,11 @@ let running
 try {
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // Both need a real page, and both used to run at module scope where `page` was still
+  // `undefined`: `installRowKeyHelpers` calls `page.addInitScript`, so the probe threw
+  // `Cannot read properties of undefined` before it ever booted the Host.
+  await installRowKeyHelpers(page)
+  page.on('pageerror', (error) => { logs.push(`pageerror: ${error.message}`) })
   // ── Phase 1: two empty projects, and a blank parked in the first. ──
   running = await boot()
   await page.goto(running.url, { waitUntil: 'networkidle', timeout: 60_000 })
@@ -252,16 +290,25 @@ try {
 
   const beforeEdit = await domain()
   const idOf = (title) => beforeEdit.global.projectIds
-    .find(candidate => beforeEdit.tables.projects[candidate].title === title)
+    .find(candidate => beforeEdit.tables.projects[candidate]?.title === title)
   console.log(`projects: ${JSON.stringify(beforeEdit.global.projectIds)}`)
   check('both projects exist', idOf(older) !== undefined && idOf(newer) !== undefined,
     JSON.stringify(Object.values(beforeEdit.tables.projects).map(p => p.title)))
 
+  // The ids are resolved once and the run stops here when either is missing. The two statements
+  // below used to dereference `projects[undefined]`, which threw a `TypeError` past the summary
+  // and exited with a stack trace instead of a clean "CHECK(S) FAILED".
+  const olderId = idOf(older)
+  const newerId = idOf(newer)
+  if (olderId === undefined || newerId === undefined) {
+    throw new Error(`both projects must exist before the createdAt rewrite: ${older}=${String(olderId)} ${newer}=${String(newerId)}`)
+  }
+
   // ── Phase 2: rewrite both createdAt values so only the newer project should win. ──
   await stop(running.child)
   const edited = await domain()
-  edited.tables.projects[idOf(older)].createdAt = '2019-01-01T00:00:00.000Z'
-  edited.tables.projects[idOf(newer)].createdAt = '2021-01-01T00:00:00.000Z'
+  edited.tables.projects[olderId].createdAt = '2019-01-01T00:00:00.000Z'
+  edited.tables.projects[newerId].createdAt = '2021-01-01T00:00:00.000Z'
   await writeFile(domainPath(), JSON.stringify(edited), 'utf8')
   console.log(`rewrote createdAt — ${older}=2019, ${newer}=2021`)
 
@@ -273,9 +320,9 @@ try {
 
   const reloaded = await domain()
   check('the rewrite survived the restart',
-    reloaded.tables.projects[idOf(older)].createdAt.startsWith('2019')
-      && reloaded.tables.projects[idOf(newer)].createdAt.startsWith('2021'),
-    JSON.stringify({ older: reloaded.tables.projects[idOf(older)].createdAt, newer: reloaded.tables.projects[idOf(newer)].createdAt }))
+    reloaded.tables.projects[olderId].createdAt.startsWith('2019')
+      && reloaded.tables.projects[newerId].createdAt.startsWith('2021'),
+    JSON.stringify({ older: reloaded.tables.projects[olderId].createdAt, newer: reloaded.tables.projects[newerId].createdAt }))
 
   await setTarget('recent')
   const stored = await domain()
@@ -291,9 +338,16 @@ try {
   check('the blank Session no longer decides its own destination',
     landed.owner === newer, JSON.stringify(landed))
 
+  // Asserted, not just printed: a page that throws (the sidebar re-render blowing up) would
+  // otherwise end the run with ALL CHECKS PASSED.
+  check('页面没有未捕获异常', logs.length === 0, logs.slice(0, 3).join(' | '))
+
   console.log(`\nconsole errors: ${logs.length === 0 ? '(none)' : logs.slice(0, 5).join(' | ')}`)
 } finally {
-  if (running !== undefined) running.child.kill()
+  // Awaited, not fired and forgotten: `child.kill()` alone lets the script exit before the
+  // process is reaped, and `stop()` waits for `exit` (with a SIGKILL escalation) so the Host
+  // cannot still be writing the domain after this run ends.
+  if (running !== undefined) await stop(running.child)
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 

@@ -20,13 +20,21 @@
  * Usage: node probe-drop-highlight.mjs <dshExe> <asarRoot> <dshHome>
  */
 import { spawn } from 'node:child_process'
+import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 import { installRowKeyHelpers } from './lib/row-key.mjs'
 import { redactToken } from './lib/redact.mjs'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
-const PORT = 17657
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// Validated at the boundary: `spawn(undefined, …)` and an `undefined\\dsh\\...` path both failed
+// deep inside with an opaque error instead of a usage message.
+if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
+  console.error('usage: node probe-drop-highlight.mjs <dshExe> <asarRoot> <dshHome>')
+  process.exit(2)
+}
+const PORT = Number(process.env.DSH_PROBE_PORT ?? 17657)
+// `join` rather than Windows-only separators: the literal is an invalid path on a POSIX host.
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -34,32 +42,12 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const child = spawn(exe, [BIN, '--profile', 'pg', '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout: ${redactToken(out.slice(-300))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (match !== null) { clearTimeout(timer); setTimeout(() => resolve(match[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
+// Spawned inside the `try` below, so a failed spawn, a boot timeout or a launch error all still
+// reach the `finally` that reaps the Host. While the spawn sat above the `try`, a boot timeout
+// rejected the top-level await and left the Electron Host holding `PORT`.
+let child
 let browser
 let page
-await installRowKeyHelpers(page)
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -69,12 +57,37 @@ const dismiss = async () => {
     for (const label of ['稍后配置', '继续', 'Later']) {
       const button = page.getByRole('button', { name: label, exact: true }).first()
       if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
+        // Logged, not swallowed: a click that fails keeps the mask up, and every highlight reading
+        // below would then describe the mask instead of the drag.
+        await button.click({ force: true }).catch((error) => { console.log(`  取消失败（${label}）: ${error.message}`) })
         await page.waitForTimeout(1200)
       }
     }
     await page.waitForTimeout(700)
   }
+  // The last click needs a moment to settle before the failure is declared.
+  for (let settle = 0; settle < 5 && await isMasked(); settle += 1) await page.waitForTimeout(400)
+  // Thrown, not returned: a mask that survives leaves the probe measuring the wrong UI, and the
+  // old silent return only showed up as confusing downstream highlight failures.
+  if (await isMasked()) {
+    throw new Error('the overlay mask could not be dismissed after 8 attempts (the button labels changed, or the modal ignores clicks)')
+  }
+}
+
+/**
+ * Start a drag from a row: move onto its centre, press, and move a few pixels so the drag begins.
+ *
+ * Extracted because the probe starts two drags and the measured state depends on both being
+ * started identically — when the two sequences diverge, the checks compare different harnesses.
+ * @param locator - the row to drag from.
+ */
+const startDrag = async (locator) => {
+  const box = await locator.boundingBox()
+  if (box === null) throw new Error('drag source is not laid out')
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 + 8, box.y + box.height / 2 + 8, { steps: 4 })
+  await page.waitForTimeout(400)
 }
 
 const sessionsUnder = (title) => page.evaluate((text) => {
@@ -93,15 +106,15 @@ const seed = async (title, message) => {
   for (let attempt = 0; attempt < 4; attempt += 1) {
     await dismiss()
     const row = projectRow(title)
-    await row.hover({ timeout: 5000 }).catch(() => {})
+    await row.hover({ timeout: 5000 }).catch((error) => { console.log(`  悬停失败（${title}）: ${error.message}`) })
     await page.waitForTimeout(400)
     await row.locator('button[aria-label^="在"]').first().dispatchEvent('click')
     await page.waitForTimeout(3500)
     const composer = page.locator('[data-composer-input="true"]').first()
     if (await composer.count() === 0) continue
-    await composer.click({ force: true }).catch(() => {})
+    await composer.click({ force: true }).catch((error) => { console.log(`  输入框点击失败: ${error.message}`) })
     await page.waitForTimeout(600)
-    await composer.type(message, { delay: 30 }).catch(() => {})
+    await composer.type(message, { delay: 30 }).catch((error) => { console.log(`  输入失败: ${error.message}`) })
     await page.waitForTimeout(400)
     await page.keyboard.press('Enter')
     for (let wait = 0; wait < 20; wait += 1) {
@@ -122,8 +135,35 @@ const highlighted = () => page.evaluate(() => [...document.querySelectorAll('[cl
   })))
 
 try {
+  child = spawn(exe, [BIN, '--profile', 'pg', '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout: ${redactToken(out.slice(-300))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (match !== null) { clearTimeout(timer); setTimeout(() => resolve(match[1]), 3000) }
+    })
+    child.stderr.on('data', (chunk) => { out += chunk })
+  })
+
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // Installed before the first navigation, and it needs a real page: at module scope `page` was
+  // still `undefined`, so `installRowKeyHelpers(page)` threw `Cannot read properties of undefined`
+  // before the Host was ever spawned.
+  await installRowKeyHelpers(page)
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(7000)
   await dismiss()
@@ -161,12 +201,7 @@ try {
   // point silently lands somewhere harmless — making a check pass on a build where
   // the behaviour is wrong.
   const source = groupSection(alpha).locator('[data-row-key^="session:"]').nth(0)
-  const sourceBox = await source.boundingBox()
-  if (sourceBox === null) throw new Error('source is not laid out')
-  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2)
-  await page.mouse.down()
-  await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 8, sourceBox.y + sourceBox.height / 2 + 8, { steps: 4 })
-  await page.waitForTimeout(400)
+  await startDrag(source)
 
   const betaHeader = projectRow(beta)
   const betaBox = await betaHeader.boundingBox()
@@ -246,12 +281,7 @@ try {
   //
   // A fresh drag is started for it, so the state is unambiguous.
   const source2 = groupSection(alpha).locator('[data-row-key^="session:"]').nth(0)
-  const source2Box = await source2.boundingBox()
-  if (source2Box === null) throw new Error('source is not laid out')
-  await page.mouse.move(source2Box.x + source2Box.width / 2, source2Box.y + source2Box.height / 2)
-  await page.mouse.down()
-  await page.mouse.move(source2Box.x + source2Box.width / 2 + 8, source2Box.y + source2Box.height / 2 + 8, { steps: 4 })
-  await page.waitForTimeout(400)
+  await startDrag(source2)
 
   const sectionAccepted = await page.evaluate((title) => {
     const header = [...document.querySelectorAll('[data-row-key^="workspace:"]')]
@@ -277,7 +307,9 @@ try {
 
   await page.mouse.up()
 } finally {
-  child.kill()
+  // Guarded: the spawn is inside the `try` now, so a synchronous spawn failure must not turn the
+  // real error into a `TypeError` from this line.
+  if (child !== undefined) child.kill()
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 

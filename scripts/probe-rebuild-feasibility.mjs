@@ -30,53 +30,63 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-rebuild-feasibility.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17980 : 17981
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// Overridable: a leftover Host from an aborted run holds the fixed port, and the next probe
+// then reports a boot timeout for what is really an occupied port.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17980 : 17981))
+// `join`, not a `\\`-joined literal: on a POSIX runner a backslash is an ordinary filename
+// character, so the literal path silently never resolves. (Also tolerates an `asarRoot` that
+// already ends in a separator, which the literal produced as `...\\\dsh`.)
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
+const failures = []
 const check = (label, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail === undefined ? '' : ` — ${detail}`}`)
+  // Collected, and turned into an exit code at the end. Without this the probe printed FAIL lines
+  // and still exited 0, so a run that failed every step looked exactly like a passing one to CI.
+  if (!ok) failures.push(label)
 }
 
-const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
+let child
 let browser
 let page
 
+/**
+ * One `/api` RPC.
+ *
+ * The transport failures and the Host's refusals are kept apart. `page.evaluate` rejects on a
+ * network error or a timeout, and the old deep optional chaining then collapsed an unexpected
+ * envelope to `ok=undefined` — so "the request never arrived" and "the Host refused" produced the
+ * same output. A parse failure is likewise reported rather than swallowed by an empty `catch`.
+ * @param method - the RPC to call.
+ * @param args - its `payload.args`.
+ * @returns `{ status, ok, value, error, text, problem }`, with `problem` set for a transport or
+ * parse failure.
+ */
 const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
   const token = new URL(location.href).searchParams.get('token') ?? ''
-  const response = await fetch(`${location.origin}/api/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-dsh-token': token },
-    body: JSON.stringify({
-      type: 'client-request', rpcId: `p-${Math.random().toString(36).slice(2)}`,
-      method, payload: { args },
-    }),
-  })
-  const text = await response.text()
+  let response
+  let text
+  try {
+    response = await fetch(`${location.origin}/api/${method}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-dsh-token': token },
+      body: JSON.stringify({
+        type: 'client-request', rpcId: `p-${Math.random().toString(36).slice(2)}`,
+        method, payload: { args },
+      }),
+      signal: AbortSignal.timeout(15_000),
+    })
+    text = await response.text()
+  } catch (error) {
+    return { status: null, ok: undefined, value: undefined, error: undefined, text: '', problem: `${method}: transport failed — ${error.message}` }
+  }
   let parsed = null
-  try { parsed = JSON.parse(text) } catch { /* raw */ }
-  return { ok: parsed?.result?.ok, value: parsed?.result?.value, error: parsed?.result?.error, text: text.slice(0, 260) }
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    return { status: response.status, ok: undefined, value: undefined, error: undefined, text: text.slice(0, 260), problem: `${method}: non-JSON response (${error.message})` }
+  }
+  return { status: response.status, ok: parsed?.result?.ok, value: parsed?.result?.value, error: parsed?.result?.error, text: text.slice(0, 260), problem: undefined }
 }, { method, args })
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
@@ -87,18 +97,49 @@ const dismiss = async () => {
     for (const label of ['稍后配置', '继续', 'Later']) {
       const button = page.getByRole('button', { name: label, exact: true }).first()
       if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
+        // Logged rather than discarded: a click that never landed leaves the mask up, and the
+        // checks below then measure an intercepted UI for a setup reason with nothing to say so.
+        await button.click({ force: true }).catch((error) => {
+          console.log(`  dismiss: click on "${label}" failed — ${error.message}`)
+        })
         await page.waitForTimeout(1200)
       }
     }
     await page.waitForTimeout(700)
   }
+  if (await isMasked()) console.log('  dismiss: a modal mask is STILL up after 6 rounds — later checks may be measuring an intercepted UI')
 }
 
 const scratchRoot = join(dshHome, 'rebuild-probe')
 const target = join(scratchRoot, 'nested', 'child')
 
 try {
+  // Spawned inside the `try` so the `finally` always reaches `child.kill()`. While this sat above
+  // the `try`, a boot timeout — or any throw out of `chromium.launch` — rejected the top-level
+  // await before cleanup ran and left the Host running on the port.
+  child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
+    })
+    child.stderr.on('data', (chunk) => { out += chunk })
+  })
+
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
@@ -108,15 +149,20 @@ try {
   console.log('=== 1. 目录不存在时，workspace/create 应拒绝（证实"先 mkdir"的顺序）===')
   if (existsSync(scratchRoot)) rmSync(scratchRoot, { recursive: true, force: true })
   const absent = await rpc('workspace/create', { request: { path: target } })
-  console.log(`  ok=${String(absent.ok)}  error=${JSON.stringify(absent.error?.code ?? null)}`)
+  console.log(`  status=${String(absent.status)}  ok=${String(absent.ok)}  error=${JSON.stringify(absent.error?.code ?? null)}`)
   console.log(`  ${absent.text.slice(0, 180)}`)
-  check('1) 目录不存在时被拒绝', absent.ok !== true)
+  // `status === 200` is required: this check asserts a *refusal*, and a transport failure also
+  // leaves `ok !== true` — so without it "the request never arrived" would read as "the Host
+  // correctly refused".
+  check('1) 目录不存在时被拒绝', absent.status === 200 && absent.ok !== true, absent.problem ?? '')
 
   console.log('')
   console.log('=== 2. 只建父目录（不建叶子）仍应被拒绝 ===')
   mkdirSync(scratchRoot, { recursive: true })
   const parentOnly = await rpc('workspace/create', { request: { path: target } })
-  check('2) 只建父目录仍被拒绝', parentOnly.ok !== true, JSON.stringify(parentOnly.error?.code ?? null))
+  check('2) 只建父目录仍被拒绝',
+    parentOnly.status === 200 && parentOnly.ok !== true,
+    parentOnly.problem ?? JSON.stringify(parentOnly.error?.code ?? null))
 
   console.log('')
   console.log('=== 3. mkdir -p（recursive）后再 create 应成功 ===')
@@ -148,13 +194,29 @@ try {
 
   console.log('')
   console.log('=== 6. 注册表里最终只有一条该路径 ===')
-  const registry = JSON.parse(readFileSync(join(dshHome, 'storages', 'workspace.json'), 'utf8'))
-  const paths = Object.values(registry.tables.workspaces).map(row => row.path)
-  const matches = paths.filter(p => p === target).length
+  // Unguarded before: `readFileSync` + `JSON.parse` + `Object.values(registry.tables.workspaces)`
+  // assumed the file existed with that exact shape, so a missing or newer `workspace.json` threw
+  // an opaque `TypeError`/`ENOENT` with no diagnostic about the registry it was reading.
+  const registryFile = join(dshHome, 'storages', 'workspace.json')
+  let paths = null
+  if (!existsSync(registryFile)) {
+    console.log(`  ${registryFile} 不存在 —— 无法核对注册表`)
+  } else {
+    try {
+      const registry = JSON.parse(readFileSync(registryFile, 'utf8'))
+      paths = Object.values(registry?.tables?.workspaces ?? {}).map(row => row?.path)
+    } catch (error) {
+      console.log(`  ${registryFile} 无法解析 —— ${error.message}`)
+    }
+  }
+  const matches = paths === null ? null : paths.filter(p => p === target).length
   console.log(`  该路径的条数: ${String(matches)}（全部路径: ${JSON.stringify(paths)}）`)
   check('6) 只有一条', matches === 1, `${String(matches)} 条`)
 } finally {
-  child.kill()
+  if (child !== undefined) child.kill() // guarded: a synchronous `spawn` throw leaves it unset
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
   rmSync(scratchRoot, { recursive: true, force: true })
 }
+
+console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`}`)
+process.exit(failures.length === 0 ? 0 : 1)

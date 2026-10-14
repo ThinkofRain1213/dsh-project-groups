@@ -24,6 +24,7 @@
  * Usage: node probe-modal-vertical-actions.mjs <dshExe> <asarRoot> <dshHome> [profile]
  */
 import { spawn } from 'node:child_process'
+import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
 
@@ -32,32 +33,15 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-modal-vertical-actions.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17850 : 17851
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17850 : 17851))
+// `join` rather than Windows-only separators: the literal is an invalid path wherever
+// `asarRoot` is a POSIX path.
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
-const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
+// Spawned inside the `try` below, so that a failed spawn, a boot timeout or a launch error
+// all still reach the `finally` that reaps the Host. While the spawn sat above the `try`, a
+// boot timeout rejected the top-level await and left the Electron Host running on the port.
+let child
 let browser
 let page
 
@@ -69,7 +53,9 @@ const dismiss = async () => {
     for (const label of ['稍后配置', '继续', 'Later']) {
       const button = page.getByRole('button', { name: label, exact: true }).first()
       if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
+        // Logged instead of swallowed: a click that fails keeps the mask up, and every
+        // measurement below would then be taken on the wrong UI state.
+        await button.click({ force: true }).catch((error) => { console.log(`  取消失败（${label}）: ${error.message}`) })
         await page.waitForTimeout(1200)
       }
     }
@@ -77,7 +63,47 @@ const dismiss = async () => {
   }
 }
 
+/**
+ * Run one setup step, naming it in the failure.
+ *
+ * The steps below used to swallow their errors and continue; a drifted selector then surfaced
+ * only as `无法测量: no dialog open`, which names the symptom and hides the cause.
+ * @param label - what the step was trying to do.
+ * @param action - the step itself.
+ * @returns whatever the step returned.
+ */
+const step = async (label, action) => {
+  try {
+    return await action()
+  } catch (error) {
+    throw new Error(`setup step failed — ${label}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 try {
+  child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
+    })
+    child.stderr.on('data', (chunk) => { out += chunk })
+  })
+
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
   page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
@@ -93,12 +119,26 @@ try {
   await page.waitForTimeout(2500)
 
   const row = page.locator('[data-row-key^="workspace:"]', { hasText: '竖排' }).first()
-  await row.hover({ timeout: 5000 }).catch(() => {})
+  await step('hover the 竖排 row', () => row.hover({ timeout: 5000 }))
   await page.waitForTimeout(400)
-  await row.locator('button[aria-haspopup="menu"], button[aria-label*="项目"]').first().click({ force: true }).catch(() => {})
+  // The row's menu trigger. `button[aria-haspopup="menu"]` is preferred and the label
+  // heuristic is only the fallback: `.first()` over a combined selector list resolves by
+  // document order, so the old `button[aria-haspopup="menu"], button[aria-label*="项目"]`
+  // could pick an unrelated labelled button and open the wrong menu.
+  const menuTriggers = row.locator('button[aria-haspopup="menu"]')
+  const trigger = (await menuTriggers.count()) > 0
+    ? menuTriggers.first()
+    : row.locator('button[aria-label*="项目"]').first()
+  await step(`open the 竖排 row menu (aria-haspopup=${String(await menuTriggers.count())})`,
+    () => trigger.click({ force: true }))
   await page.waitForTimeout(600)
   const renameEntry = page.getByRole('menuitem', { name: /编辑项目/ }).first()
-  if (await renameEntry.count() > 0) await renameEntry.click({ force: true })
+  // Was `if (count > 0) click` and then carry on: a menu that never opened was reported as
+  // `无法测量: no dialog open`, i.e. as a measurement failure rather than a setup failure.
+  if (await renameEntry.count() === 0) {
+    throw new Error('setup failed — the 「编辑项目」 menu item never appeared: the row menu did not open, or its copy changed')
+  }
+  await step('click 编辑项目', () => renameEntry.click({ force: true }))
   await page.waitForTimeout(1200)
 
   // The user's order, top to bottom, with their own wording.
@@ -114,9 +154,18 @@ try {
 
     const buttons = [...dialog.querySelectorAll('button')].filter(node => (node.textContent ?? '').trim() !== '')
     if (buttons.length < 2) return { error: `only ${buttons.length} buttons` }
+    // The footer is the lowest common ancestor of the labelled buttons — but a labelled button
+    // outside the footer (a header action) would make that ancestor the dialog itself, and
+    // `footer.replaceChildren(...)` below would then wipe the dialog's contents rather than the
+    // footer's. So the climb stops at the dialog and refuses to mutate when it got there.
     let footer = buttons[0].parentElement
-    while (footer !== null && !buttons.every(button => footer.contains(button))) footer = footer.parentElement
+    while (footer !== null && footer !== dialog && !buttons.every(button => footer.contains(button))) {
+      footer = footer.parentElement
+    }
     if (footer === null) return { error: 'no footer' }
+    if (footer === dialog) {
+      return { error: 'no footer container: the labelled buttons do not share an ancestor below the dialog' }
+    }
 
     const template = buttons[0]
     const dialogRect = dialog.getBoundingClientRect()
@@ -196,8 +245,6 @@ try {
 
     const report = [measure('full-width'), measure('content-width')]
 
-    // Confirm the card actually grew rather than clipping the third row.
-    const grown = report.map(entry => entry.dialogHeight)
     return {
       footerStyleBefore: {
         display: footerStyleBefore.display,
@@ -207,7 +254,6 @@ try {
       dialogWidth: Math.round(dialogRect.width),
       beforeHeight,
       report,
-      grown,
     }
   }, { LABELS })
 
@@ -237,11 +283,21 @@ try {
     console.log('=== 判定 ===')
     console.log(`  竖排可行: ${full.buttons.length === 3 ? '✅' : '❌'}`)
     console.log(`  全宽按钮宽度: ${JSON.stringify(full.buttons.map(b => b.width))}`)
-    console.log(`  内容宽按钮宽度: ${JSON.stringify(content.buttons.map(b => b.width))}`)
-    console.log(`  ⇒ 用户措辞「${LABELS[1]}」需要 ${String(full.buttons[1].natural)}px；`)
-    console.log(`     全宽可用 ${full.buttons[1].available}px ⇒ ${full.buttons[1].fits ? '充裕' : '仍不够'}`)
+    console.log(`  内容宽按钮宽度: ${JSON.stringify(content?.buttons?.map(b => b.width) ?? [])}`)
+    // Looked up by label rather than assuming index 1: if the template button had no text node
+    // the fallback path fires and the button order/identity can differ, which used to throw a
+    // raw `TypeError` out of the verdict instead of reporting which label was missing.
+    const second = full.buttons.find(button => button.label === LABELS[1])
+    if (second === undefined) {
+      console.log(`  ⇒ 没有识别出「${LABELS[1]}」按钮（实测按钮: ${JSON.stringify(full.buttons.map(b => b.label))}）`)
+    } else {
+      console.log(`  ⇒ 用户措辞「${LABELS[1]}」需要 ${String(second.natural)}px；`)
+      console.log(`     全宽可用 ${second.available}px ⇒ ${second.fits ? '充裕' : '仍不够'}`)
+    }
   }
 } finally {
-  child.kill()
+  // Guarded: the spawn is inside the `try` now, so a synchronous spawn failure must not turn the
+  // real error into a `TypeError` from this line.
+  if (child !== undefined) child.kill()
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }

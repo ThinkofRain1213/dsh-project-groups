@@ -25,14 +25,28 @@ import { register } from 'node:module'
 
 register('./lib/ts-loader.mjs', import.meta.url)
 
-const { createWorkspaceViewStore, FLAT_SESSION_ORDER_KEY } = await import('../src/vendored/client/stores.ts')
-const { UNGROUPED_KEY } = await import('../src/vendored/client/tree.ts')
-
 const failures = []
 const check = (label, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? ` — ${detail}` : ''}`)
   if (!ok) failures.push(label)
 }
+
+// A top-level `await import` that fails to resolve — a broken ts-loader stub, a
+// moved module — used to abort the harness with a raw loader stack trace and no
+// PASS/FAIL line, so the run said nothing about what actually broke. The module
+// being unavailable IS the finding here, so it is reported as one.
+const load = async (specifier) => {
+  try {
+    return await import(specifier)
+  } catch (error) {
+    console.error(`FAIL  cannot load ${specifier} through the ts-loader stub: ${error.message}`)
+    console.error('      (the stub is scripts/lib/ts-loader.mjs; a resolve/loader failure here means the probe could not run at all)')
+    process.exit(1)
+  }
+}
+
+const { createWorkspaceViewStore, FLAT_SESSION_ORDER_KEY } = await load('../src/vendored/client/stores.ts')
+const { UNGROUPED_KEY } = await load('../src/vendored/client/tree.ts')
 
 /** The two browser-local accounts every call site retains. */
 const BROWSER_ACCOUNTS = [UNGROUPED_KEY, FLAT_SESSION_ORDER_KEY]
@@ -101,16 +115,31 @@ const BROWSER_ACCOUNTS = [UNGROUPED_KEY, FLAT_SESSION_ORDER_KEY]
     after['project-folded'] === false, JSON.stringify(after))
 }
 
-// 4. Order is preserved for the surviving keys, so a Workspace and a project
-//    under it do not lose their relative order in the record.
+// 4. A survivor's place in the record is preserved, so the claim "a Workspace and
+//    a project under it do not lose their relative order" is actually exercised
+//    rather than asserted in prose. This block previously checked only that
+//    `workspace-1` was still `false`, which a regression that rebuilt the map in
+//    a different order (or re-created the surviving keys) would have passed.
 {
   const store = createWorkspaceViewStore().create()
   store.actions.setGroupExpanded('workspace-1', false)
   store.actions.setGroupExpanded('project-abc', true)
   store.actions.retainAccountKeys([...BROWSER_ACCOUNTS, 'workspace-1', 'project-abc'])
+  const expansion = store.getSnapshot().groupExpansion
   check('a collapsed group stays collapsed (false is a record, not an absence)',
-    store.getSnapshot().groupExpansion['workspace-1'] === false,
-    JSON.stringify(store.getSnapshot().groupExpansion))
+    expansion['workspace-1'] === false,
+    JSON.stringify(expansion))
+  // Insertion order of the retained keys, not just their presence.
+  const order = Object.keys(expansion)
+  check('and the surviving keys keep their relative order',
+    order.indexOf('workspace-1') !== -1 && order.indexOf('project-abc') !== -1
+      && order.indexOf('workspace-1') < order.indexOf('project-abc'),
+    JSON.stringify(order))
+  // Not just presence: a retained key from an earlier prune must not come back
+  // on the next one. The count is what catches a regression that merges instead
+  // of replacing, which would leave the order check above unable to say anything.
+  check('and pruning replaces the record rather than merging into it',
+    order.length === 2, JSON.stringify(order))
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)

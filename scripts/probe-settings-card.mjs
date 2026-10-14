@@ -26,14 +26,40 @@ import { chromium } from 'playwright-core'
 import { installRowKeyHelpers } from './lib/row-key.mjs'
 import { redactToken } from './lib/redact.mjs'
 
+/**
+ * The bundle's displayed name on the Plugins page.
+ *
+ * Addressed by its **displayed** name, not the package name: the list localizes the entry,
+ * so `text=dsh-project-groups` matches nothing and `openCard` timed out on every run. Its
+ * own constant because a copy change is exactly what silently breaks every card assertion.
+ */
+const BUNDLE_DISPLAY_NAME = '项目分组'
+/** The card's own heading copy — what proves the config section is OURS. */
+const CARD_COPY = '新会话落点'
+/** The three destinations the card offers. */
+const DEST_UNGROUPED = '未分组'
+const DEST_RECENT = '最后活跃的会话所在项目'
+const DEST_CURRENT = '当前会话所在项目'
+/** The stored `newSessionTarget` each destination writes. */
+const TARGET_RECENT = 'recent'
+const TARGET_UNGROUPED = 'ungrouped'
+/** The label the shell renders for the unstarted Session. */
+const BLANK_SESSION_LABEL = '新会话'
+/** The two switches the card renders; their order is asserted in step 6b. */
+const SWITCH_VALIDATE = '开启http(s)://校验'
+const SWITCH_INJECT_INFO = '注入项目信息'
+
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
 if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-settings-card.mjs <dshExe> <asarRoot> <dshHome>')
   process.exit(2)
 }
 
-const PORT = 17681
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// `join` rather than a hand-written `\\` path (the literal only worked on Windows), and an
+// overridable port so a collision is fixable without editing the file.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? 17681)
+const PROFILE = process.env.DSH_PROBE_PROFILE ?? 'pg'
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -44,38 +70,90 @@ const check = (label, ok, detail) => {
 /** The seeded project's title, shared with the behaviour steps below. */
 let alpha = ''
 
-const child = spawn(exe, [BIN, '--profile', 'pg', '--port', String(PORT), '--no-open'], {
+const child = spawn(exe, [BIN, '--profile', PROFILE, '--port', String(PORT), '--no-open'], {
   env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout: ${redactToken(out.slice(-300))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (match !== null) { clearTimeout(timer); setTimeout(() => resolve(match[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
-const origin = new URL(url).origin
-const token = new URL(url).searchParams.get('token') ?? ''
+// The boot await and `chromium.launch()` sit outside the try/finally that kills this child, so
+// a boot timeout or a failed launch would orphan it (and leave the port bound). These are the
+// fallback for that window; the boot-timeout path also kills explicitly.
+const killChild = () => { try { child.kill() } catch { /* already gone */ } }
+process.once('exit', killChild)
+process.once('SIGINT', () => { killChild(); process.exit(130) })
+/** Append a chunk to the retained boot log. */
+const appendLog = (chunk) => { out += String(chunk) }
+const bootUrl = async () => {
+  try {
+    return await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        killChild()
+        reject(new Error(`boot timeout: ${redactToken(out.slice(-300))}`))
+      }, 120_000)
+      // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+      // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+      // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+      // the process outright.
+      child.on('error', (error) => {
+        clearTimeout(timer)
+        reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+      })
+      // An early exit (bad args, the port already bound, a crash) also never prints a URL.
+      child.on('exit', (code, signal) => {
+        clearTimeout(timer)
+        reject(new Error(`dsh exited before printing a URL (code=${String(code)}, signal=${String(signal)}): ${redactToken(out.slice(-300))}`))
+      })
+      child.stdout.on('data', (chunk) => {
+        appendLog(chunk)
+        const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+        if (match !== null) { clearTimeout(timer); setTimeout(() => resolve(match[1]), 3000) }
+      })
+      child.stderr.on('data', appendLog)
+    })
+  } catch (error) {
+    killChild()
+    throw error
+  }
+}
 
 let browser
 let page
-await installRowKeyHelpers(page)
 const logs = []
-page.on('console', (message) => { if (message.type() === 'error') logs.push(message.text()) })
-page.on('pageerror', (error) => { logs.push(`pageerror: ${error.message}`) })
+
+/**
+ * Read a popup's effective background fill by walking to the first painted descendant.
+ *
+ * Written with no outer references so its own source can be injected into `page.evaluate`
+ * (see `FIND_FILL_SOURCE`). The walk used to be written out twice — once in step 2, once in
+ * `surfaceReading` with the parameter renamed — and those two readings are compared against
+ * each other, so a divergence there would be silently wrong rather than merely stale.
+ * @param node - the popup element.
+ * @returns the first non-transparent background colour, or undefined.
+ */
+function FIND_FILL(node) {
+  const own = getComputedStyle(node).backgroundColor
+  if (own !== 'rgba(0, 0, 0, 0)' && own !== 'transparent') return own
+  for (const child of node.children) {
+    const found = FIND_FILL(child)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
+/** {@link FIND_FILL} as source text, for injection into a `page.evaluate` body. */
+const FIND_FILL_SOURCE = `(${String(FIND_FILL)})`
+
+/**
+ * Measure a popup's fill and the document's colour scheme in one page-side read.
+ *
+ * The walk is injected as source text rather than re-written inline: `page.evaluate` runs the
+ * function's own text in the page, where a closure over {@link FIND_FILL} would not exist.
+ * @param locator - the popup locator.
+ * @returns a promise for `{ fill, scheme }`.
+ */
+const measureSurface = (locator) => locator.evaluate(
+  new Function('node', `const FIND_FILL = ${FIND_FILL_SOURCE}; return { fill: FIND_FILL(node), scheme: getComputedStyle(document.documentElement).colorScheme }`),
+)
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -112,11 +190,11 @@ const card = () => page.locator('[data-plugin-config]').first()
 const pillar = () => card().locator('button[aria-haspopup="menu"]').first()
 
 /** The Session the shell renders as the unstarted one. */
-const blankSessionId = () => page.evaluate(() => {
+const blankSessionId = () => page.evaluate((blankLabel) => {
   const row = [...document.querySelectorAll('[data-row-key^="session:"]')]
-    .find(node => (node.textContent ?? '').includes('新会话'))
+    .find(node => (node.textContent ?? '').includes(blankLabel))
   return window.__sessionIdOf(row?.getAttribute('data-row-key'))
-})
+}, BLANK_SESSION_LABEL)
 
 /** Where that Session is filed, tracked by identity (a blank Session is reused). */
 const blankOwner = async () => {
@@ -140,15 +218,23 @@ const openCard = async () => {
   // was verified to fail identically on the commit before Z-9, so this is a pre-existing mismatch
   // with the current DSH rather than a consequence of that work — and it has to be fixed for any
   // card assertion to run at all.
-  const entry = page.locator('[data-plugin-id="dsh-project-groups"]').or(page.getByText('项目分组', { exact: true })).first()
+  const entry = page.locator('[data-plugin-id="dsh-project-groups"]').or(page.getByText(BUNDLE_DISPLAY_NAME, { exact: true })).first()
   await entry.click({ force: true })
   await page.waitForTimeout(2500)
   await dismiss()
 }
 
 try {
+  const url = await bootUrl()
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // Installed after the page exists and BEFORE the first navigation: `addInitScript` only
+  // applies to navigations that happen after it is registered, and the helper used to be
+  // installed on a `page` that was still `undefined` — a TypeError that killed the whole
+  // probe before a browser was ever launched.
+  await installRowKeyHelpers(page)
+  page.on('console', (message) => { if (message.type() === 'error') logs.push(message.text()) })
+  page.on('pageerror', (error) => { logs.push(`pageerror: ${error.message}`) })
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(7000)
   await dismiss()
@@ -171,9 +257,9 @@ try {
     `sections: ${await page.locator('[data-plugin-config]').count()}`)
   const cardText = (await card().innerText().catch(() => '')).replace(/\s+/g, ' ')
   console.log(`card text: ${JSON.stringify(cardText.slice(0, 200))}`)
-  check('it carries this plugin\'s copy', cardText.includes('新会话落点'), cardText.slice(0, 80))
+  check('it carries this plugin\'s copy', cardText.includes(CARD_COPY), cardText.slice(0, 80))
   check('and its trigger shows the stored destination',
-    (await pillar().innerText().catch(() => '')).includes('未分组'),
+    (await pillar().innerText().catch(() => '')).includes(DEST_UNGROUPED),
     await pillar().innerText().catch(() => '(no pill)'))
 
   // ── 2. The menu opens with all three destinations, and the current one is marked. ──
@@ -203,38 +289,27 @@ async function runCardBehaviour() {
   const items = await menu.getByRole('menuitem').allInnerTexts()
   console.log(`menu items: ${JSON.stringify(items)}`)
   check('with all three destinations',
-    items.length === 3 && items.join('|').includes('未分组')
-      && items.join('|').includes('当前会话所在项目') && items.join('|').includes('最后活跃的会话所在项目'),
+    items.length === 3 && items.join('|').includes(DEST_UNGROUPED)
+      && items.join('|').includes(DEST_CURRENT) && items.join('|').includes(DEST_RECENT),
     JSON.stringify(items))
 
   // The native `<select>` the voice-input card uses renders its popup with the
   // operating system's colours, so it goes light on a dark theme. The Menu draws
   // its own themed surface instead — so the popup must not be the light fill a
   // native popup would be.
-  const surface = await menu.evaluate((node) => {
-    const findFill = (element) => {
-      const own = getComputedStyle(element).backgroundColor
-      if (own !== 'rgba(0, 0, 0, 0)' && own !== 'transparent') return own
-      for (const child of element.children) {
-        const found = findFill(child)
-        if (found !== undefined) return found
-      }
-      return undefined
-    }
-    return { fill: findFill(node), scheme: getComputedStyle(document.documentElement).colorScheme }
-  })
+  const surface = await measureSurface(menu)
   console.log(`menu surface: ${JSON.stringify(surface)}`)
   check('the popup is themed rather than the OS light fill',
     surface.fill !== undefined && surface.fill !== 'rgb(255, 255, 255)',
     JSON.stringify(surface))
 
   // ── 3. Choosing "recent" is stored and shown. ──
-  await menu.getByRole('menuitem', { name: '最后活跃的会话所在项目' }).click()
+  await menu.getByRole('menuitem', { name: DEST_RECENT }).click()
   await page.waitForTimeout(2500)
   const afterPick = await domain()
   console.log(`stored global: ${JSON.stringify(afterPick.global)}`)
   check('choosing an option stores it on the Host',
-    afterPick.global?.newSessionTarget === 'recent', JSON.stringify(afterPick.global))
+    afterPick.global?.newSessionTarget === TARGET_RECENT, JSON.stringify(afterPick.global))
   check('and the trigger shows the new choice',
     (await pillar().innerText().catch(() => '')).includes('最后活跃'), await pillar().innerText().catch(() => '(no pill)'))
   check('and the project order survived the write',
@@ -242,11 +317,16 @@ async function runCardBehaviour() {
 
   // ── 4. The choice actually drives the shell's New Session button. ──
   await dismiss()
+  const beforeTopClick = await blankOwner()
   await page.locator('button[aria-label="新建会话"]').first().click({ force: true })
   await page.waitForTimeout(5000)
   await dismiss()
   const filed = await blankOwner()
   console.log(`after the top New Session with "recent": ${JSON.stringify(filed)}`)
+  // Recorded explicitly: a blank Session is REUSED by identity, so "it is filed under alpha"
+  // alone would also pass if the click had done nothing and the Session was already there.
+  // Stating the before/after ids makes the identity-reuse premise visible in the output.
+  console.log(`  blank Session id before=${String(beforeTopClick.id)} after=${String(filed.id)}`)
   check('the stored destination drives the New Session button',
     filed.owner === alpha, JSON.stringify(filed))
 
@@ -254,10 +334,13 @@ async function runCardBehaviour() {
   await openCard()
   await pillar().click()
   await page.waitForTimeout(900)
-  await page.getByRole('menu').first().getByRole('menuitem', { name: '未分组' }).click()
+  await page.getByRole('menu').first().getByRole('menuitem', { name: DEST_UNGROUPED }).click()
   await page.waitForTimeout(2500)
+  // Read the file ONCE: two `domain()` calls in one assertion can observe different
+  // contents, so the PASS/FAIL decision and the logged value could disagree.
+  const afterSwitchBack = await domain()
   check('switching back stores Ungrouped',
-    (await domain()).global?.newSessionTarget === 'ungrouped', JSON.stringify((await domain()).global))
+    afterSwitchBack.global?.newSessionTarget === TARGET_UNGROUPED, JSON.stringify(afterSwitchBack.global))
   await dismiss()
   await page.locator('button[aria-label="新建会话"]').first().click({ force: true })
   await page.waitForTimeout(5000)
@@ -277,19 +360,7 @@ async function runCardBehaviour() {
     await openCard()
     await pillar().click()
     await page.waitForTimeout(900)
-    const node = page.getByRole('menu').first()
-    const reading = await node.evaluate((element) => {
-      const findFill = (current) => {
-        const own = getComputedStyle(current).backgroundColor
-        if (own !== 'rgba(0, 0, 0, 0)' && own !== 'transparent') return own
-        for (const child of current.children) {
-          const found = findFill(child)
-          if (found !== undefined) return found
-        }
-        return undefined
-      }
-      return { fill: findFill(element), scheme: getComputedStyle(document.documentElement).colorScheme }
-    })
+    const reading = await measureSurface(page.getByRole('menu').first())
     await page.keyboard.press('Escape')
     await page.waitForTimeout(400)
     return reading
@@ -312,10 +383,10 @@ async function runCardBehaviour() {
   // setting that depends on nothing else, so sitting after a four-row chain read as the last link
   // in it. Numbered `6b)` rather than `7)` — it is not part of the popup section above it, and the
   // `7)` group went with the injection preview.
-  const cardOrder = await card().evaluate((root) => {
+  const cardOrder = await card().evaluate((root, labels) => {
     const text = root.innerText
-    return ['开启http(s)://校验', '注入项目信息', '注入项目文档'].map(label => text.indexOf(label))
-  })
+    return labels.map(label => text.indexOf(label))
+  }, [SWITCH_VALIDATE, SWITCH_INJECT_INFO, '注入项目文档'])
   check('6b) 校验开关排在「注入项目信息」之前',
     cardOrder[0] !== -1 && cardOrder[1] !== -1 && cardOrder[0] < cardOrder[1],
     JSON.stringify(cardOrder))

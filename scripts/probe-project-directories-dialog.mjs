@@ -25,8 +25,15 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-project-directories-dialog.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = 17971
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// `join` + an overridable port: the escaped-backslash path cannot resolve off Windows, and
+// the fixed port collided with a parallel probe or a stale server still holding it.
+const PROFILE_PORTS = { pg: 17971, official: 17972 }
+const PORT = Number(process.env.DSH_PROBE_PORT ?? PROFILE_PORTS[profile])
+if (!Number.isInteger(PORT)) {
+  console.error(`unknown profile '${profile}'; supported: ${Object.keys(PROFILE_PORTS).join(', ')}`)
+  process.exit(2)
+}
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -34,12 +41,20 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
+/** Set when the plugin's durable state could not be read (see `storedProjects`). */
+let storageError
+/** Whether the stuck-mask failure has already been recorded (see `dismiss`). */
+let maskStuckReported = false
+
 const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
   env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 let out = ''
-const url = await new Promise((resolve, reject) => {
+// Created here, awaited inside the `try` below: a boot timeout used to throw before the
+// guarded region, so `child.kill()` in `finally` never ran and the host process was left
+// holding the port.
+const boot = new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
   // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
   // stdout, so without this handler the promise stayed pending until the 120 s timeout and
@@ -57,9 +72,8 @@ const url = await new Promise((resolve, reject) => {
   child.stderr.on('data', (chunk) => { out += chunk })
 })
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
-page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+let browser
+let page
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -69,11 +83,21 @@ const dismiss = async () => {
     for (const label of ['稍后配置', '继续', 'Later']) {
       const button = page.getByRole('button', { name: label, exact: true }).first()
       if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
+        // Logged, not swallowed: a click that never landed left the probe driving whatever
+        // sat underneath the mask, so the checks after it reported on the wrong screen.
+        await button.click({ force: true }).catch((error) => {
+          console.log(`  遮罩点击「${label}」失败: ${String(error?.message ?? error).split('\n')[0]}`)
+        })
         await page.waitForTimeout(1200)
       }
     }
     await page.waitForTimeout(700)
+  }
+  // Still masked after 8 rounds: the overlay never went away, so every later assertion may
+  // be reading a screen the probe did not intend. Recorded once, not on each call.
+  if (!maskStuckReported && await isMasked()) {
+    maskStuckReported = true
+    check('dismiss: 遮罩能被关掉', false, '8 轮后遮罩仍在，后续断言可能在错误的界面上')
   }
 }
 
@@ -88,7 +112,16 @@ const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
       method, payload: { args },
     }),
   })
-  const parsed = JSON.parse(await response.text())
+  // Status checked before parsing: an HTML/empty error body used to throw out of
+  // `JSON.parse` and abort the run as a generic "probe aborted" instead of naming the verb.
+  const text = await response.text()
+  if (!response.ok) return { ok: false, error: `HTTP ${response.status}: ${text.slice(0, 200)}` }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    return { ok: false, error: `non-JSON reply: ${String(error?.message ?? error)}` }
+  }
   return { ok: parsed?.result?.ok === true, error: parsed?.result?.error?.message ?? null }
 }, { method, args })
 
@@ -96,22 +129,41 @@ const dialogs = () => page.locator('[role="dialog"], [aria-modal="true"]')
 const dialogWith = (text) => dialogs().filter({ hasText: text }).last()
 const addProject = () => page.locator('button[aria-label="新建项目"]').first()
 
-/** Every stored project, read straight off the Host's durable unit. */
+/**
+ * Every stored project, read straight off the Host's durable unit.
+ *
+ * A read or parse failure is RECORDED rather than collapsed into an empty list: an empty
+ * list made the later `directoriesOf(...)` assertions fail as if the Host had lost the
+ * directories, which is indistinguishable from a real regression. `finally` reports it.
+ */
 const storedProjects = () => {
   try {
     const parsed = JSON.parse(readFileSync(join(dshHome, 'storages', 'project_groups.json'), 'utf8'))
     const table = parsed.tables?.projects ?? {}
     return (parsed.global?.projectIds ?? []).map(id => table[id]).filter(Boolean)
-  } catch {
+  } catch (error) {
+    storageError = error
     return []
   }
 }
 const directoriesOf = (title) => storedProjects().find(p => p.title === title)?.directories ?? []
 
-/** The directory rows currently rendered in a dialog. */
-const directoryRows = (dialog) => dialog.locator('li')
+/**
+ * The directory rows currently rendered in a dialog.
+ *
+ * Scoped to the list this plugin renders rather than to every `<li>` in the dialog: a
+ * dropdown, another `<ul>` or a nested list was counted as a directory row, which flipped
+ * the row-count assertions below. The class keeps its local part (`[hash]_[local]`, see
+ * `tsdown.config.ts`) even though the hash changes per build — the same idiom `dismiss`
+ * uses for `.mask`.
+ */
+const directoryRows = (dialog) => dialog.locator('ul[class*="directoryList"] > li')
 
-/** Open one project row's edit dialog. */
+/**
+ * Open one project row's edit dialog.
+ * @param title - the project title to find the row by.
+ * @returns the dialog locator.
+ */
 const openEditDialog = async (title) => {
   const row = page.locator('[data-row-key^="workspace:"]').filter({ hasText: title }).first()
   await row.hover({ timeout: 5000 }).catch(() => {})
@@ -128,6 +180,21 @@ const openEditDialog = async (title) => {
 }
 
 /**
+ * Assert a dialog opened, and stop the run when it did not.
+ *
+ * Every step below drives the dialog with forced clicks. If it never opened, the first of
+ * those throws and the run is reported only as the generic `probe aborted`, burying the one
+ * assertion that mattered ('the dialog did not open') under an unrelated locator timeout.
+ * @param dialog - the dialog locator just obtained.
+ * @param label - the check label, which doubles as the abort message.
+ */
+const requireOpen = async (dialog, label) => {
+  const opened = await dialog.count() > 0
+  check(label, opened)
+  if (!opened) throw new Error(`${label}: 对话框没打开，后续断言无法进行`)
+}
+
+/**
  * A failure raised by the driver itself, as opposed to a check.
  *
  * Captured because the `finally` below exits the process: without it a throw
@@ -136,6 +203,10 @@ const openEditDialog = async (title) => {
  */
 let driverError
 try {
+  const url = await boot
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
+  page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismiss()
@@ -154,7 +225,7 @@ try {
   console.log('')
   console.log('=== 1. 编辑对话框预填已存目录 ===')
   const edit = await openEditDialog('dirs')
-  check('编辑对话框打开', await edit.count() > 0)
+  await requireOpen(edit, '编辑对话框打开')
   const rows = await directoryRows(edit).count()
   check('1) 两行目录都渲染出来', rows === 2, `rows=${rows}`)
   const text = (await edit.innerText()).replace(/\s+/g, ' ')
@@ -180,6 +251,7 @@ try {
   console.log('')
   console.log('=== 3. 重开对话框 ⇒ 显示存储值，不是上次的草稿 ===')
   const reopened = await openEditDialog('dirs')
+  await requireOpen(reopened, '3) 重开对话框')
   check('3) 重开后行数等于存储值', await directoryRows(reopened).count() === 1,
     `rows=${await directoryRows(reopened).count()}, stored=${directoriesOf('dirs').length}`)
   const reopenedText = (await reopened.innerText()).replace(/\s+/g, ' ')
@@ -190,6 +262,7 @@ try {
   console.log('')
   console.log('=== 4. 无目录的项目：两个对话框都显示空占位 ===')
   const bareEdit = await openEditDialog('bare')
+  await requireOpen(bareEdit, '4) 编辑对话框打开（无目录项目）')
   const bareRows = await directoryRows(bareEdit).count()
   const bareText = (await bareEdit.innerText()).replace(/\s+/g, ' ')
   check('4) 编辑对话框没有目录行', bareRows === 0, `rows=${bareRows}`)
@@ -202,7 +275,7 @@ try {
   await addProject().click({ force: true })
   await page.waitForTimeout(900)
   const create = dialogWith('新建项目')
-  check('5) 新建对话框打开', await create.count() > 0)
+  await requireOpen(create, '5) 新建对话框打开')
   check('5) 新建时没有目录行', await directoryRows(create).count() === 0,
     `rows=${await directoryRows(create).count()}`)
   check('5) 有添加目录按钮', (await create.getByRole('button', { name: '添加目录' }).count()) > 0)
@@ -214,6 +287,7 @@ try {
   await addProject().click({ force: true })
   await page.waitForTimeout(900)
   const secondCreate = dialogWith('新建项目')
+  await requireOpen(secondCreate, '5) 再次打开新建对话框')
   check('5) 再次打开仍旧为空', await directoryRows(secondCreate).count() === 0,
     `rows=${await directoryRows(secondCreate).count()}`)
   await secondCreate.getByRole('button', { name: '取消' }).first().click({ force: true })
@@ -228,9 +302,17 @@ try {
     console.log(`探针中断: ${driverError instanceof Error ? driverError.stack : String(driverError)}`)
     failures.push('probe aborted')
   }
+  if (storageError !== undefined) {
+    // Named separately from the assertion failures: a storage read that failed is a setup
+    // problem, not evidence about the dialogs.
+    console.log(`读取 project_groups.json 失败: ${String(storageError.message ?? storageError)}`)
+    failures.push('storage read failed')
+  }
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`)
-  await browser.close().catch(() => {})
+  // Guarded: when the launch itself threw, `browser` is undefined and dereferencing it here
+  // threw out of the `finally`, skipping the exit code entirely.
+  if (browser !== undefined) await browser.close().catch(() => {})
   child.kill()
   process.exit(failures.length === 0 ? 0 : 1)
 }

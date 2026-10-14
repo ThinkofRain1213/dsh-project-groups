@@ -26,6 +26,7 @@
  */
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
 
@@ -34,8 +35,31 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-project-links.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17820 : 17821
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// `join` + an overridable port: the escaped-backslash path cannot resolve off Windows, and
+// the fixed port collided with a parallel probe or a stale server still holding it.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17820 : 17821))
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+
+/**
+ * The shipped debounce window for the per-row link check (`LINK_CHECK_DEBOUNCE_MS`, 0.5s).
+ *
+ * Every timing assertion below is derived from it instead of restating bare numbers: a
+ * verdict has to be read AFTER the window and a spinner BEFORE it, so a change to the
+ * shipped constant (or a CI box slow enough to move the effective window) must move these
+ * waits with it. `120`, `250` and `500` used to be independent literals whose only link to
+ * the 0.5s window was a sentence in a nearby comment.
+ */
+const LINK_CHECK_DEBOUNCE_MS = 500
+/** Past the debounce, with room for the round trip: a settled verdict. */
+const SETTLED_WAIT_MS = LINK_CHECK_DEBOUNCE_MS + 200
+/** Inside the debounce: React has committed and painted, the timer has not fired. */
+const IMMEDIATE_WAIT_MS = Math.round(LINK_CHECK_DEBOUNCE_MS / 4)
+/** Inside the debounce, with more room for a re-render (half the window). */
+const SPINNER_WAIT_MS = LINK_CHECK_DEBOUNCE_MS / 2
+/** One sampling step in the per-frame loops; a paint interval, not a debounce value. */
+const SAMPLE_STEP_MS = 60
+/** Steps spanning the debounce plus the settle margin, so a one-window lag cannot hide. */
+const SAMPLE_STEPS = Math.ceil(SETTLED_WAIT_MS / SAMPLE_STEP_MS) + 2
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -48,7 +72,10 @@ const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 let out = ''
-const url = await new Promise((resolve, reject) => {
+// Created here, awaited inside the `try` below: awaiting it at the top level meant a boot
+// rejection (or a browser launch failure) escaped before `finally`, orphaning the Electron
+// process, which then kept the port bound for the next run.
+const boot = new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
   // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
   // stdout, so without this handler the promise stayed pending until the 120 s timeout and
@@ -69,8 +96,8 @@ const url = await new Promise((resolve, reject) => {
 let browser
 let page
 const consoleErrors = []
-page.on('pageerror', (error) => consoleErrors.push(error.message))
-page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()) })
+/** Set when the plugin's durable state could not be read (see `readStored`). */
+let storageError
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -98,19 +125,40 @@ const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
       method, payload: { args },
     }),
   })
-  const parsed = JSON.parse(await response.text())
+  // Status checked and the parse guarded: an HTML/empty error body used to throw out of
+  // `JSON.parse` and abort the whole run with an opaque SyntaxError that never named the verb.
+  const text = await response.text()
+  if (!response.ok) return { ok: false, value: undefined, error: `HTTP ${response.status}: ${text.slice(0, 200)}` }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    return { ok: false, value: undefined, error: `non-JSON reply: ${String(error?.message ?? error)}` }
+  }
   return { ok: parsed?.result?.ok, value: parsed?.result?.value, error: parsed?.result?.error }
 }, { method, args })
 
+/**
+ * The plugin's durable state, read straight off the Host's unit.
+ *
+ * A read or parse failure is RECORDED rather than collapsed into `{}`/`undefined`: a corrupt
+ * or half-written file used to look exactly like an empty store, so the assertions below
+ * reported product defects (or passed their negations) for what was really an I/O problem.
+ * `finally` reports it as its own failure.
+ */
+const readStored = () => {
+  try {
+    return JSON.parse(readFileSync(join(dshHome, 'storages', 'project_groups.json'), 'utf8'))
+  } catch (error) {
+    storageError = error
+    return {}
+  }
+}
 /** The plugin's durable projects; the ground truth for "did it write". */
 const storedProjects = () => {
-  try {
-    const parsed = JSON.parse(readFileSync(`${dshHome}/storages/project_groups.json`, 'utf8'))
-    const table = parsed.tables?.projects ?? {}
-    return (parsed.global?.projectIds ?? []).map(id => table[id]).filter(Boolean)
-  } catch {
-    return []
-  }
+  const parsed = readStored()
+  const table = parsed.tables?.projects ?? {}
+  return (parsed.global?.projectIds ?? []).map(id => table[id]).filter(Boolean)
 }
 const linksOf = (title) => storedProjects().find(p => p.title === title)?.links ?? []
 /**
@@ -120,15 +168,12 @@ const linksOf = (title) => storedProjects().find(p => p.title === title)?.links 
  * reading `.projectId` off one of them yields `undefined` and the `update` that uses it is
  * rejected by the Host. Three call sites did exactly that and were silently no-ops; they only
  * looked harmless because the setup they were meant to perform happened to be already in place.
+ *
+ * Every caller goes through here (rather than re-deriving the lookup from the raw file) so the
+ * rule has one home; a second copy is how the no-op bug would come back.
  */
-const projectIdOf = (title) => {
-  try {
-    const table = JSON.parse(readFileSync(`${dshHome}/storages/project_groups.json`, 'utf8')).tables?.projects ?? {}
-    return Object.entries(table).find(([, record]) => record.title === title)?.[0]
-  } catch {
-    return undefined
-  }
-}
+const projectIdOf = (title) => Object.entries(readStored().tables?.projects ?? {})
+  .find(([, record]) => record.title === title)?.[0]
 /** Write a project's link list directly, asserting the Host accepted it. */
 const setStoredLinks = async (title, links) => {
   const written = await rpc('projectGroups/update', {
@@ -137,13 +182,8 @@ const setStoredLinks = async (title, links) => {
   if (written.ok !== true) throw new Error(`update(${title}) 未成功 — ${String(written.error)}`)
   await page.waitForTimeout(1400)
 }
-const validateLinksSetting = () => {
-  try {
-    return JSON.parse(readFileSync(`${dshHome}/storages/project_groups.json`, 'utf8')).global?.validateLinks
-  } catch {
-    return undefined
-  }
-}
+/** The stored `validateLinks` switch, read through the same recorded read as everything else. */
+const validateLinksSetting = () => readStored().global?.validateLinks
 
 const dialogWith = (title) => page.locator('[role="dialog"], [aria-modal="true"]').filter({ hasText: title }).first()
 
@@ -232,8 +272,13 @@ const markOf = async (dialog, index) => {
 
 let driverError
 try {
+  const url = await boot
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // Registered after `newPage()`: these used to run against the `undefined` placeholder, so
+  // the probe crashed before it asserted anything.
+  page.on('pageerror', (error) => consoleErrors.push(error.message))
+  page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()) })
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismiss()
@@ -424,13 +469,14 @@ try {
   // earlier expectation ("hold the notice so the header never flickers") came from a single-time-
   // line model in which the notice and the count had to move in step; they no longer share a clock.
   await newRowInput.type('h', { delay: 0 })
-  await page.waitForTimeout(250)
+  // Half the debounce window: React has committed, the check timer has not fired.
+  await page.waitForTimeout(SPINNER_WAIT_MS)
   check('7c) 输入后空行提示立即消失（空是事实，不等判定）',
     await notice(noticeDialog).count() === 0,
     `count=${String(await notice(noticeDialog).count())}`)
   check('7c) 输入后行内在转圈',
     await markOf(noticeDialog, 1) === 'checking', await markOf(noticeDialog, 1))
-  await page.waitForTimeout(700)
+  await page.waitForTimeout(SETTLED_WAIT_MS)
   check('7c) 落定后提示仍为无',
     await notice(noticeDialog).count() === 0,
     `count=${String(await notice(noticeDialog).count())}`)
@@ -439,25 +485,25 @@ try {
   // back at once and the row shows **no** spinner. `''` reached by editing is no longer treated as
   // a verdict to wait for — the `edited` ref that drew that distinction is gone.
   await newRowInput.fill('')
-  await page.waitForTimeout(250)
+  await page.waitForTimeout(SPINNER_WAIT_MS)
   check('7c) 清空后空行提示立即出现（不等 0.5s）',
     await notice(noticeDialog).count() === 1,
     `count=${String(await notice(noticeDialog).count())}`)
   check('7c) 清空后行内不转圈（空不是判定）',
     await markOf(noticeDialog, 1) !== 'checking', await markOf(noticeDialog, 1))
-  await page.waitForTimeout(700)
+  await page.waitForTimeout(SETTLED_WAIT_MS)
   check('7c) 落定后提示回来',
     await notice(noticeDialog).count() === 1,
     `count=${String(await notice(noticeDialog).count())}`)
 
   // Whitespace is still empty: the same `trim()` rule the storing side uses.
   await newRowInput.fill('   ')
-  await page.waitForTimeout(700)
+  await page.waitForTimeout(SETTLED_WAIT_MS)
   check('7c) 仅空白仍算空',
     await notice(noticeDialog).count() === 1,
     `count=${String(await notice(noticeDialog).count())}`)
   await newRowInput.fill('https://example.com/typed')
-  await page.waitForTimeout(700)
+  await page.waitForTimeout(SETTLED_WAIT_MS)
   check('7c) 有内容后提示仍不出现',
     await notice(noticeDialog).count() === 0,
     `count=${String(await notice(noticeDialog).count())}`)
@@ -484,7 +530,7 @@ try {
     // Past `LINK_CHECK_DEBOUNCE_MS`, so every sample is a **settled** header: the question is
     // whether the geometry moves as the notices appear and disappear, not what it looks like
     // mid-check.
-    await page.waitForTimeout(700)
+    await page.waitForTimeout(SETTLED_WAIT_MS)
     geometry.push({
       value: value === '' ? '(空)' : value,
       ...(await stableHeaderBox()),
@@ -537,7 +583,7 @@ try {
   // pass whether or not it waits, which is what the earlier version of this section did.
   await linkRows(delDialog).nth(3).getByRole('button').first().click({ force: true })
   // 120ms: long enough for React to commit and paint, far short of the 0.5s a wait would take.
-  await page.waitForTimeout(120)
+  await page.waitForTimeout(IMMEDIATE_WAIT_MS)
   const delImmediate = (await delDialog.innerText()).replace(/\s+/g, ' ')
   check('7d) 删除立即生效（不等 0.5s）',
     delImmediate.includes('2 行为空，保存时忽略') && !delImmediate.includes('3 行为空'),
@@ -625,10 +671,10 @@ try {
   })
   /** 把一项目的链接重置并打开其对话框（此时行已全部落定）。 */
   const openSettled = async (links) => {
-    // `storedProjects()` maps table **values**, so the id is the key — recovered here rather
-    // than assumed to be a field on the record.
-    const table = JSON.parse(readFileSync(`${dshHome}/storages/project_groups.json`, 'utf8')).tables?.projects ?? {}
-    const projectId = Object.entries(table).find(([, record]) => record.title === 'linked')?.[0]
+    // The id comes from `projectIdOf`, the one place that knows the id is the table key
+    // rather than a field on the record — a second copy of that rule is exactly how the
+    // silent no-op the helper's docblock describes came back once already.
+    const projectId = projectIdOf('linked')
     const written = await rpc('projectGroups/update', {
       request: { projectId, title: 'linked', directories: [], links },
     })
@@ -753,10 +799,10 @@ try {
     // Clear row 0. All three must move in the **same frame**: the row loses its ⓘ, the count
     // drops to 1, and the blank notice appears. No spinner anywhere in the clear path.
     await linkInput(dialog, 0).fill('')
-    await page.waitForTimeout(200)
+    await page.waitForTimeout(IMMEDIATE_WAIT_MS)
     const cleared = await layerSample(dialog)
     const clearedFrames = await readRowFrames(dialog)
-    console.log(`  清空后 200ms: ${JSON.stringify(cleared)}`)
+    console.log(`  清空后 ${IMMEDIATE_WAIT_MS}ms: ${JSON.stringify(cleared)}`)
     console.log(`  清空逐帧: ${JSON.stringify(clearedFrames)}`)
     check('7o) 清空当拍：行内无标记',
       cleared.marks[0] === 'none', JSON.stringify(cleared.marks))
@@ -789,9 +835,9 @@ try {
     const before = await layerSample(dialog)
     console.log(`  输入前: ${JSON.stringify(before)}`)
     await linkInput(dialog, 0).fill('bad one edited')
-    await page.waitForTimeout(200)
+    await page.waitForTimeout(IMMEDIATE_WAIT_MS)
     const typing = await layerSample(dialog)
-    console.log(`  输入后 200ms（判定中）: ${JSON.stringify(typing)}`)
+    console.log(`  输入后 ${IMMEDIATE_WAIT_MS}ms（判定中）: ${JSON.stringify(typing)}`)
     check('7o) 输入当拍：该行转圈（判定层要等）',
       typing.marks[0] === 'checking', JSON.stringify(typing.marks))
     check('7o) 输入当拍：该行移出计数（未被判定的值不算数）',
@@ -943,9 +989,14 @@ try {
 
   await linkInput(clearDialog, 0).fill('')
   const cleared = []
-  // Sampled past `LINK_CHECK_DEBOUNCE_MS` (500ms) on purpose: the defect was a 0.5s lag, so a
-  // window shorter than that could miss it entirely and pass on timing luck.
-  for (let i = 0; i < 14; i += 1) { cleared.push(await clearSample()); await page.waitForTimeout(60) }
+  // Sampled past `LINK_CHECK_DEBOUNCE_MS` on purpose: the defect was a 0.5s lag, so a
+  // window shorter than that could miss it entirely and pass on timing luck. The window is
+  // derived from the debounce (steps × interval > the window) rather than written as a
+  // literal count that silently stopped covering it if the constant moved.
+  for (let i = 0; i < SAMPLE_STEPS; i += 1) {
+    cleared.push(await clearSample())
+    await page.waitForTimeout(SAMPLE_STEP_MS)
+  }
   console.log(`  清空后采样: ${JSON.stringify(cleared)}`)
   // A row the user **emptied** is empty, so it shows **no** spinner: emptiness is a fact, applied
   // on the spot, not a verdict to wait for. Asserted in the flipped direction on purpose — the
@@ -1145,7 +1196,12 @@ try {
       let current = node
       while (current !== null) {
         const bg = getComputedStyle(current).backgroundColor
-        const alpha = bg.startsWith('rgba') ? Number(bg.split(',')[3]) : 1
+        // `parseFloat` after the comma, not `Number(bg.split(',')[3])`: for `rgba(r, g, b, 0.5)`
+        // that element is `' 0.5)'`, so `Number` gave NaN and `alpha > 0.9` was false for every
+        // translucent ancestor. The walk then skipped every translucent surface and measured the
+        // contrast against the wrong background, which is a false verdict for the readability
+        // assertion this exists to make.
+        const alpha = bg.startsWith('rgba') ? Number.parseFloat(bg.split(',')[3] ?? '1') : 1
         if (alpha > 0.9) { surface = bg; break }
         current = current.parentElement
       }
@@ -1240,14 +1296,19 @@ try {
   const realErrors = consoleErrors.filter(text => !text.includes('favicon'))
   check('9) 无 React 嵌套警告 / 页面错误', realErrors.length === 0,
     realErrors.slice(0, 3).join(' | '))
-
-  console.log('')
-  console.log('=== 结果 ===')
-  console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
 } catch (error) {
   driverError = error
   console.log(`\nDRIVER ERROR: ${error instanceof Error ? error.message : String(error)}`)
 } finally {
+  if (storageError !== undefined) {
+    // Named separately from the assertion failures: a storage read that failed is a setup
+    // problem, not evidence about the link surface.
+    console.log(`读取 project_groups.json 失败: ${String(storageError.message ?? storageError)}`)
+    failures.push('storage read failed')
+  }
+  console.log('')
+  console.log('=== 结果 ===')
+  console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
   child.kill()
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }

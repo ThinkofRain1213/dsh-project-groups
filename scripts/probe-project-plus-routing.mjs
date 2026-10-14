@@ -14,6 +14,7 @@
  * Usage: node probe-project-plus-routing.mjs <dshExe> <asarRoot> <dshHome> [profile]
  */
 import { spawn } from 'node:child_process'
+import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
 
@@ -22,15 +23,20 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-project-plus-routing.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17960 : 17961
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17960 : 17961))
+// `join`, not a literal: the escaped-backslash path cannot resolve off Windows, where the
+// backslashes are ordinary filename characters and the spawn fails with an ENOENT.
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
   env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 let out = ''
-const url = await new Promise((resolve, reject) => {
+// Created here, awaited inside the `try` below: awaiting it at the top level meant a boot
+// timeout threw before the guarded region, so `child.kill()` in `finally` never ran and the
+// host process was left as a zombie holding the port.
+const boot = new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
   // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
   // stdout, so without this handler the promise stayed pending until the 120 s timeout and
@@ -51,13 +57,6 @@ const url = await new Promise((resolve, reject) => {
 let browser
 let page
 const calls = []
-page.on('response', (response) => {
-  const target = response.url()
-  if (!target.includes('/api/')) return
-  const method = target.split('/api/')[1]
-  if (!/^(workspace|session|projectGroups)\//.test(method)) return
-  calls.push(method)
-})
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -76,8 +75,18 @@ const dismiss = async () => {
 }
 
 try {
+  const url = await boot
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // Registered after `newPage()`: this used to run against the `undefined` placeholder, so
+  // the probe crashed before it clicked anything.
+  page.on('response', (response) => {
+    const target = response.url()
+    if (!target.includes('/api/')) return
+    const method = target.split('/api/')[1]
+    if (!/^(workspace|session|projectGroups)\//.test(method)) return
+    calls.push(method)
+  })
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismiss()

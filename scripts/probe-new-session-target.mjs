@@ -30,8 +30,12 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   process.exit(2)
 }
 
-const PORT = 17690
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// Overridable: a leftover Host from an aborted run holds the fixed port, and the next probe
+// then reports a boot timeout for what is really an occupied port.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? 17690)
+// `join`, not a `\\`-joined literal: on a POSIX runner a backslash is an ordinary filename
+// character, so the literal path silently never resolves.
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -39,38 +43,10 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const child = spawn(exe, [BIN, '--profile', 'pg', '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout: ${redactToken(out.slice(-300))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (match !== null) { clearTimeout(timer); setTimeout(() => resolve(match[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
-// The RPC endpoint is origin-scoped and token-gated; both come off the boot URL.
-const origin = new URL(url).origin
-const token = new URL(url).searchParams.get('token') ?? ''
-
+let child
 let browser
 let page
-await installRowKeyHelpers(page)
 const logs = []
-page.on('console', (message) => { if (message.type() === 'error') logs.push(message.text()) })
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -80,12 +56,17 @@ const dismiss = async () => {
     for (const label of ['稍后配置', '继续', 'Later']) {
       const button = page.getByRole('button', { name: label, exact: true }).first()
       if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
+        // Logged rather than discarded: a click that never landed leaves the mask up, and the
+        // checks below then read an intercepted UI for a setup reason with nothing to say so.
+        await button.click({ force: true }).catch((error) => {
+          console.log(`  dismiss: click on "${label}" failed — ${error.message}`)
+        })
         await page.waitForTimeout(1200)
       }
     }
     await page.waitForTimeout(700)
   }
+  if (await isMasked()) console.log('  dismiss: a modal mask is STILL up after 8 rounds — later checks may be measuring an intercepted UI')
 }
 
 const domain = async () => {
@@ -119,22 +100,29 @@ const setTarget = async (target) => {
         payload: { args: { request: { target: value } } },
       }),
     })
-    return { status: response.status, body: await response.text() }
+    const text = await response.text()
+    let parsed = null
+    try { parsed = JSON.parse(text) } catch { /* reported through status */ }
+    return {
+      status: response.status,
+      ok: parsed?.result?.ok,
+      value: parsed?.result?.value,
+      error: parsed?.result?.error,
+      body: text.slice(0, 200),
+    }
   }, { base: origin, token, value: target })
   await page.waitForTimeout(2500)
-  return answer
-}
-
-/** Every session id, keyed by the project that owns it (or "(ungrouped)"). */
-const owners = async () => {
-  const { assignments, projects } = await domain()
-  const nameOf = (id) => projects[id]?.title ?? '(unknown)'
-  const byOwner = {}
-  for (const [sessionId, record] of Object.entries(assignments)) {
-    const owner = nameOf(record.projectId)
-    byOwner[owner] = [...(byOwner[owner] ?? []), sessionId]
+  // The write is the premise every later assertion rests on, so it is asserted rather than only
+  // logged: a rejected call (wrong namespace, 403, non-2xx) left the *previous* setting in force
+  // while the checks below still reported PASS — a false green in the probe rewritten to avoid
+  // exactly that. The throw is deliberately not used here so the summary below still prints.
+  check(`setNewSessionTarget=${target} 写入成功`,
+    answer.status === 200 && answer.ok !== false,
+    JSON.stringify(answer))
+  if (answer.status !== 200 || answer.ok === false) {
+    console.log(`  ⚠ 设置未写入（${target}），以下判定可能读到的是陈旧设置`)
   }
-  return byOwner
+  return answer
 }
 
 const sessionsUnder = (headingText) => page.evaluate((text) => {
@@ -166,7 +154,12 @@ const clickTopNew = async () => {
 }
 const clickPlus = async (row) => {
   await dismiss()
-  await row.hover({ timeout: 5000 }).catch(() => {})
+  // Logged rather than discarded: when the row is not hoverable (mask still up, row not
+  // mounted) the probe used to continue in an inconsistent UI state and then report a product
+  // failure for what was a broken setup.
+  await row.hover({ timeout: 5000 }).catch((error) => {
+    console.log(`  clickPlus: hover failed — ${error.message}`)
+  })
   await page.waitForTimeout(400)
   await row.locator('button[aria-label^="在"]').first().dispatchEvent('click')
   await page.waitForTimeout(4500)
@@ -196,9 +189,47 @@ const blankOwner = async () => {
   return { id, owner: record === undefined ? undefined : projects[record.projectId]?.title }
 }
 
+let origin = ''
+let token = ''
+
 try {
+  // Spawned inside the `try` so the `finally` always reaches `child.kill()`. While this sat above
+  // the `try`, a boot timeout — or any throw out of `chromium.launch` — rejected the top-level
+  // await before cleanup ran and left the Host running on the port.
+  child = spawn(exe, [BIN, '--profile', 'pg', '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout: ${redactToken(out.slice(-300))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const match = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (match !== null) { clearTimeout(timer); setTimeout(() => resolve(match[1]), 3000) }
+    })
+    child.stderr.on('data', (chunk) => { out += chunk })
+  })
+
+  // The RPC endpoint is origin-scoped and token-gated; both come off the boot URL.
+  origin = new URL(url).origin
+  token = new URL(url).searchParams.get('token') ?? ''
+
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // Installed here, after `page` exists. These two calls used to sit above the `try` on the
+  // `let page` declaration — `page` was still `undefined`, so `addInitScript` threw immediately
+  // and, had it not, `window.__sessionIdOf` would have been missing from every later read.
+  await installRowKeyHelpers(page)
+  page.on('console', (message) => { if (message.type() === 'error') logs.push(message.text()) })
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(7000)
   await dismiss()
@@ -286,7 +317,7 @@ try {
 
   console.log(`\nconsole errors: ${logs.length === 0 ? '(none)' : logs.slice(0, 5).join(' | ')}`)
 } finally {
-  child.kill()
+  if (child !== undefined) child.kill() // guarded: a synchronous `spawn` throw leaves it unset
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 

@@ -11,7 +11,9 @@
  * it is the Button's own padding, font metrics, and whether the label wraps. So the
  * open dialog's footer is rebuilt in place with three real (cloned) Buttons carrying
  * candidate labels, the same `flex: 1 1 0` recipe is applied, and each label is
- * checked for wrapping by comparing its scroll width against its client width.
+ * checked against the live layout: a Range over its text node reports one rect per
+ * rendered line (wrapping), and the button's own scroll width reports clipping.
+ * The original footer children are put back afterwards, so the page is left as found.
  *
  * Labels are tested in the order they would appear, and reported per candidate so the
  * wording can be chosen against a number rather than a guess.
@@ -19,23 +21,34 @@
  * Usage: node probe-modal-three-actions.mjs <dshExe> <asarRoot> <dshHome> [profile]
  */
 import { spawn } from 'node:child_process'
+import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
 
 const [exe, asarRoot, dshHome, profile = 'pg'] = process.argv.slice(2)
 if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
-  console.error('usage: probe-modal-three-actions.mjs <dshExe> <asarRoot> <dshHome> [profile]')
+  console.error('usage: node probe-modal-three-actions.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17840 : 17841
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// `join` + an overridable port: the escaped-backslash path cannot resolve off Windows, and
+// the fixed pair collided when two probes ran at once (or a stale server held the port).
+const PROFILE_PORTS = { pg: 17840, official: 17841 }
+const PORT = Number(process.env.DSH_PROBE_PORT ?? PROFILE_PORTS[profile])
+if (!Number.isInteger(PORT)) {
+  console.error(`unknown profile '${profile}'; supported: ${Object.keys(PROFILE_PORTS).join(', ')}`)
+  process.exit(2)
+}
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
   env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 let out = ''
-const url = await new Promise((resolve, reject) => {
+// Created here, awaited inside the `try` below: awaiting it at the top level meant a boot
+// timeout (or a browser launch failure) threw before `finally`, orphaning the host process
+// with the port still bound.
+const boot = new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
   // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
   // stdout, so without this handler the promise stayed pending until the 120 s timeout and
@@ -73,6 +86,7 @@ const dismiss = async () => {
 }
 
 try {
+  const url = await boot
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
   page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
@@ -98,7 +112,9 @@ try {
   if (await renameEntry.count() > 0) await renameEntry.click({ force: true })
   await page.waitForTimeout(1200)
 
-  // Candidate label sets, from shortest to the user's own wording.
+  // Candidate label sets, from shortest to the user's own wording. They are this probe's
+  // input fixture, and the report prints them per row, so a stale set is visible in the
+  // output rather than silent.
   const candidates = [
     ['取消', '更换', '重建'],
     ['取消', '更换底层', '重建工作区'],
@@ -117,9 +133,25 @@ try {
     if (dialog === undefined) return { error: 'no dialog open' }
     const buttons = [...dialog.querySelectorAll('button')].filter(node => (node.textContent ?? '').trim() !== '')
     if (buttons.length < 2) return { error: `only ${buttons.length} buttons` }
-    let footer = buttons[0].parentElement
-    while (footer !== null && !buttons.every(button => footer.contains(button))) footer = footer.parentElement
+    // Anchored on the primitive's own `.footer` class first — the build hashes it but keeps
+    // the local part, the same way `dismiss` matches `.mask`. The containment walk alone
+    // stops at the first common ancestor, which is the footer only while the buttons are its
+    // direct children: one wrapper would silently move the flex recipe (and every measured
+    // number) onto the dialog body. Whichever anchor wins is validated and reported.
+    const hasFooterClass = (node) => [...node.classList].some(name => name.toLowerCase().includes('footer'))
+    const ancestors = []
+    for (let node = buttons[0].parentElement; node !== null; node = node.parentElement) ancestors.push(node)
+    const byClass = ancestors.find(hasFooterClass)
+    const footer = byClass ?? ancestors.find(node => buttons.every(button => node.contains(button))) ?? null
     if (footer === null) return { error: 'no footer' }
+    if (!buttons.every(button => footer.contains(button))) {
+      return { error: 'footer candidate does not hold every action button' }
+    }
+    const footerSource = byClass === undefined ? 'containment walk' : 'footer class'
+    // The real children are snapshotted and put back at the end: the old cleanup left the
+    // live dialog holding dummy clones, so anything measured after this (and the user's own
+    // view of the dialog) was reading a rebuilt footer.
+    const originalChildren = [...footer.children]
 
     const template = buttons[0]
     const tag = document.createElement('style')
@@ -127,14 +159,28 @@ try {
     tag.textContent = '[data-probe-three] > button { flex: 1 1 0 !important; min-width: 0 !important; }'
     document.head.append(tag)
 
-    /** The label's natural single-line width, measured off-layout. */
-    const naturalWidth = (label, element) => {
-      const style = getComputedStyle(element)
-      const canvas = document.createElement('canvas')
-      const context = canvas.getContext('2d')
-      if (context === null) return null
-      context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
-      return Math.ceil(context.measureText(label).width)
+    /**
+     * One button's label geometry, read off the live layout.
+     *
+     * This used to be reconstructed on a canvas from the computed font. That approximation
+     * ignored letter-spacing and inline content, and a multi-name `font-family` stack can
+     * fail the font shorthand parse — in which case `context.font` silently keeps the
+     * PREVIOUS font and the number is meaningless. `fits` is the one metric this probe
+     * produces, so it comes from the real element: a Range over the label's text node gives
+     * one rect per rendered line, and the button's own scroll width says whether the text
+     * was clipped instead of wrapped.
+     * @param node - the cloned button.
+     * @returns line count, widest line width, and whether the content overflows.
+     */
+    const labelGeometry = (node) => {
+      const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT)
+      const text = walker.nextNode()
+      if (text === null) return { lines: 0, natural: null, clipped: false }
+      const range = document.createRange()
+      range.selectNodeContents(text)
+      const rects = [...range.getClientRects()]
+      const natural = rects.length === 0 ? null : Math.round(Math.max(...rects.map(rect => rect.width)))
+      return { lines: rects.length, natural, clipped: node.scrollWidth > node.clientWidth + 1 }
     }
 
     const report = []
@@ -172,19 +218,23 @@ try {
             const width = Math.round(rect.width)
             const padding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight)
             const available = Math.round(width - padding)
-            const natural = naturalWidth((node.textContent ?? '').trim(), node)
+            const geometry = labelGeometry(node)
             return {
               label: (node.textContent ?? '').trim(),
               width,
               available,
-              natural,
-              fits: natural !== null && natural <= available,
+              natural: geometry.natural,
+              lines: geometry.lines,
+              clipped: geometry.clipped,
+              fits: geometry.natural !== null && geometry.lines <= 1 && !geometry.clipped
+                && geometry.natural <= available + 1,
             }
           }),
         })
       }
-      report.push({ dialogWidth, footerWidth, entries })
+      report.push({ dialogWidth, footerWidth, footerSource, entries })
     }
+    footer.replaceChildren(...originalChildren)
     footer.removeAttribute('data-probe-three')
     tag.remove()
     dialog.style.width = ''
@@ -196,10 +246,10 @@ try {
     console.log(`无法测量: ${results.error}`)
   } else {
     for (const block of results.report) {
-      console.log(`=== 对话框宽 ${block.dialogWidth}px（footer ${block.footerWidth}px）===`)
+      console.log(`=== 对话框宽 ${block.dialogWidth}px（footer ${block.footerWidth}px，锚点=${block.footerSource}）===`)
       for (const entry of block.entries) {
         const anyClipped = entry.buttons.some(b => !b.fits)
-        const detail = entry.buttons.map(b => `${b.label}:${b.fits ? '✓' : '✗'}(${String(b.natural)}/${String(b.available)}px)`).join('  ')
+        const detail = entry.buttons.map(b => `${b.label}:${b.fits ? '✓' : '✗'}(${String(b.natural)}/${String(b.available)}px,${String(b.lines)}行${b.clipped ? ',被裁切' : ''})`).join('  ')
         console.log(`  ${anyClipped ? '❌' : '✅'} ${JSON.stringify(entry.labels)}`)
         console.log(`      ${detail}`)
       }

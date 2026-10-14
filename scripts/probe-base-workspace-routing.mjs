@@ -29,7 +29,9 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-base-workspace-routing.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17970 : 17971
+// Overridable: a Host leaked by an earlier failed run keeps this port bound, and the only
+// symptom would be an opaque "boot timeout" instead of a clear collision.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17970 : 17971))
 const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
 
 /**
@@ -51,29 +53,7 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
+let child
 let browser
 let page
 
@@ -84,7 +64,7 @@ let page
  * succeeds tells nothing about which Workspace answered.
  */
 const requests = []
-page.on('request', (request) => {
+const recordRequest = (request) => {
   const target = request.url()
   if (!target.includes('/api/')) return
   const method = target.split('/api/')[1]
@@ -92,7 +72,39 @@ page.on('request', (request) => {
   let body = null
   try { body = JSON.parse(request.postData() ?? 'null') } catch { body = null }
   requests.push({ method, args: body?.payload?.args ?? {} })
-})
+}
+
+/**
+ * Boot the Host and resolve the tokenised dev-server URL.
+ *
+ * This is a function, not top-level code, so that the whole boot path runs *inside* the
+ * try/finally below: a boot timeout used to reject before the guarded region was entered,
+ * so `child.kill()` never ran and the Host kept the fixed port for every later run.
+ */
+const boot = async () => {
+  child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
+    })
+    child.stderr.on('data', (chunk) => { out += chunk })
+  })
+}
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -110,52 +122,97 @@ const dismiss = async () => {
   }
 }
 
-const storedBase = () => {
+/**
+ * Compare filesystem paths across the differences the Host is free to introduce: separator
+ * style (`\` vs `/`), drive-letter case, and a trailing separator. An exact `===` on a Windows
+ * path reported "different" for two spellings of the same directory.
+ */
+const normalizePath = (value) => String(value ?? '').replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase()
+
+/**
+ * The plugin's own store, read in one place.
+ *
+ * This path+try/catch had been copy-pasted per reader (and the inline copy in section 4 had
+ * lost the optional chaining the others had). A read failure is reported instead of silently
+ * becoming `{}`: an unreadable store would otherwise look exactly like "the plugin stored
+ * nothing", which is the regression these checks exist to catch. ENOENT stays quiet because a
+ * store that has not been written yet is a legitimate state here.
+ */
+const readProjectGroups = () => {
+  let raw
   try {
-    return JSON.parse(readFileSync(join(dshHome, 'storages', 'project_groups.json'), 'utf8')).global?.baseWorkspace ?? null
-  } catch {
-    return null
+    raw = readFileSync(join(dshHome, 'storages', 'project_groups.json'), 'utf8')
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.log(`  (project_groups.json unreadable: ${error.message})`)
+    return {}
   }
-}
-const storedAssignments = () => {
   try {
-    return JSON.parse(readFileSync(join(dshHome, 'storages', 'project_groups.json'), 'utf8')).tables?.assignments ?? {}
-  } catch {
+    return JSON.parse(raw)
+  } catch (error) {
+    console.log(`  (project_groups.json is not valid JSON: ${error.message})`)
     return {}
   }
 }
+const storedBase = () => readProjectGroups().global?.baseWorkspace ?? null
+const storedAssignments = () => readProjectGroups().tables?.assignments ?? {}
+
+/**
+ * One RPC round trip, sending what the Client Remote sends.
+ *
+ * The response is always read and the status always kept: three copies of this fetch had
+ * drifted, and the copy used by `createWorkspace` ignored `ok` entirely, so a rejected
+ * `workspace/create` produced a `null` id that silently corrupted every id comparison below
+ * instead of reporting "the setup never happened".
+ */
+const rpc = (method, args, rpcId) => page.evaluate(async ({ method, args, rpcId }) => {
+  const token = new URL(location.href).searchParams.get('token') ?? ''
+  const response = await fetch(`${location.origin}/api/${method}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-dsh-token': token },
+    body: JSON.stringify({ type: 'client-request', rpcId, method, payload: { args } }),
+  })
+  const text = await response.text()
+  let parsed = null
+  try { parsed = JSON.parse(text) } catch { /* reported through `status` and `text` */ }
+  return {
+    status: response.status,
+    // `!== false` rather than `=== true`: the envelope only sets `ok` when it has something
+    // to say, and a missing field must not be read as a failure.
+    ok: response.ok && parsed?.result?.ok !== false,
+    error: parsed?.result?.error ?? null,
+    text: text.slice(0, 200),
+    value: parsed?.result?.value,
+  }
+}, { method, args, rpcId })
+
+/**
+ * A precondition, asserted.
+ *
+ * Every scenario below depends on its setup having actually taken effect; when the setup RPC
+ * failed silently the section reported a *product* failure for what was a broken harness.
+ */
+const setup = async (label, method, args, rpcId) => {
+  const result = await rpc(method, args, rpcId)
+  check(`前置：${label}`, result.ok,
+    `status=${String(result.status)} error=${JSON.stringify(result.error)} ${result.text.slice(0, 120)}`)
+  return result
+}
 
 /** Set the base workspace through the plugin's own Remote, as the card does. */
-const setBase = (setting) => page.evaluate(async ({ request }) => {
-  const token = new URL(location.href).searchParams.get('token') ?? ''
-  const response = await fetch(`${location.origin}/api/projectGroups/setBaseWorkspace`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-dsh-token': token },
-    body: JSON.stringify({
-      type: 'client-request', rpcId: 'sb', method: 'projectGroups/setBaseWorkspace',
-      payload: { args: { request } },
-    }),
-  })
-  return (await response.text()).slice(0, 140)
-}, { request: setting })
+const setBase = (setting) => setup(`setBase(${setting.mode}${setting.path === undefined ? '' : ` ${setting.path}`})`,
+  'projectGroups/setBaseWorkspace', { request: setting }, 'sb')
 
-const createWorkspace = (path) => page.evaluate(async ({ path }) => {
-  const token = new URL(location.href).searchParams.get('token') ?? ''
-  const response = await fetch(`${location.origin}/api/workspace/create`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-dsh-token': token },
-    body: JSON.stringify({
-      type: 'client-request', rpcId: 'wc', method: 'workspace/create',
-      payload: { args: { request: { path } } },
-    }),
-  })
-  const parsed = JSON.parse(await response.text())
-  const value = parsed?.result?.value
-  return {
-    id: value?.workspace?.workspaceId ?? value?.workspaceId ?? null,
-    path: value?.workspace?.path ?? null,
+const createWorkspace = async (path) => {
+  const result = await setup(`注册工作区 ${path}`, 'workspace/create', { request: { path } }, 'wc')
+  const workspace = result.value?.workspace
+  const id = workspace?.workspaceId ?? result.value?.workspaceId ?? null
+  if (id === null) {
+    // Hard stop, not a soft failure: every later section compares against this id, so a
+    // `null` here would turn one broken setup into a series of misleading product failures.
+    throw new Error(`workspace/create returned no workspaceId for ${path}: status=${String(result.status)} body=${result.text}`)
   }
-}, { path })
+  return { id, path: workspace?.path ?? null }
+}
 
 const newSessionButton = () => page.locator('button[aria-label="新建会话"], button[aria-label="新会话"]').first()
 const dialog = () => page.locator('[role="dialog"], [aria-modal="true"]').filter({ hasText: '底层工作区缺失' })
@@ -174,8 +231,13 @@ const clickNewSession = async () => {
 }
 
 try {
+  const url = await boot()
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // Registered here — after `newPage()`, before `goto`. At module scope this line ran while
+  // `page` was still undefined and threw `Cannot read properties of undefined (reading 'on')`
+  // on every single run; after `goto` it would miss the requests the sections assert on.
+  page.on('request', recordRequest)
   page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
@@ -190,7 +252,7 @@ try {
 
   console.log('')
   console.log('=== 1. specified(A) ⇒ 新建会话落在 A ===')
-  console.log(`  setBase: ${await setBase({ mode: 'specified', path: wsA.path, name: 'A' })}`)
+  await setBase({ mode: 'specified', path: wsA.path, name: 'A' })
   await page.waitForTimeout(1500)
   const first = await clickNewSession()
   console.log(`  session/create 的 workspaceId: ${JSON.stringify(first.creates.map(c => c.args?.request?.workspaceId ?? c.args?.workspaceId))}`)
@@ -202,47 +264,34 @@ try {
   console.log('')
   console.log('=== 2. specified(不存在) ⇒ 弹窗，且不创建会话 ===')
   // B is registered, then deleted, so the stored path is real but unresolvable.
-  // The response is read and asserted.
   //
-  // It used to be discarded, so a failed `workspace/delete` (wrong token, 4xx/5xx) was silent and
-  // the section then measured the wrong state — the "B 已删" setup below would not have happened,
-  // and the dialog assertion that follows would report a product failure for a broken setup.
-  const deleted = await page.evaluate(async ({ workspaceId }) => {
-    const token = new URL(location.href).searchParams.get('token') ?? ''
-    const response = await fetch(`${location.origin}/api/workspace/delete`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-dsh-token': token },
-      body: JSON.stringify({
-        type: 'client-request', rpcId: 'wd', method: 'workspace/delete',
-        payload: { args: { request: { workspaceId } } },
-      }),
-    })
-    const text = await response.text()
-    let parsed = null
-    try { parsed = JSON.parse(text) } catch { /* reported through status */ }
-    return { status: response.status, ok: parsed?.result?.ok, error: parsed?.result?.error, text: text.slice(0, 200) }
-  }, { workspaceId: wsB.id })
-  check('前置：删除 B 的注册成功', deleted.status === 200 && deleted.ok !== false,
-    `status=${String(deleted.status)} ok=${String(deleted.ok)} error=${JSON.stringify(deleted.error)}`)
-  if (deleted.status !== 200 || deleted.ok === false) {
+  // The delete used to be fire-and-forget, so a failed `workspace/delete` (wrong token,
+  // 4xx/5xx) was silent and the section then measured the wrong state — the dialog assertion
+  // below would have reported a *product* failure for a broken harness.
+  const deleted = await setup('删除 B 的注册', 'workspace/delete', { request: { workspaceId: wsB.id } }, 'wd')
+  if (!deleted.ok) {
     throw new Error('the workspace/delete that this section depends on failed; the dialog assertion below would be meaningless')
   }
   await page.waitForTimeout(1500)
-  console.log(`  setBase(B 已删): ${await setBase({ mode: 'specified', path: wsB.path, name: 'B' })}`)
+  await setBase({ mode: 'specified', path: wsB.path, name: 'B' })
   await page.waitForTimeout(1500)
   const second = await clickNewSession()
   const dialogText = second.dialog > 0 ? (await dialog().first().innerText()).replace(/\s+/g, ' ').slice(0, 160) : '(无)'
   console.log(`  弹窗: ${String(second.dialog)} 个  ${dialogText}`)
   check('2) 弹窗出现', second.dialog === 1, `${String(second.dialog)} 个`)
   check('2) 没有创建会话', second.creates.length === 0, `${String(second.creates.length)} 次`)
-  check('2) 弹窗含那个路径', dialogText.includes(wsB.path.replace(/\\/g, '\\')) || dialogText.includes('底层工作区缺失'),
+  // The old form was a tautology: `replace(/\\/g, '\\')` replaced a backslash with itself, and
+  // the result was OR-ed with the very literal the `dialog()` locator filters on — so it passed
+  // for any dialog at all, including one naming the wrong path.
+  check('2) 弹窗里出现了 B 的路径',
+    dialogText !== '(无)' && normalizePath(dialogText).includes(normalizePath(wsB.path)),
     dialogText)
   await page.keyboard.press('Escape')
   await page.waitForTimeout(800)
 
   console.log('')
   console.log('=== 3. default ⇒ 走官方默认解析 ===')
-  console.log(`  setBase(default): ${await setBase({ mode: 'default' })}`)
+  await setBase({ mode: 'default' })
   await page.waitForTimeout(1500)
   const third = await clickNewSession()
   console.log(`  initializeDefault 被调: ${String(third.initialized)}  创建: ${String(third.creates.length)}`)
@@ -253,7 +302,7 @@ try {
 
   console.log('')
   console.log('=== 4. 项目行的 ＋：落在 A + 归到该项目 ===')
-  console.log(`  setBase(A): ${await setBase({ mode: 'specified', path: wsA.path, name: 'A' })}`)
+  await setBase({ mode: 'specified', path: wsA.path, name: 'A' })
   await page.waitForTimeout(1500)
   const stamp = Date.now().toString(36)
   const title = `路由${stamp}`
@@ -263,19 +312,36 @@ try {
   await page.getByRole('button', { name: '创建' }).first().click()
   await page.waitForTimeout(2500)
   await dismiss()
-  const projectId = Object.entries(JSON.parse(readFileSync(join(dshHome, 'storages', 'project_groups.json'), 'utf8')).tables.projects)
+  // Optional chaining, like every other reader of this store: on a fresh home (or after a
+  // schema change) `tables`/`projects` may be absent, and the bare access threw a TypeError
+  // that aborted the run right after the project had been created.
+  const projectId = Object.entries(readProjectGroups().tables?.projects ?? {})
     .find(([, record]) => record.title === title)?.[0] ?? null
   console.log(`  项目: ${title} (${String(projectId)})`)
+  // Explicit precondition instead of letting the two assertions below compare against `null`.
+  check('前置：新项目出现在 store 里', projectId !== null, `title=${title}`)
+  if (projectId === null) {
+    throw new Error('the project created in section 4 is not in the store; the ownership assertion below would be meaningless')
+  }
 
   requests.length = 0
   const row = page.locator('div').filter({ hasText: new RegExp(`^\\s*${title}\\s*$`) }).first()
   const rowPlus = row.locator('button[aria-label*="新建会话"], button[aria-label*="新会话"]').first()
-  // The row's ＋ is hover-revealed, and Playwright refuses to click it because it is not
-  // visible (its reveal rides a transient hover state that a synthetic move does not
-  // settle). `node.click()` dispatches a real click event, which React's delegated handler
-  // receives exactly as it would a pointer click — so this exercises the same code path
-  // without depending on the reveal animation.
-  await rowPlus.evaluate(node => node.click())
+  // Exercise the real interaction path first — hover, then a Playwright click — because the
+  // row's ＋ is hover-revealed, and a synthetic `node.click()` bypasses hover, actionability
+  // and hit-testing: it would green-light this section even if a real user could never reach
+  // the button. The synthetic click stays as a recorded fallback, because the reveal rides a
+  // transient hover state that a synthetic move does not always settle.
+  await row.hover().catch(() => {})
+  await page.waitForTimeout(300)
+  let pointerPath = 'hover+click'
+  try {
+    await rowPlus.click({ timeout: 3000 })
+  } catch {
+    pointerPath = 'synthetic node.click() fallback'
+    await rowPlus.evaluate(node => node.click())
+  }
+  console.log(`  ＋ 的点击路径: ${pointerPath}`)
   await page.waitForTimeout(6000)
   await dismiss()
   const creates = requests.filter(entry => entry.method === 'session/create')
@@ -315,7 +381,9 @@ try {
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
 } finally {
-  child.kill()
+  // Both are optional-chained: a boot timeout or a failed launch now rejects from inside
+  // this guarded region, so the cleanup must tolerate never having acquired them.
+  if (child !== undefined) child.kill()
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 process.exit(failures.length === 0 ? 0 : 1)

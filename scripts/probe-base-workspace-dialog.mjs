@@ -33,8 +33,12 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-base-workspace-dialog.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17900 : 17901
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// Overridable, because a leftover Host from an aborted run keeps the port and the next
+// probe then reports a boot timeout for what is really an occupied port.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17900 : 17901))
+// `join`, not a `\\`-joined literal: on a POSIX runner a backslash is an ordinary filename
+// character, so the literal path silently never resolves.
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -42,29 +46,7 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
-
+let child
 let browser
 let page
 
@@ -76,12 +58,20 @@ const dismiss = async () => {
     for (const label of ['稍后配置', '继续', 'Later']) {
       const button = page.getByRole('button', { name: label, exact: true }).first()
       if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
+        // The failure is logged rather than discarded: a click that never landed leaves the
+        // mask up, and every later assertion then fails for a setup reason with nothing in
+        // the output to say so.
+        await button.click({ force: true }).catch((error) => {
+          console.log(`  dismiss: click on "${label}" failed — ${error.message}`)
+        })
         await page.waitForTimeout(1200)
       }
     }
     await page.waitForTimeout(700)
   }
+  // An explicit recorded fact, not a silent fall-through: a mask that survives all 8 rounds
+  // means the UI below it is intercepted, which is the real explanation for later failures.
+  if (await isMasked()) console.log('  dismiss: a modal mask is STILL up after 8 rounds — later checks may be measuring an intercepted UI')
 }
 
 const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
@@ -108,6 +98,19 @@ const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
 const dialog = () => page.locator('[role="dialog"], [aria-modal="true"]')
   .filter({ hasText: '底层工作区缺失' })
 
+/**
+ * Wait for the dialog instead of sleeping a fixed 6 s and then sampling once.
+ *
+ * The fixed sleep was timing-dependent in both directions: on a slow run the dialog had not
+ * rendered yet and the probe reported a product failure, and the negative check could not
+ * tell "never appeared" from "not rendered yet".
+ * @param timeout - how long to allow for it to become visible.
+ * @returns true when it is visible, false when it never became visible.
+ */
+const dialogVisible = (timeout = 10_000) => dialog().first().waitFor({ state: 'visible', timeout })
+  .then(() => true)
+  .catch(() => false)
+
 /** The plugin's durable state, which 取消 must not touch. */
 const pluginState = () => {
   try {
@@ -118,6 +121,32 @@ const pluginState = () => {
 }
 
 try {
+  // Spawned inside the `try` so the `finally` always reaches `child.kill()`. While this sat
+  // above the `try`, a boot timeout — or any throw out of `chromium.launch` — rejected the
+  // top-level await before cleanup ran and left the Host running on the port.
+  child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
+    })
+    child.stderr.on('data', (chunk) => { out += chunk })
+  })
+
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
   page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
@@ -134,9 +163,8 @@ try {
   // The shell's own New Session control, which is the unscoped entry.
   const newSession = page.getByRole('button', { name: /新建会话|新会话/ }).first()
   await newSession.click({ force: true })
-  await page.waitForTimeout(6000)
   await dismiss()
-  check('1) 正常路径下没有弹窗', await dialog().count() === 0)
+  check('1) 正常路径下没有弹窗', (await dialogVisible(6000)) === false)
 
   console.log('')
   console.log('=== 2. 删掉默认工作区的注册（保留目录与会话）===')
@@ -149,12 +177,11 @@ try {
   console.log('')
   console.log('=== 3. 现在点新建会话：应弹窗（而不是静默无反应）===')
   await newSession.click({ force: true })
-  await page.waitForTimeout(6000)
   await dismiss()
-  const appeared = await dialog().count()
-  check('3) 弹窗出现（不再是静默无反应）', appeared === 1, `count=${String(appeared)}`)
+  const appeared = await dialogVisible()
+  check('3) 弹窗出现（不再是静默无反应）', appeared)
 
-  if (appeared !== 1) {
+  if (!appeared) {
     console.log('  弹窗未出现，后续测量跳过')
   } else {
     /**
@@ -187,7 +214,13 @@ try {
         buttons: buttons.map(node => {
           const rect = node.getBoundingClientRect()
           const style = getComputedStyle(node)
-          const padding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight)
+          // `Number.isFinite` guards the parse: a computed padding of `auto`/`normal` parses to
+          // NaN, which propagated into `available` and made `natural <= available` false — the
+          // overflow check then FAILed on a label that was never actually measured.
+          const paddingLeft = Number.parseFloat(style.paddingLeft)
+          const paddingRight = Number.parseFloat(style.paddingRight)
+          const padding = (Number.isFinite(paddingLeft) ? paddingLeft : 0)
+            + (Number.isFinite(paddingRight) ? paddingRight : 0)
           const available = Math.round(rect.width - padding)
           const inner = (node.textContent ?? '').trim()
           const natural = naturalWidth(inner, node)
@@ -197,6 +230,8 @@ try {
             top: Math.round(rect.top),
             available,
             natural,
+            // `null` is "not measurable" (no 2D context), which is not evidence of overflow;
+            // the separate check below reports it as unmeasurable instead of as a bad fit.
             fits: natural !== null && natural <= available,
             disabled: node.disabled,
           }
@@ -217,15 +252,22 @@ try {
     }, { timeout: 10_000 }).then(() => true).catch(() => false)
     check('3) 弹窗显示了 Host 推导的路径', pathShown)
 
-    const labels = shape.buttons.map(b => b.label)
     check('4) 三个按钮竖排（top 递增）',
       shape.buttons.length === 3 && shape.buttons.every((b, i) => i === 0 || b.top > shape.buttons[i - 1].top),
       JSON.stringify(shape.buttons.map(b => b.top)))
     check('4) 三个按钮等宽全宽',
       shape.buttons.length === 3 && new Set(shape.buttons.map(b => b.width)).size === 1,
       JSON.stringify(shape.buttons.map(b => b.width)))
-    check('4) 文案全部放得下（无溢出）', shape.buttons.every(b => b.fits),
-      JSON.stringify(shape.buttons.map(b => `${b.label}:${b.natural}/${b.available}`)))
+    // A button whose label could not be measured (no 2D canvas context) is reported as
+    // unmeasurable and excluded from the fit assertion, rather than being counted as an
+    // overflow and failed for a reason the probe cannot actually see.
+    const unmeasurable = shape.buttons.filter(b => b.natural === null).map(b => b.label)
+    check('4) 每个按钮的文案宽度可测量', unmeasurable.length === 0, JSON.stringify(unmeasurable))
+    check('4) 文案全部放得下（无溢出）',
+      shape.buttons.every(b => b.natural === null || b.natural <= b.available),
+      JSON.stringify(shape.buttons.map(b => b.natural === null
+        ? `${b.label}:UNMEASURABLE`
+        : `${b.label}:${b.natural}/${b.available}`)))
 
     const rebuild = shape.buttons.find(b => b.label.includes('重建'))
     const respecify = shape.buttons.find(b => b.label.includes('重新指定'))
@@ -237,17 +279,15 @@ try {
     console.log('')
     console.log('=== 4. 取消：关闭且不写任何数据 ===')
     await page.getByRole('button', { name: '取消', exact: true }).last().click({ force: true })
-    await page.waitForTimeout(1500)
-    check('4) 取消后弹窗关闭', await dialog().count() === 0)
+    check('4) 取消后弹窗关闭', (await dialogVisible(3000)) === false)
     check('4) 取消后插件状态未变', pluginState() === stateBefore,
       pluginState() === stateBefore ? undefined : 'project_groups.json changed')
 
     console.log('')
     console.log('=== 5. 取消后再点：应再次弹窗（状态没被记住）===')
     await newSession.click({ force: true })
-    await page.waitForTimeout(5000)
     await dismiss()
-    check('5) 再次点击仍然弹窗', await dialog().count() === 1)
+    check('5) 再次点击仍然弹窗', await dialogVisible())
     await page.getByRole('button', { name: '取消', exact: true }).last().click({ force: true }).catch(() => {})
   }
 
@@ -255,7 +295,7 @@ try {
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
 } finally {
-  child.kill()
+  if (child !== undefined) child.kill() // guarded: a synchronous `spawn` throw leaves it unset
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 process.exit(failures.length === 0 ? 0 : 1)

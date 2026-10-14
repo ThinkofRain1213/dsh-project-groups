@@ -35,6 +35,7 @@
  */
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
 
@@ -43,8 +44,19 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-default-workspace-takeover.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17880 : 17881
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+// One port per supported profile, and an unknown profile is refused rather than mapped
+// silently onto the second port: this probe DELETES and rebuilds the default Workspace, so
+// attaching to whatever else happened to be listening there would mutate a stranger's
+// instance while still reporting results. DSH_PROBE_PORT overrides for a parallel run.
+const PROFILE_PORTS = { pg: 17880, official: 17881 }
+const PORT = Number(process.env.DSH_PROBE_PORT ?? PROFILE_PORTS[profile])
+if (!Number.isInteger(PORT)) {
+  console.error(`unknown profile '${profile}'; supported: ${Object.keys(PROFILE_PORTS).join(', ')}`)
+  process.exit(2)
+}
+// `join`, not a literal: the backslashes this used to carry are ordinary characters in a
+// filename off Windows, where the spawn then failed with an ENOENT.
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -57,7 +69,10 @@ const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 let out = ''
-const url = await new Promise((resolve, reject) => {
+// Started, not awaited: the await moved inside the `try` below, because awaiting it here
+// meant a boot rejection (or a browser launch failure) escaped before `finally`, leaving
+// the spawned host running and holding the port.
+const boot = new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
   // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
   // stdout, so without this handler the promise stayed pending until the 120 s timeout and
@@ -77,9 +92,8 @@ const url = await new Promise((resolve, reject) => {
 
 let browser
 let page
+let driverError
 const consoleErrors = []
-page.on('pageerror', (error) => consoleErrors.push(error.message))
-page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()) })
 
 const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
   const token = new URL(location.href).searchParams.get('token') ?? ''
@@ -91,7 +105,16 @@ const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
       method, payload: { args },
     }),
   })
-  const parsed = JSON.parse(await response.text())
+  // Guarded: unguarded `JSON.parse` turned an HTML/empty error body into a SyntaxError that
+  // aborted the whole probe, and a never-checked status meant a 500 was read like a reply.
+  const text = await response.text()
+  if (!response.ok) return { ok: false, value: undefined, error: { message: `HTTP ${response.status}: ${text.slice(0, 200)}` } }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    return { ok: false, value: undefined, error: { message: `non-JSON reply: ${String(error?.message ?? error)}` } }
+  }
   return { ok: parsed?.result?.ok, value: parsed?.result?.value, error: parsed?.result?.error }
 }, { method, args })
 
@@ -152,18 +175,49 @@ const modeCard = (label) => card().locator('button[aria-pressed]').filter({ hasT
 const missingDialog = () => page.locator('[role="dialog"], [aria-modal="true"]')
 const newSession = () => page.locator('button[aria-label="新建会话"], button[aria-label="新会话"]').first()
 
-/** The 默认工作区 card's second line, as rendered: text plus its computed colour. */
+/**
+ * The 默认工作区 card's second line, as rendered: text plus its computed colour.
+ *
+ * Located structurally, excluding the in-card `role="button"` action (which only exists
+ * while the Workspace is missing and would otherwise shift the index), and the shape is
+ * asserted: a cosmetic change to the card's spans would previously make this read a
+ * different node and turn a real regression into a pass without saying so.
+ */
 const defaultValueLine = async () => {
-  const node = modeCard('默认工作区').locator('span').nth(1)
-  return await node.evaluate(el => ({ text: el.textContent ?? '', color: getComputedStyle(el).color }))
+  const lines = modeCard('默认工作区').locator('span:not([role="button"])')
+  const count = await lines.count()
+  if (count !== 2) throw new Error(`默认工作区 卡片结构变了：期望 2 个非动作 span，实际 ${count}`)
+  return await lines.nth(1).evaluate(el => ({ text: el.textContent ?? '', color: getComputedStyle(el).color }))
 }
+
+/**
+ * Resolve one theme token to the colour the browser actually computes.
+ *
+ * The colour assertions used the literal `rgb(245, 158, 11)`; the warn colour is
+ * `--dsw-alias-state-warn-primary`, so a palette change (or the light scheme) would have
+ * failed them for a reason unrelated to the feature. Resolved from the live token like the
+ * rest of this repo's colour checks.
+ */
+const tokenColor = (token) => page.evaluate((name) => {
+  const probe = document.createElement('span')
+  probe.style.color = `var(${name})`
+  document.body.append(probe)
+  const value = getComputedStyle(probe).color
+  probe.remove()
+  return value
+}, token)
 
 /** The rebuild action inside the 默认工作区 card, when it is present. */
 const rebuildAction = () => modeCard('默认工作区').locator('[role="button"]')
 
 try {
+  const url = await boot
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
+  // Attached after `newPage()`: these used to run against the `undefined` placeholder, so
+  // the probe crashed before it asserted anything.
+  page.on('pageerror', (error) => consoleErrors.push(error.message))
+  page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()) })
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismiss()
@@ -183,10 +237,11 @@ try {
   await page.waitForTimeout(1200)
 
   await openCard()
+  const warnColor = await tokenColor('--dsw-alias-state-warn-primary')
   const healthy = await defaultValueLine()
-  console.log(`  默认卡第二行: ${JSON.stringify(healthy)}`)
+  console.log(`  默认卡第二行: ${JSON.stringify(healthy)}   警告色(${warnColor})`)
   check('1) 卡片显示正常文案', healthy.text.includes('官方首次创建的工作区'), healthy.text)
-  check('1) 不告警（非橙色）', healthy.color !== 'rgb(245, 158, 11)', healthy.color)
+  check('1) 不告警（非橙色）', healthy.color !== warnColor, `${healthy.color} vs ${warnColor}`)
   check('1) 没有重建按钮', await rebuildAction().count() === 0,
     `count=${String(await rebuildAction().count())}`)
 
@@ -209,21 +264,29 @@ try {
   check('3) 第二行改成缺失文案', warned.text.includes('缺失'), warned.text)
   check('3) 文案说“会弹窗确认是否重建”，不是“自动创建”',
     warned.text.includes('弹窗') && !warned.text.includes('自动创建'), warned.text)
-  check('3) 第二行是橙色警告', warned.color === 'rgb(245, 158, 11)', warned.color)
+  check('3) 第二行是橙色警告', warned.color === warnColor, `${warned.color} vs ${warnColor}`)
   check('3) 出现重建按钮', await rebuildAction().count() === 1,
     `count=${String(await rebuildAction().count())}`)
 
   console.log('')
   console.log('=== 4. 点重建 ⇒ 二次确认 ⇒ 写入 adoptedPath 且 mode 不变 ===')
-  check('4) 按下前 mode 是 default', storedBase()?.mode === 'default', JSON.stringify(storedBase()))
-  check('4) 按下前没有 adoptedPath', storedBase()?.adoptedPath === undefined, JSON.stringify(storedBase()))
+  // `storedBase()` answers null when the file is missing or unparsable, and
+  // `null?.adoptedPath === undefined` is TRUE — so the check below used to pass precisely
+  // when the ground truth could not be read. Assert readability first, then the absence.
+  const beforeRebuild = storedBase()
+  check('4) 能读到插件的持久状态', beforeRebuild !== null, JSON.stringify(beforeRebuild))
+  if (beforeRebuild === null) throw new Error('project_groups.json 不可读，无法判断是否写盘')
+  check('4) 按下前 mode 是 default', beforeRebuild.mode === 'default', JSON.stringify(beforeRebuild))
+  check('4) 按下前没有 adoptedPath', beforeRebuild.adoptedPath === undefined, JSON.stringify(beforeRebuild))
 
   console.log('  按第一下应【只弹确认】，不写盘')
   await rebuildAction().click({ force: true })
   await page.waitForTimeout(1200)
   const confirmDialog = await missingDialog().filter({ hasText: '确认重建默认工作区' }).count()
   check('4) 出现确认弹窗', confirmDialog > 0, `count=${String(confirmDialog)}`)
-  check('4) 确认前没有写盘', storedBase()?.adoptedPath === undefined, JSON.stringify(storedBase()))
+  const beforeConfirm = storedBase()
+  check('4) 确认前没有写盘', beforeConfirm !== null && beforeConfirm.adoptedPath === undefined,
+    JSON.stringify(beforeConfirm))
 
   await missingDialog().getByRole('button', { name: '确认', exact: true }).first().click({ force: true })
   await page.waitForTimeout(6000)
@@ -274,12 +337,21 @@ try {
   const realErrors = consoleErrors.filter(text => !text.includes('favicon'))
   check('6) 无 validateDOMNesting / 页面错误', realErrors.length === 0,
     realErrors.slice(0, 3).join(' | '))
-
+} catch (error) {
+  // Without this the driver had no catch at all: any throw (a failed rpc, a locator
+  // timeout, the explicit "no default workspace" abort) skipped the procedure summary and
+  // the exit code, so a crashed run surfaced as an unhandled rejection with no PASS/FAIL
+  // report — indistinguishable from a green run in log-scraping CI.
+  driverError = error
+} finally {
   console.log('')
+  if (driverError !== undefined) {
+    console.log(`探针中断: ${driverError instanceof Error ? driverError.stack : String(driverError)}`)
+    failures.push('probe aborted')
+  }
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
-} finally {
   child.kill()
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
+  process.exit(failures.length === 0 ? 0 : 1)
 }
-process.exit(failures.length === 0 ? 0 : 1)

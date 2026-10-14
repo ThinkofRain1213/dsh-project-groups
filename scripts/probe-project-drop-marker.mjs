@@ -47,8 +47,10 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-project-drop-marker.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17963 : 17964
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17963 : 17964))
+// `join` rather than Windows-only separators, for the same reason the module already uses it
+// for the domain path: the backslash literal is an invalid path on a POSIX host.
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -56,29 +58,13 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
-  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
-  // stdout, so without this handler the promise stayed pending until the 120 s timeout and
-  // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
-  // the process outright.
-  child.on('error', (error) => {
-    clearTimeout(timer)
-    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
-  })
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
-  })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
+/** Uncaught page exceptions. Asserted at the end: a drop handler that throws must not pass. */
+const pageErrors = []
 
+// Spawned inside the `try` below, so a failed spawn, a boot timeout or a launch error all
+// still reach the `finally` that reaps the Host. While the spawn sat above the `try`, a boot
+// timeout rejected the top-level await and left the Electron Host holding `PORT`.
+let child
 let browser
 let page
 
@@ -103,8 +89,12 @@ const order = () => {
     const global = parsed.global ?? {}
     const table = parsed.tables?.projects ?? {}
     return (global.projectIds ?? []).map(id => table[id]?.title ?? `?${String(id).slice(0, 6)}`)
-  } catch {
-    return []
+  } catch (error) {
+    // Only "the file is not there yet" means an empty list. Swallowing every error made a
+    // corrupt or wrong-`dshHome` domain read as an empty order, so the very first check
+    // reported `FAIL 起点顺序是 [A, B, C, D]` with an empty detail instead of the real cause.
+    if (error?.code === 'ENOENT') return []
+    throw new Error(`cannot read the project order from ${join(dshHome, 'storages', 'project_groups.json')}: ${String(error?.message ?? error)}`)
   }
 }
 
@@ -123,8 +113,13 @@ const order = () => {
  */
 const dragProject = async ({ sourceTitle, targetTitle, hoverFraction, dropFraction }) => page.evaluate(
   async ({ sourceTitle, targetTitle, hoverFraction, dropFraction }) => {
+    // Among the rows whose accumulated text contains the title, the shortest one is the intended
+    // row: a bare `includes` with single-letter titles (`A`…`D`) can match a row whose text merely
+    // contains that letter — a path fragment, a badge — and then the drag would start or land on
+    // the wrong row, which is a measurement of the harness rather than of the behaviour.
     const rowOf = (title) => [...document.querySelectorAll('[data-row-key^="workspace:"]')]
-      .find(node => (node.textContent ?? '').includes(title))
+      .filter(node => (node.textContent ?? '').includes(title))
+      .sort((a, b) => (a.textContent ?? '').length - (b.textContent ?? '').length)[0]
     const sectionOf = (title) => rowOf(title)?.closest('[class*="groupSection"]') ?? null
     const source = rowOf(sourceTitle)
     const target = sectionOf(targetTitle)
@@ -164,24 +159,63 @@ const dragProject = async ({ sourceTitle, targetTitle, hoverFraction, dropFracti
  * reverse. Waiting a tick per move keeps the writes from racing on the domain's queue.
  */
 const restoreOrder = async (titles) => {
-  const parsed = JSON.parse(readFileSync(join(dshHome, 'storages', 'project_groups.json'), 'utf8'))
+  // Guarded and named: the unguarded `JSON.parse` here was the only storage read without error
+  // handling, and a failure at this point used to surface as scenario 2 measuring an order that
+  // had never been restored.
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(join(dshHome, 'storages', 'project_groups.json'), 'utf8'))
+  } catch (error) {
+    throw new Error(`cannot read the domain to restore the order: ${String(error?.message ?? error)}`)
+  }
   const table = parsed.tables?.projects ?? {}
   const byTitle = new Map(Object.entries(table).map(([id, row]) => [row.title, id]))
   for (const title of titles) {
     const id = byTitle.get(title)
     if (id === undefined) continue
-    await rpc('projectGroups/reorder', { request: { projectId: id } })
+    const moved = await rpc('projectGroups/reorder', { request: { projectId: id } })
+    if (moved.ok !== true) console.log(`  复位 ${title} 失败: ${JSON.stringify(moved.error)}`)
     await page.waitForTimeout(200)
   }
   await page.waitForTimeout(700)
 }
 
 try {
+  child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+    // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
+    // stdout, so without this handler the promise stayed pending until the 120 s timeout and
+    // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
+    // the process outright.
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+    })
+    child.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
+    })
+    child.stderr.on('data', (chunk) => { out += chunk })
+  })
+
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
-  page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+  page.on('pageerror', (error) => pageErrors.push(error.message))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
-  await page.waitForTimeout(8000)
+  // Readiness instead of a bare 8 s: the sidebar must have rendered a project row before the
+  // RPCs below are expected to show up in it, and "has a row" is the condition this probe
+  // actually needs. The remaining short waits below are animation/settle windows around drags
+  // and Host writes, which expose no completion signal to poll for.
+  await page.waitForFunction(
+    () => document.querySelector('[data-row-key^="workspace:"]') !== null,
+    null, { timeout: 30_000 },
+  )
 
   console.log('=== 准备：建 4 个项目，顺序 [A, B, C, D] ===')
   // `create` prepends, so creating in reverse yields the intended display order.
@@ -190,7 +224,12 @@ try {
     if (made.ok !== true) { console.log(`  建 ${title} 失败: ${JSON.stringify(made.error)}`) }
     await page.waitForTimeout(400)
   }
-  await page.waitForTimeout(2500)
+  // Poll for the four rows instead of sleeping: the `create` RPC returns before the sidebar has
+  // re-rendered them, and a stale DOM here makes `dragProject` drag nothing (or the wrong row).
+  await page.waitForFunction(
+    () => document.querySelectorAll('[data-row-key^="workspace:"]:not([data-row-key="workspace:"])').length >= 4,
+    null, { timeout: 30_000 },
+  )
   console.log(`  当前顺序: ${JSON.stringify(order())}`)
   check('起点顺序是 [A, B, C, D]', order().join(',') === 'A,B,C,D', order().join(','))
 
@@ -212,7 +251,11 @@ try {
   console.log('')
   console.log('=== 场景 2（修 2）：线在 B 下方，也在 B 的下半松手 ===')
   await restoreOrder(['A', 'B', 'C', 'D'])
+  const restored = order().join(',')
   console.log(`  复位后: ${JSON.stringify(order())}`)
+  // The reset is verified before scenario 2 runs: an unverified reset would let the next
+  // assertions pass or fail against whatever order the previous scenario left behind.
+  check('复位后顺序回到 [A, B, C, D]（场景 2 的前提）', restored === 'A,B,C,D', restored)
   const two = await dragProject({
     sourceTitle: 'A', targetTitle: 'B', hoverFraction: 0.8, dropFraction: 0.8,
   })
@@ -228,9 +271,14 @@ try {
 
   console.log('')
   console.log('=== 结果 ===')
+  // Asserted, not just logged: an uncaught exception on the page (a drop handler throwing is
+  // exactly what this probe exists to catch) could otherwise end the run with ALL CHECKS PASSED.
+  check('页面没有未捕获异常', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '))
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
 } finally {
-  child.kill()
+  // Guarded: the spawn is inside the `try` now, so a synchronous spawn failure must not turn the
+  // real error into a `TypeError` from this line.
+  if (child !== undefined) child.kill()
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 process.exit(failures.length === 0 ? 0 : 1)

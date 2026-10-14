@@ -36,8 +36,10 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-project-duplicate-name.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17961 : 17962
-const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17961 : 17962))
+// `join` rather than a hand-written `\\` path: the literal only worked on Windows, and a bad
+// BIN surfaces as a boot timeout rather than as the path error it is.
+const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -49,9 +51,16 @@ const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--
   env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
+// The boot await and `chromium.launch()` below sit outside the try/finally that kills
+// this child, so a boot timeout or a failed launch would orphan it and leave the port
+// bound — poisoning the next run. These listeners are the fallback for that window.
+const killChild = () => { try { child.kill() } catch { /* already gone */ } }
+process.once('exit', killChild)
+process.once('SIGINT', () => { killChild(); process.exit(130) })
+
 let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+const bootUrl = () => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => { killChild(); reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)) }, 120_000)
   // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
   // stdout, so without this handler the promise stayed pending until the 120 s timeout and
   // reported 'boot timeout' for what was really a bad path. Unhandled, the event also crashes
@@ -59,6 +68,11 @@ const url = await new Promise((resolve, reject) => {
   child.on('error', (error) => {
     clearTimeout(timer)
     reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+  })
+  // An early exit (bad args, the port already bound, a crash) also never prints a URL.
+  child.on('exit', (code, signal) => {
+    clearTimeout(timer)
+    reject(new Error(`dsh exited before printing a URL (code=${String(code)}, signal=${String(signal)}):\n${redactToken(out.slice(-1500))}`))
   })
   child.stdout.on('data', (chunk) => {
     out += String(chunk)
@@ -87,18 +101,37 @@ const dismiss = async () => {
   }
 }
 
+/**
+ * One RPC call, reported rather than thrown.
+ *
+ * The unguarded version let a network failure, a non-2xx response or a non-JSON body
+ * throw out of `page.evaluate` — including in the transport check (check 6) whose whole
+ * point is to conclude "the Host refused". A transport problem now reads as
+ * `{ ok: false, error: 'rpc failed: …' }`, which every caller already knows how to report.
+ */
 const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
-  const token = new URL(location.href).searchParams.get('token') ?? ''
-  const response = await fetch(`${location.origin}/api/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-dsh-token': token },
-    body: JSON.stringify({
-      type: 'client-request', rpcId: `p-${Math.random().toString(36).slice(2)}`,
-      method, payload: { args },
-    }),
-  })
-  const parsed = JSON.parse(await response.text())
-  return { ok: parsed?.result?.ok === true, error: parsed?.result?.error?.message ?? null }
+  try {
+    const token = new URL(location.href).searchParams.get('token') ?? ''
+    const response = await fetch(`${location.origin}/api/${method}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-dsh-token': token },
+      body: JSON.stringify({
+        type: 'client-request', rpcId: `p-${Math.random().toString(36).slice(2)}`,
+        method, payload: { args },
+      }),
+    })
+    const text = await response.text()
+    if (!response.ok) return { ok: false, error: `rpc failed: HTTP ${String(response.status)} ${text.slice(0, 160)}` }
+    let parsed
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      return { ok: false, error: `rpc failed: non-JSON body ${text.slice(0, 160)}` }
+    }
+    return { ok: parsed?.result?.ok === true, error: parsed?.result?.error?.message ?? null }
+  } catch (error) {
+    return { ok: false, error: `rpc failed: ${error.message}` }
+  }
 }, { method, args })
 
 const dialogs = () => page.locator('[role="dialog"], [aria-modal="true"]')
@@ -115,6 +148,18 @@ const projects = () => {
 
 /** The dialog currently open, matched by its title text. */
 const dialogWith = (text) => dialogs().filter({ hasText: text }).last()
+
+/**
+ * The dialog's own alert text, whitespace-normalised.
+ *
+ * Shared by the create and rename assertions: two hand-written copies of the
+ * locator → `[role="alert"]` → `innerText` → normalize chain drift apart on the next
+ * change to the alert's markup, and only one of them gets fixed.
+ * @param dialog - the dialog locator.
+ * @returns the alert's text, or an empty string when there is no alert.
+ */
+const readAlert = async (dialog) =>
+  (await dialog.locator('[role="alert"]').first().innerText().catch(() => '')).replace(/\s+/g, ' ')
 
 /**
  * Type a title into the open dialog's single text input.
@@ -170,8 +215,11 @@ try {
     await page.waitForTimeout(400)
   }
   await page.waitForTimeout(2000)
-  console.log(`  当前: ${JSON.stringify(projects())}`)
-  check('起点：alpha 与 beta', projects().join(',') === 'alpha,beta', projects().join(','))
+  // Read once: `projects()` re-reads and re-parses the domain file, so two calls in one
+  // assertion can disagree and log a different value from the one that decided the result.
+  const initial = projects()
+  console.log(`  当前: ${JSON.stringify(initial)}`)
+  check('起点：alpha 与 beta', initial.join(',') === 'alpha,beta', initial.join(','))
 
   console.log('')
   console.log('=== 1. 新建项目用已有名字 ⇒ 禁用 + 提示 ===')
@@ -182,10 +230,10 @@ try {
   await typeTitle(createDialog, 'alpha')
   const createText = (await createDialog.innerText()).replace(/\s+/g, ' ')
   console.log(`  对话框文字: ${JSON.stringify(createText.slice(0, 140))}`)
-  check('1) 确认按钮被禁用', await primaryDisabled(createDialog), `disabled=${String(await primaryDisabled(createDialog))}`)
+  const createDisabled = await primaryDisabled(createDialog)
+  check('1) 确认按钮被禁用', createDisabled, `disabled=${String(createDisabled)}`)
   // The alert alone; see the note on check 3 for why the dialog's whole text is not enough.
-  const createAlert = (await createDialog.locator('[role="alert"]').first().innerText().catch(() => ''))
-    .replace(/\s+/g, ' ')
+  const createAlert = await readAlert(createDialog)
   console.log(`  提示文字: ${JSON.stringify(createAlert)}`)
   check('1) 提示说的是【项目】', createAlert.includes('项目') && !createAlert.includes('工作区'), createAlert)
   check('1) 提示里带上了名字', createAlert.includes('alpha'), createAlert)
@@ -210,8 +258,7 @@ try {
   // Read the **alert alone**, not the dialog's whole text: the dialog's title is 编辑项目, so a
   // substring test for 项目 against the dialog would pass no matter what the message said — which
   // is exactly how the first version of this check missed that the message said 工作区.
-  const renameAlert = (await renameDialog.locator('[role="alert"]').first().innerText().catch(() => ''))
-    .replace(/\s+/g, ' ')
+  const renameAlert = await readAlert(renameDialog)
   console.log(`  提示文字: ${JSON.stringify(renameAlert)}`)
   check('3) 提示说的是【项目】而不是工作区',
     renameAlert.includes('项目') && !renameAlert.includes('工作区'), renameAlert)
@@ -247,10 +294,17 @@ try {
   console.log(`  当前: ${JSON.stringify(after)}`)
   check('6) 没有多出重复的 beta', after.filter(t => t === 'beta').length === 1, after.join(','))
 
+} catch (error) {
+  // Recorded rather than propagated: a `fill` on a dialog that never opened used to
+  // throw past the summary, so CI got an unhandled rejection and no failure list.
+  failures.push(`the run threw before completing: ${error.message}`)
+  console.log(`\nFAIL  the run threw before completing — ${error.message}`)
+} finally {
+  // The summary and the exit code live HERE, so every path — including a throw —
+  // produces the failure list and a deterministic status.
   console.log('')
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
-} finally {
   child.kill()
   if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
