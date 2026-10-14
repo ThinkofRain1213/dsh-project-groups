@@ -139,9 +139,14 @@ try {
   await page.waitForTimeout(8000)
   await dismiss()
 
-  await page.evaluate(async () => {
+  // The response is read and asserted.
+  //
+  // It used to be discarded, so a failed seed `workspace/create` (wrong token, 4xx/5xx) was
+  // silent and the sections below then measured the wrong state — reporting a product failure for
+  // what was really a broken setup.
+  const seeded = await page.evaluate(async () => {
     const token = new URL(location.href).searchParams.get('token') ?? ''
-    await fetch(`${location.origin}/api/workspace/create`, {
+    const response = await fetch(`${location.origin}/api/workspace/create`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-dsh-token': token },
       body: JSON.stringify({
@@ -149,7 +154,16 @@ try {
         payload: { args: { request: { path: join(repoRoot, 'scripts') } } },
       }),
     })
+    const text = await response.text()
+    let parsed = null
+    try { parsed = JSON.parse(text) } catch { /* reported through status */ }
+    return { status: response.status, ok: parsed?.result?.ok, error: parsed?.result?.error, text: text.slice(0, 200) }
   })
+  check('前置：种子 workspace/create 成功', seeded.status === 200 && seeded.ok !== false,
+    `status=${String(seeded.status)} ok=${String(seeded.ok)} error=${JSON.stringify(seeded.error)}`)
+  if (seeded.status !== 200 || seeded.ok === false) {
+    throw new Error('the seed workspace/create failed; the sections below would measure the wrong state')
+  }
 
   await dismiss()
   await page.locator('button[aria-label="插件"], [data-panel-id="plugins"]').first().click()

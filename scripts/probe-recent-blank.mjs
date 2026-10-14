@@ -161,8 +161,14 @@ const ownerAfter = async (from, timeoutMs = 15_000) => {
 
 /** Store the destination over the plugin's own RPC, the endpoint the card uses. */
 const setTarget = async (target) => {
-  await page.evaluate(async ({ base, token, value }) => {
-    await fetch(`${base}/api/projectGroups/setNewSessionTarget`, {
+  // The response is read and checked.
+  //
+  // It used to be discarded, so a rejected `setNewSessionTarget` — wrong token, 4xx/5xx, an RPC
+  // error envelope — was swallowed and resurfaced later as "the destination is set to recent"
+  // failing, or worse as a bogus placement assertion. `probe-new-session-target.mjs` already
+  // returns `{ status, body }` from this same call; this mirrors it.
+  const result = await page.evaluate(async ({ base, token, value }) => {
+    const response = await fetch(`${base}/api/projectGroups/setNewSessionTarget`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-dsh-token': token },
       body: JSON.stringify({
@@ -172,7 +178,17 @@ const setTarget = async (target) => {
         payload: { args: { request: { target: value } } },
       }),
     })
+    const text = await response.text()
+    let parsed = null
+    try { parsed = JSON.parse(text) } catch { /* reported through status */ }
+    return { status: response.status, ok: parsed?.result?.ok, error: parsed?.result?.error, text: text.slice(0, 200) }
   }, { base: new URL(page.url()).origin, token: new URL(page.url()).searchParams.get('token') ?? '', value: target })
+  check(`前置：setNewSessionTarget(${JSON.stringify(target)}) 成功`,
+    result.status === 200 && result.ok !== false,
+    `status=${String(result.status)} ok=${String(result.ok)} error=${JSON.stringify(result.error)} body=${result.text}`)
+  if (result.status !== 200 || result.ok === false) {
+    throw new Error(`setNewSessionTarget(${JSON.stringify(target)}) failed; the assertions below would measure the wrong state`)
+  }
   await page.waitForTimeout(2500)
 }
 

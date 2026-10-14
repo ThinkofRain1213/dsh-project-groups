@@ -164,9 +164,14 @@ try {
   // Seed a memory first, or the toggle never reaches the write path: with nothing stored,
   // clicking 指定 opens the chooser and writes nothing, so there is no optimistic paint to
   // compare against the Host's frame.
-  await page.evaluate(async () => {
+  //
+  // The response is read and asserted. It used to be discarded, so a failed or rejected
+  // `workspace/create` (a bad or expired token, a non-2xx status) was silently ignored — and the
+  // sampling below then measured a different state than intended, reporting a misleading
+  // 'flash'/'no memory' verdict instead of the real setup failure.
+  const seed = await page.evaluate(async () => {
     const token = new URL(location.href).searchParams.get('token') ?? ''
-    await fetch(`${location.origin}/api/workspace/create`, {
+    const response = await fetch(`${location.origin}/api/workspace/create`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-dsh-token': token },
       body: JSON.stringify({
@@ -174,7 +179,16 @@ try {
         payload: { args: { request: { path: join(repoRoot, 'scripts') } } },
       }),
     })
+    const text = await response.text()
+    let parsed = null
+    try { parsed = JSON.parse(text) } catch { /* reported through status */ }
+    return { status: response.status, ok: parsed?.result?.ok, error: parsed?.result?.error, text: text.slice(0, 200) }
   })
+  check('前置：种子 workspace/create 成功', seed.status === 200 && seed.ok !== false,
+    `status=${String(seed.status)} ok=${String(seed.ok)} error=${JSON.stringify(seed.error)} body=${seed.text}`)
+  if (seed.status !== 200 || seed.ok === false) {
+    throw new Error(`the seed workspace/create failed (status ${String(seed.status)}); the sampling below would measure the wrong state`)
+  }
   await page.waitForTimeout(1200)
   await specifiedCard.click({ force: true })
   await page.waitForTimeout(1200)

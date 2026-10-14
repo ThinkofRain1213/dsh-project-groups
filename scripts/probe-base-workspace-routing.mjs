@@ -193,9 +193,14 @@ try {
   console.log('')
   console.log('=== 2. specified(不存在) ⇒ 弹窗，且不创建会话 ===')
   // B is registered, then deleted, so the stored path is real but unresolvable.
-  await page.evaluate(async ({ workspaceId }) => {
+  // The response is read and asserted.
+  //
+  // It used to be discarded, so a failed `workspace/delete` (wrong token, 4xx/5xx) was silent and
+  // the section then measured the wrong state — the "B 已删" setup below would not have happened,
+  // and the dialog assertion that follows would report a product failure for a broken setup.
+  const deleted = await page.evaluate(async ({ workspaceId }) => {
     const token = new URL(location.href).searchParams.get('token') ?? ''
-    await fetch(`${location.origin}/api/workspace/delete`, {
+    const response = await fetch(`${location.origin}/api/workspace/delete`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-dsh-token': token },
       body: JSON.stringify({
@@ -203,7 +208,16 @@ try {
         payload: { args: { request: { workspaceId } } },
       }),
     })
+    const text = await response.text()
+    let parsed = null
+    try { parsed = JSON.parse(text) } catch { /* reported through status */ }
+    return { status: response.status, ok: parsed?.result?.ok, error: parsed?.result?.error, text: text.slice(0, 200) }
   }, { workspaceId: wsB.id })
+  check('前置：删除 B 的注册成功', deleted.status === 200 && deleted.ok !== false,
+    `status=${String(deleted.status)} ok=${String(deleted.ok)} error=${JSON.stringify(deleted.error)}`)
+  if (deleted.status !== 200 || deleted.ok === false) {
+    throw new Error('the workspace/delete that this section depends on failed; the dialog assertion below would be meaningless')
+  }
   await page.waitForTimeout(1500)
   console.log(`  setBase(B 已删): ${await setBase({ mode: 'specified', path: wsB.path, name: 'B' })}`)
   await page.waitForTimeout(1500)
