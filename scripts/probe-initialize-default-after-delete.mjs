@@ -66,9 +66,8 @@ const url = await new Promise((resolve, reject) => {
   child.stderr.on('data', (chunk) => { out += chunk })
 })
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
-page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+let browser
+let page
 
 const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
   const token = new URL(location.href).searchParams.get('token') ?? ''
@@ -101,8 +100,10 @@ const listWorkspaces = () => page.evaluate(async () => {
   return (await response.text()).slice(0, 200)
 })
 
-let running = child
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
+  page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
 
@@ -165,6 +166,6 @@ try {
   console.log(`  用 create 重新注册后仍失效        : ${step5Undefined ? '✅ 仍失效 ⇒ 插件必须改用【按路径解析】' : '❌ 变成可用了（那就可以继续用 initializeDefault）'}`)
   console.log(`  新注册的 id 与原 id 相同吗        : ${createdView?.workspaceId === defaultId ? '⚠️ 相同' : '否（新 id，defaultWorkspaceId 指向旧 id 故永不匹配）'}`)
 } finally {
-  running.kill()
-  await browser.close()
+  child.kill()
+  if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }

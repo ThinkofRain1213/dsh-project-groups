@@ -59,9 +59,8 @@ const url = await new Promise((resolve, reject) => {
   child.stderr.on('data', (chunk) => { out += chunk })
 })
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
-page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+let browser
+let page
 
 const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
   const token = new URL(location.href).searchParams.get('token') ?? ''
@@ -83,8 +82,10 @@ const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
   return { status: response.status, text, value: parsed?.result?.value, ok: parsed?.result?.ok, error: parsed?.result?.error }
 }, { method, args })
 
-let running = child
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
+  page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
 
@@ -145,6 +146,6 @@ try {
     ? 'cwd 生效：该工作区可以重新积累会话（但旧会话仍不在其账下）'
     : 'cwd 未体现，需进一步核对'}`)
 } finally {
-  running.kill()
-  await browser.close()
+  child.kill()
+  if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }

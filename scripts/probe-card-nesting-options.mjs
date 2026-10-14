@@ -62,14 +62,15 @@ const url = await new Promise((resolve, reject) => {
   child.stderr.on('data', (chunk) => { out += chunk })
 })
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
+let browser
+let page
 const consoleMessages = []
 page.on('console', (message) => consoleMessages.push(`${message.type()}: ${message.text()}`))
 page.on('pageerror', (error) => consoleMessages.push(`pageerror: ${error.message}`))
 
-let running = child
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(6000)
 
@@ -194,6 +195,6 @@ try {
   console.log(`  含 nested/button 的消息: ${nesting.length}`)
   for (const message of nesting.slice(0, 8)) console.log(`    ${message}`)
 } finally {
-  running.kill()
-  await browser.close()
+  child.kill()
+  if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }

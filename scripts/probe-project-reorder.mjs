@@ -60,8 +60,8 @@ function boot(profile) {
   })
 }
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
+let browser
+let page
 await installRowKeyHelpers(page)
 const errors = []
 page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
@@ -112,6 +112,8 @@ const orderMode = () => page.evaluate(() => {
 
 let server
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
   server = await boot('pg')
   await page.goto(server.url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(6000)
@@ -206,7 +208,7 @@ try {
     server.child.kill()
     await new Promise(resolve => setTimeout(resolve, 4000))
   }
-  await browser.close()
+  if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)

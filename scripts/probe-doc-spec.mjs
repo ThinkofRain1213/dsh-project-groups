@@ -106,7 +106,6 @@ const openCard = async () => {
 const specsDir = join(dshHome, 'project-groups', 'specs')
 const storedSpecs = () => existsSync(specsDir) ? readdirSync(specsDir).sort() : []
 
-let running = child
 try {
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
@@ -1218,6 +1217,6 @@ try {
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`)
   await browser.close().catch(() => {})
-  running.kill()
+  child.kill()
   process.exit(failures.length === 0 ? 0 : 1)
 }

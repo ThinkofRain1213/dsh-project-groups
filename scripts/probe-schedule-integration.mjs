@@ -56,8 +56,8 @@ const url = await new Promise((resolve, reject) => {
   child.stderr.on('data', (chunk) => { out += chunk })
 })
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
+let browser
+let page
 const pageErrors = []
 const consoleErrors = []
 page.on('pageerror', (error) => pageErrors.push(error.message))
@@ -79,8 +79,9 @@ const dismiss = async () => {
   }
 }
 
-let running = child
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(9000)
   await dismiss()
@@ -128,6 +129,6 @@ try {
   console.log(`  启动级错误: ${pageErrors.length === 0 ? '✅ 无' : `❌ ${pageErrors.length} 个`}`)
   console.log(`  调度 UI 是否出现在同一侧栏: ${shape.scheduleButtons.length > 0 ? '✅ 是' : '（未发现可见入口；可能未启用该 bundle）'}`)
 } finally {
-  running.kill()
-  await browser.close()
+  child.kill()
+  if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }

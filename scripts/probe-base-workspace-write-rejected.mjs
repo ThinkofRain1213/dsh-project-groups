@@ -141,7 +141,6 @@ const storedBase = () => {
   }
 }
 
-let running = child
 try {
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
@@ -237,7 +236,7 @@ try {
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
 } finally {
-  running.kill()
+  child.kill()
   await browser.close()
 }
 process.exit(failures.length === 0 ? 0 : 1)

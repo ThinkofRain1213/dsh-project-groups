@@ -94,8 +94,8 @@ async function stop(child) {
   await new Promise(resolve => setTimeout(resolve, 4000))
 }
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
+let browser
+let page
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -122,6 +122,8 @@ const sections = () => page.evaluate(() => [...document.querySelectorAll('[data-
 
 let on
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
   // --- Phase 1: plugin ON, create a project and expand it -------------------
   console.log('=== phase 1: plugin on, create and expand a project ===')
   on = await boot('pg')
@@ -216,7 +218,7 @@ try {
     back !== undefined && ordersBack[back.key] !== undefined, JSON.stringify(Object.keys(ordersBack)))
 } finally {
   if (on?.child !== undefined && on.child.exitCode === null) await stop(on.child)
-  await browser.close()
+  if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)

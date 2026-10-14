@@ -50,9 +50,8 @@ const url = await new Promise((resolve, reject) => {
   child.stderr.on('data', (chunk) => { out += chunk })
 })
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
-page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+let browser
+let page
 
 const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
   const token = new URL(location.href).searchParams.get('token') ?? ''
@@ -115,6 +114,9 @@ const hostSessions = () => page.evaluate(async () => {
 
 let running = child
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
+  page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismiss()
@@ -249,5 +251,5 @@ try {
   console.log(`  重启后该会话仍渲染在侧栏: ${sessionRowPresent}`)
 } finally {
   running.kill()
-  await browser.close()
+  if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }

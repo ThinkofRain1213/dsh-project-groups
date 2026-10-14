@@ -62,9 +62,8 @@ const url = await new Promise((resolve, reject) => {
   child.stderr.on('data', (chunk) => { out += chunk })
 })
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
-page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+let browser
+let page
 
 /**
  * Call one RPC method over the same wire the client uses.
@@ -98,8 +97,10 @@ const parent = mkdtempSync(join(tmpdir(), 'dsh-dirprobe-'))
 const childName = `created-${Date.now().toString(36)}`
 const childPath = join(parent, childName)
 
-let running = child
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
+  page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(6000)
 
@@ -145,7 +146,7 @@ try {
     console.log(`  （已清理测试目录）`)
   }
 } finally {
-  running.kill()
+  child.kill()
   rmSync(parent, { recursive: true, force: true })
-  await browser.close()
+  if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }

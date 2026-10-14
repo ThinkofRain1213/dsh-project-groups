@@ -82,8 +82,8 @@ const stop = async (child) => {
 const domainPath = () => join(dshHome, 'storages', 'project_groups.json')
 const domain = async () => JSON.parse(await readFile(domainPath(), 'utf8'))
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
+let browser
+let page
 await installRowKeyHelpers(page)
 const logs = []
 page.on('pageerror', (error) => { logs.push(`pageerror: ${error.message}`) })
@@ -222,6 +222,8 @@ const blankOwner = async () => {
 
 let running
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
   // ── Phase 1: two empty projects, and a blank parked in the first. ──
   running = await boot()
   await page.goto(running.url, { waitUntil: 'networkidle', timeout: 60_000 })
@@ -292,7 +294,7 @@ try {
   console.log(`\nconsole errors: ${logs.length === 0 ? '(none)' : logs.slice(0, 5).join(' | ')}`)
 } finally {
   if (running !== undefined) running.child.kill()
-  await browser.close()
+  if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)

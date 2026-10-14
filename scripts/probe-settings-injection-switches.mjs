@@ -89,7 +89,6 @@ const storedGlobal = () => {
 /** The switch whose accessible name is `label`. */
 const switchFor = (label) => page.getByRole('switch', { name: label }).first()
 
-let running = child
 /**
  * A failure raised by the driver itself, as opposed to a check.
  *
@@ -181,6 +180,6 @@ try {
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`)
   await browser.close().catch(() => {})
-  running.kill()
+  child.kill()
   process.exit(failures.length === 0 ? 0 : 1)
 }

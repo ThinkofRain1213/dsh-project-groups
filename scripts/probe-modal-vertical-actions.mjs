@@ -58,9 +58,8 @@ const url = await new Promise((resolve, reject) => {
   child.stderr.on('data', (chunk) => { out += chunk })
 })
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
-page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+let browser
+let page
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -78,8 +77,10 @@ const dismiss = async () => {
   }
 }
 
-let running = child
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
+  page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismiss()
@@ -241,6 +242,6 @@ try {
     console.log(`     全宽可用 ${full.buttons[1].available}px ⇒ ${full.buttons[1].fits ? '充裕' : '仍不够'}`)
   }
 } finally {
-  running.kill()
-  await browser.close()
+  child.kill()
+  if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }

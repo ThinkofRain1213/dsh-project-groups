@@ -66,8 +66,8 @@ const url = await new Promise((resolve, reject) => {
 const origin = new URL(url).origin
 const token = new URL(url).searchParams.get('token') ?? ''
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
+let browser
+let page
 await installRowKeyHelpers(page)
 const logs = []
 page.on('console', (message) => { if (message.type() === 'error') logs.push(message.text()) })
@@ -197,6 +197,8 @@ const blankOwner = async () => {
 }
 
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(7000)
   await dismiss()
@@ -285,7 +287,7 @@ try {
   console.log(`\nconsole errors: ${logs.length === 0 ? '(none)' : logs.slice(0, 5).join(' | ')}`)
 } finally {
   child.kill()
-  await browser.close()
+  if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)

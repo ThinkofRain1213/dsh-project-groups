@@ -68,9 +68,8 @@ const url = await new Promise((resolve, reject) => {
   child.stderr.on('data', (chunk) => { out += chunk })
 })
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
-page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
+let browser
+let page
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
@@ -156,8 +155,10 @@ const openRenameDialog = async (title) => {
   return dialogWith('编辑项目')
 }
 
-let running = child
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
+  page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
   await dismiss()
@@ -250,7 +251,7 @@ try {
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
 } finally {
-  running.kill()
-  await browser.close()
+  child.kill()
+  if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
 process.exit(failures.length === 0 ? 0 : 1)

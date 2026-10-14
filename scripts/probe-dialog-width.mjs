@@ -125,7 +125,6 @@ const openEditDialog = async (title) => {
   return dialogWith('编辑项目')
 }
 
-let running = child
 let driverError
 try {
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
@@ -221,6 +220,6 @@ try {
   console.log('=== 结果 ===')
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`)
   await browser.close().catch(() => {})
-  running.kill()
+  child.kill()
   process.exit(failures.length === 0 ? 0 : 1)
 }

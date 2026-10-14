@@ -29,14 +29,16 @@ const reactDomSource = readFileSync('node_modules/react-dom/cjs/react-dom.develo
 // nesting — a false pass.
 const schedulerSource = readFileSync(process.env.PROBE_SCHEDULER ?? 'node_modules/scheduler/cjs/scheduler.development.js', 'utf8')
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
+let browser
+let page
 
 const logs = []
 page.on('console', (message) => logs.push(`${message.type()}: ${message.text()}`))
 page.on('pageerror', (error) => logs.push(`pageerror: ${error.message}`))
 
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
   // A blank document: nothing else can log, so every captured line belongs to React.
   await page.setContent('<!doctype html><html><body><div id="root"></div></body></html>')
 
@@ -173,5 +175,5 @@ try {
   console.log('  ⇒ 若 button>button 告警而 div>button 不告警，')
   console.log('     则"卡片用 div + role=radio"即可让按钮安然待在卡片内部。')
 } finally {
-  await browser.close()
+  if (browser !== undefined) await browser.close() // guarded: the launch is inside the try now
 }
