@@ -96,6 +96,15 @@
   transition-delay: 0s, 0s, 0s, 0s, 180ms;
 }
 
+/*
+ * `padding-left` is not listed here as a transitioned property, and neither rule sets it.
+ *
+ * Both `.searchSlot` and `.searchSlotExpanded` declared `padding-left: 0`, so the value never
+ * changed between the two states and `padding-left 180ms` could not animate anything — a dead
+ * transition entry that read as if spacing were involved. `0` is the initial value anyway, so
+ * removing it changes nothing; if spacing around the expanded search is ever wanted, the
+ * expanded rule needs a real non-zero value **and** the transition entry back.
+ */
 .searchSlot {
   flex: 1;
   max-width: 28px;
@@ -103,16 +112,13 @@
   display: flex;
   align-items: center;
   margin-left: auto;
-  padding-left: 0;
   box-sizing: border-box;
   transition:
-    max-width 180ms var(--ds-ease-in-out),
-    padding-left 180ms var(--ds-ease-in-out);
+    max-width 180ms var(--ds-ease-in-out);
 }
 
 .searchSlotExpanded {
   max-width: 100%;
-  padding-left: 0;
 }
 
 .headerActions {
@@ -158,11 +164,25 @@
   cursor: text;
   color: var(--dsw-alias-label-secondary);
   overflow: hidden;
+  /*
+   * `width` and `padding` only.
+   *
+   * Two entries were removed as dead:
+   *
+   *   - `background-color` — the base and `.searchExpanded` both say
+   *     `background: transparent`, and no `:hover` rule changes it, so the property never
+   *     changes value between the two states.
+   *   - `border-color` — the base is `border: none`, so no border is painted there and the
+   *     colour has nothing to interpolate into view; what actually changes is the border's
+   *     *style and width*, and neither is transitioned. The entry promised a fade the user
+   *     never saw.
+   *
+   * `border-radius` does change between the states (sm -> md) but is not transitioned; left
+   * alone rather than added, since that is a visual decision rather than a dead entry.
+   */
   transition:
     width 180ms var(--ds-ease-in-out),
-    padding 180ms var(--ds-ease-in-out),
-    border-color 180ms var(--ds-ease-in-out),
-    background-color 180ms var(--ds-ease-in-out);
+    padding 180ms var(--ds-ease-in-out);
 }
 
 .searchExpanded {
@@ -448,10 +468,23 @@
   margin-top: 4px;
 }
 
-.listTopDropIndicator,
+/*
+ * `content` is set apart from the rest of this shape because it applies to only two of the
+ * three selectors.
+ *
+ * `.listTopDropIndicator` is a real `<span>` in the tree; `::before` and `::after` are
+ * pseudo-elements and need `content` to be generated at all. Sharing one block declared a
+ * property that one of its members silently ignores, which is the kind of thing that reads as
+ * meaningful and is not.
+ */
 .workspaceDropBefore::before,
 .workspaceDropAfter::after {
   content: '';
+}
+
+.listTopDropIndicator,
+.workspaceDropBefore::before,
+.workspaceDropAfter::after {
   position: absolute;
   z-index: 1;
   left: 0;

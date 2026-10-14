@@ -95,10 +95,19 @@
   color: var(--dsw-alias-label-secondary);
 }
 
-/* Compact one-line Workspace row after removing the session-count subtitle. */
+/*
+ * A compact one-line Workspace row, after the session-count subtitle was removed.
+ *
+ * This **overrides the shared base at the top of this file** (`.projectRow, .sessionRow`),
+ * so it has to stay after it: `height` and `box-sizing` are not in the base, and the row's
+ * metrics depend on that cascade order. Recorded because it was silent — reordering or
+ * splitting these blocks would change the rendering with nothing in the file saying so.
+ *
+ * `align-items: center` used to be repeated here. It is already in the base, so it was doing
+ * nothing but making the override look larger than it is.
+ */
 .projectRow {
   height: 34px;
-  align-items: center;
   box-sizing: border-box;
 }
 
@@ -106,7 +115,14 @@
   height: 20px;
 }
 
-/* Session cell (figma): pad 8, a 16px status slot, then a 4px title gap. */
+/*
+ * Session cell (figma): pad 8, a 16px status slot, then a 4px title gap.
+ *
+ * `gap: 0` overrides the shared base's `gap: 6px`, so this rule must stay after it — the same
+ * order dependency the `.projectRow` override above documents. The cell carries its own
+ * spacing (see `.sessionRow .title`), which is why the row-level gap is zeroed rather than
+ * shared with the project row.
+ */
 .sessionRow {
   height: 32px;
   gap: 0;
@@ -131,7 +147,10 @@
   width: 1px;
   height: 1px;
   overflow: hidden;
-  clip: rect(0 0 0 0);
+  /* `clip-path` rather than the legacy `clip: rect(0 0 0 0)`, which is deprecated and needs
+   * `position: absolute` to have any effect. `inset(50%)` clips the same box and is the
+   * current form of this pattern. */
+  clip-path: inset(50%);
   white-space: nowrap;
 }
 
@@ -197,7 +216,14 @@
    (data-scrolled), the right while text still remains beyond the cell
    (data-clipped) — at the far edge the right fade lifts so the final character
    reads at full strength. The mask rides the title span itself, so the status
-   slot and every other leading cell keep their full color. */
+   slot and every other leading cell keep their full color.
+
+   No `-webkit-mask-image` alongside, and that is a checked decision rather than an
+   oversight. The build compiles this file with `lightningcss` **without `targets`**, so it
+   adds no prefixes (confirmed: `lib/client.js` carries `mask-image` alone) — and none is
+   needed, because this CSS is injected into the DSH renderer only. That is Electron 44,
+   whose Chromium is far past 120, the release that shipped unprefixed `mask-image` for
+   Chromium. A prefixed twin here would be a line no target reads. */
 .sessionRow .title[data-scrolled] {
   mask-image: linear-gradient(to right, transparent, #000 12px);
 }
