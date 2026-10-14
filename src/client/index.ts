@@ -258,7 +258,6 @@ const projectActions: ProjectActions = {
     if (model === undefined) return null
     return await model.defaultWorkspacePath()
   },
-  // `rebuildBaseWorkspace` is wired below by step 3b.
   rebuildBaseWorkspace: async () => {
     // `requireModel`, not the guarded read used by the other verbs: the dialog's runner catches a
     // rejection and shows it, so a model that has not started must surface as an error there rather

@@ -101,8 +101,14 @@ export const zh = {
   // live in one contiguous block so a re-sync can re-add them mechanically.
   'baseMissing.title': '底层工作区缺失',
   'baseMissing.body': '它是本插件所有会话的落脚点，缺失时无法新建会话。',
-  'baseMissing.path': '当前：{path}',
-  'baseMissing.pathUnknown': '当前：默认工作区（路径未知）',
+  // `缺失：` rather than the `当前：` that used to be here. The English said `Missing:`, so the
+  // two locales told the user different things about the same state — and the dialog's whole
+  // subject is a *missing* Workspace (`baseMissing.title`, `baseMissing.body`), which the
+  // Chinese wording contradicted. Aligned to the English meaning rather than the reverse.
+  // It reads correctly in both stages: the report names the path that is gone, and the
+  // confirmation repeats it as the path about to be re-created.
+  'baseMissing.path': '缺失：{path}',
+  'baseMissing.pathUnknown': '缺失：默认工作区（路径未知）',
   'baseMissing.rebuild': '重建该工作区',
   'baseMissing.respecify': '重新指定底层工作区',
   // The confirmation stage. Its own keys rather than reusing `create`/`cancel`, because the
@@ -141,6 +147,18 @@ export const zh = {
   'row.archived': '已归档',
   'row.pinned': '已置顶',
   'toast.archivedNotOpenable': '已归档对话暂时无法查看，请取消归档后查看',
+  // The archived notice is assembled from fragments, and the whitespace in them is load-bearing.
+  //
+  // `Toast` takes `text: string` plus actions of `{ prefix, label }`, and renders them flowing as
+  // one sentence — that is the primitive's contract, not a workaround, so a single parameterized
+  // sentence with inline links is not expressible here. What follows is that the concatenation
+  // depends on the spacing embedded in these values: `toast.archived` must end with the space (or
+  // punctuation) that precedes the first action, and `toast.archivedOr` must carry its own
+  // surrounding spaces in English while Chinese needs none.
+  //
+  // So these four are one unit. Do not trim or normalize them, and do not reorder them without
+  // re-reading the assembled sentence — `verify-locales.mjs` assembles it for both languages and
+  // asserts the result, which is what turns a silent break into a failing check.
   'toast.archived': '会话已归档，可',
   'toast.stoppedAndArchived': '已停止并归档，可',
   'archive.confirm.title': '停止并归档此会话？',
@@ -216,8 +234,8 @@ export const en = {
   'section.sessions': 'Sessions',
   'viewOptions.label': 'View options',
   'groupBy.label': 'Group by',
-  'groupBy.workspace': 'WorkSpace',
-  'groupBy.workspaceTree': 'Workspace Tree',
+  'groupBy.workspace': 'Workspace',
+  'groupBy.workspaceTree': 'Workspace tree',
   'groupBy.flat': 'In one list',
   'orderBy.label': 'Order by',
   'orderBy.manual': 'Manual',
@@ -303,6 +321,10 @@ export const en = {
   'row.archived': 'Archived',
   'row.pinned': 'Pinned',
   'toast.archivedNotOpenable': 'Archived sessions cannot be opened. Unarchive it to view.',
+  // Fragment assembly with load-bearing whitespace — see the note on the Chinese dictionary's
+  // `toast.archived` above for why a single parameterized sentence is not expressible through
+  // this primitive's API. Note the asymmetry the note warns about: English needs the trailing
+  // space here and spaces around `toast.archivedOr`, while the Chinese fragments need neither.
   'toast.archived': 'Session archived. You can ',
   'toast.stoppedAndArchived': 'Session stopped and archived. You can ',
   'archive.confirm.title': 'Stop and archive this session?',

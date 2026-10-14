@@ -239,7 +239,7 @@ export interface ProjectActions {
    */
   placeUnscopedSession?: ((input: UnscopedPlacement) => void) | undefined
   /**
-   * Derive the official default Workspace's directory, for the missing-基层工作区
+   * Derive the official default Workspace's directory, for the missing-底层工作区
    * dialog's copy.
    *
    * The region cannot do this itself: the path begins at the OS Documents folder,
@@ -515,7 +515,7 @@ export function apply(
   // its bound hook.
   const renameRequest = derive(shortcutControls.state, state => state.renameTarget)
   const archiveRequest = createSnapshotStore<SessionArchiveConfirmRequest | null>(null)
-  // The missing-基层工作区 report. Its own store rather than a toast: the toast is a
+  // The missing-底层工作区 report. Its own store rather than a toast: the toast is a
   // passing notice, while this needs three decisions and must stay until one is made.
   const baseWorkspaceRequest = createSnapshotStore<BaseWorkspaceMissingRequest | null>(null)
   const requestSessionRename = shortcutControls.rename

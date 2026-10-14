@@ -125,6 +125,47 @@ compare({
   sourceFiles: srcFiles,
 })
 
+// The archived notice is assembled from four locale fragments at render time.
+//
+// `Toast` takes `text: string` and actions of `{ prefix, label }`, rendering them flowing as one
+// sentence — so this is the primitive's contract and a single parameterized sentence is not
+// expressible here. The consequence is that the concatenation depends on whitespace embedded in
+// the **data**: English needs a trailing space on `toast.archived` and spaces around
+// `toast.archivedOr`, Chinese needs neither.
+//
+// Nothing about reading one key reveals whether that spacing is right, and trimming or
+// reordering the fragments breaks the sentence silently. Asserting the assembled result is what
+// makes it visible. Imported rather than parsed from source (unlike the checks above) because
+// `locales.ts` imports nothing — it is a plain object literal — so it loads without the client
+// bundle the comment at the top of this file is avoiding.
+{
+  const { zh: browserZh, en: browserEn } = await import('../src/vendored/client/locales.ts')
+  const assemble = (dict, textKey) => [
+    dict[textKey], dict['toast.archivedUndo'], dict['toast.archivedOr'], dict['toast.archivedFilter'],
+  ].join('')
+
+  check('浏览器: 归档提示拼出的中文句子通顺',
+    assemble(browserZh, 'toast.archived') === '会话已归档，可撤销或筛选已归档会话',
+    assemble(browserZh, 'toast.archived'))
+  check('浏览器: 归档提示拼出的英文句子通顺',
+    assemble(browserEn, 'toast.archived') === 'Session archived. You can undo or filter archived sessions',
+    assemble(browserEn, 'toast.archived'))
+  // The sibling notice shares the three action fragments, so it needs the same check rather
+  // than being assumed to follow.
+  check('浏览器: 停止并归档的英文句子通顺',
+    assemble(browserEn, 'toast.stoppedAndArchived')
+      === 'Session stopped and archived. You can undo or filter archived sessions',
+    assemble(browserEn, 'toast.stoppedAndArchived'))
+  check('浏览器: 停止并归档的中文句子通顺',
+    assemble(browserZh, 'toast.stoppedAndArchived') === '已停止并归档，可撤销或筛选已归档会话',
+    assemble(browserZh, 'toast.stoppedAndArchived'))
+  // A doubled space is the specific way this goes wrong after an edit, and it survives a
+  // sentence-level read of the source.
+  for (const [label, sentence] of [['zh', assemble(browserZh, 'toast.archived')], ['en', assemble(browserEn, 'toast.archived')]]) {
+    check(`浏览器: ${label} 片段拼接后无双空格`, !sentence.includes('  '), JSON.stringify(sentence))
+  }
+}
+
 console.log('')
 console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`)
 process.exit(failures.length === 0 ? 0 : 1)

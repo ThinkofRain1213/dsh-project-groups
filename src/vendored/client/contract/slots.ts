@@ -680,14 +680,23 @@ export type BaseWorkspaceRoute =
   | { readonly kind: 'official' }
 
 /**
- * Missing-基层工作区 dialog share: the pending report, its dismissal, and the two
+ * Missing-底层工作区 dialog share: the pending report, its dismissal, and the two
  * repairs.
  *
  * Both repairs are **optional**, and that is what lets the dialog ship before the
  * features behind them: with a callback absent, its button renders disabled rather
- * than pretending to act. `chooseBaseWorkspace` is wired by step 3a (it navigates to
- * the settings card and asks its chooser to open); `rebuildBaseWorkspace` still awaits
- * step 3b's Host-side directory creation.
+ * than pretending to act.
+ *
+ * Both are wired now. `chooseBaseWorkspace` navigates to the settings card and asks
+ * its chooser to open; `rebuildBaseWorkspace` is implemented end to end — the Host's
+ * `rebuildBaseWorkspace` Remote, `ProjectModel.rebuildBaseWorkspace`, and the
+ * `projectActions` entry injected here.
+ *
+ * (This comment used to say `rebuildBaseWorkspace` "still awaits step 3b's Host-side
+ * directory creation", which was true when it was written and was not updated when the
+ * step landed. A reader would have taken the optional type as evidence the verb was
+ * pending, which is the opposite of what the type means: optional here is about
+ * composition, not about work outstanding.)
  */
 export interface BaseWorkspaceDialogInjected {
   hooks: {
@@ -696,7 +705,7 @@ export interface BaseWorkspaceDialogInjected {
   }
   /** Consume or cancel the pending report. */
   settleBaseWorkspaceMissing: () => void
-  /** Create the missing Workspace again; absent until the rebuild lands. */
+  /** Create the missing Workspace again. */
   rebuildBaseWorkspace: (() => Promise<void>) | undefined
   /**
    * Take the user to the settings card and open its chooser.
@@ -707,7 +716,7 @@ export interface BaseWorkspaceDialogInjected {
   chooseBaseWorkspace: (() => void) | undefined
 }
 
-/** Props of the missing-基层工作区 dialog entry in `shell.overlay`. */
+/** Props of the missing-底层工作区 dialog entry in `shell.overlay`. */
 export type BaseWorkspaceDialogProps =
   PropsRuntime<'shell.overlay'>
   & PropsLocale<'workspace'>
