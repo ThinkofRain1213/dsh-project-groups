@@ -29,6 +29,18 @@ interface WorkspaceShortcutControls {
 }
 
 /**
+ * The command ids this tree registers.
+ *
+ * Declared here so `register` can be typed against them instead of `string`. The parameter
+ * was `string` and the value was cast to `ShortcutCommandId` on the way in, which meant the
+ * cast asserted membership in a set nothing checked — any typo compiled. Listing them makes
+ * a wrong id a compile error.
+ */
+type OwnShortcutId =
+  | 'session.new' | 'session.search' | 'workspace.add'
+  | 'session.rename' | 'session.fork' | 'session.archive'
+
+/**
  * Create the private browser request source shared by commands and controls.
  * @returns observable state and its complete mutation callbacks.
  */
@@ -39,19 +51,49 @@ export function createWorkspaceShortcutControls(): WorkspaceShortcutControls {
   let forkErrorSeq = 0
   return {
     state,
-    search: () => { state.set({ ...state.getSnapshot(), searchRequest: state.getSnapshot().searchRequest + 1 }) },
-    add: () => { state.set(state.getSnapshot().directoryBusy ? state.getSnapshot() : { ...state.getSnapshot(), addRequested: true }) },
-    closeAdd: () => { state.set({ ...state.getSnapshot(), addRequested: false }) },
-    directoryBusy: (busy: boolean) => { state.set({ ...state.getSnapshot(), directoryBusy: busy }) },
-    rename: (sessionId: SessionId, currentTitle: string) => {
-      state.set({ ...state.getSnapshot(), renameTarget: { sessionId, currentTitle } })
+    search: () => {
+      // One snapshot per mutation. Calling `getSnapshot()` twice — once to read
+      // `searchRequest` and once to spread — reads two different objects if the store is
+      // not strictly synchronous, and the second read can already carry another writer's
+      // change, so the increment would be computed from a stale base and then applied over
+      // a newer one. Reading once and deriving everything from it makes the mutation a
+      // function of one observation.
+      const before = state.getSnapshot()
+      state.set({ ...before, searchRequest: before.searchRequest + 1 })
     },
-    closeRename: () => { state.set({ ...state.getSnapshot(), renameTarget: null }) },
+    add: () => {
+      // Three reads collapsed to one, for the same reason. This was also the worst of the
+      // three: the condition and the value spread were separate observations, so a store
+      // that answered differently between them could test `directoryBusy` on one snapshot
+      // and write based on another.
+      const before = state.getSnapshot()
+      state.set(before.directoryBusy ? before : { ...before, addRequested: true })
+    },
+    closeAdd: () => {
+      const before = state.getSnapshot()
+      state.set({ ...before, addRequested: false })
+    },
+    directoryBusy: (busy: boolean) => {
+      const before = state.getSnapshot()
+      state.set({ ...before, directoryBusy: busy })
+    },
+    rename: (sessionId: SessionId, currentTitle: string) => {
+      const before = state.getSnapshot()
+      state.set({ ...before, renameTarget: { sessionId, currentTitle } })
+    },
+    closeRename: () => {
+      const before = state.getSnapshot()
+      state.set({ ...before, renameTarget: null })
+    },
     forkFailed: (reason) => {
       forkErrorSeq += 1
-      state.set({ ...state.getSnapshot(), forkError: { reason, seq: forkErrorSeq } })
+      const before = state.getSnapshot()
+      state.set({ ...before, forkError: { reason, seq: forkErrorSeq } })
     },
-    dismissForkError: () => { state.set({ ...state.getSnapshot(), forkError: null }) },
+    dismissForkError: () => {
+      const before = state.getSnapshot()
+      state.set({ ...before, forkError: null })
+    },
   }
 }
 
@@ -75,15 +117,31 @@ export function installWorkspaceShortcuts(
   const t = ctx.locale.bind('workspace')
   const current = () => Object.values(ctx.sessions.list.getSnapshot().byId)
     .find(row => (row.retainedBy.mainView ?? 0) > 0)
-  const addReason = () => ctx.slots.entries('sidebar.workspaces.directoryFlow').length === 0
-    ? t('shortcut.noPicker')
-    : controls.state.getSnapshot().directoryBusy ? t('shortcut.directoryBusy') : null
-  const register = (id: string, label: () => string, aliases: string[], code: string,
+  const addReason = (): string | null => {
+    if (ctx.slots.entries('sidebar.workspaces.directoryFlow').length === 0) return t('shortcut.noPicker')
+    if (controls.state.getSnapshot().directoryBusy) return t('shortcut.directoryBusy')
+    return null
+  }
+  // The ids this tree registers. `ShortcutCommandId` upstream is `Branded<'ShortcutCommandId'>`
+  // — a purely nominal type with no constructor — so a string literal cannot be assigned to
+  // it directly and a cast is unavoidable at the boundary. Narrowing the parameter to this
+  // union is what makes the cast safe: it was previously typed `string`, which accepted any
+  // value at all and then *asserted* it was a valid id, so a typo would have compiled and
+  // registered a command nobody could invoke. Registering an id outside this list is now a
+  // compile error at the call site instead of a silent no-op.
+  const register = (id: OwnShortcutId, label: () => string, aliases: string[], code: string,
     modifiers: ('primary' | 'alt' | 'shift')[], webModifiers: ('primary' | 'alt' | 'shift')[], resolve: ShortcutCommand['resolve']): void => {
     ctx.effect(() => ctx.shortcuts.register({
       id: id as ShortcutCommandId, label, aliases, defaults: {
         'desktop:macos': { code, modifiers }, 'desktop:windows': { code, modifiers }, 'desktop:linux': { code, modifiers },
-        'web:macos': { code, modifiers: webModifiers }, 'web:windows': { code, modifiers: webModifiers },
+        // `web:linux` alongside the other two: the desktop entries cover three platforms,
+        // and the web defaults covered only macOS and Windows, so a browser on Linux fell
+        // through to no binding at all and the command was unreachable there.
+        // (`ShortcutProfile` is `` `${ShortcutRuntime}:${ShortcutPlatform}` ``, and
+        // `ShortcutPlatform` includes `'linux'`.)
+        'web:macos': { code, modifiers: webModifiers },
+        'web:windows': { code, modifiers: webModifiers },
+        'web:linux': { code, modifiers: webModifiers },
       },
       regions: ['page', 'editable'], modals: [], resolve,
     }), `ui-workspace: ${id}`)
@@ -133,11 +191,27 @@ export function installWorkspaceShortcuts(
       })
     } }
   })
-  register('session.archive', () => t('menu.archiveSession'), ['archive session'], 'KeyA', ['primary', 'shift'], ['primary', 'alt'], () => {
+  register('session.archive', () => t('menu.archiveSession'), ['archive session'], 'KeyA', ['primary', 'shift'], ['primary', 'alt'], (context) => {
     const target = current()
-    return target === undefined ? { status: 'blocked', reason: t('shortcut.noSession') }
-      : { status: 'handled', run: () => {
-        archiveSession(target.id)
-      } }
+    if (target === undefined) return { status: 'blocked', reason: t('shortcut.noSession') }
+    // The same obscuring gate `session.rename` applies. The review asked whether the
+    // asymmetry was intentional; it does not appear to be. Both commands act on the
+    // session `current()` derives from `retainedBy.mainView`, and both end up opening a
+    // dialog over the list (`rename` sets `renameTarget`; `archiveSession` sets
+    // `archiveRequest` for the running-work confirmation), so neither can be said to work
+    // "without needing to see the row". Rename refused in this situation and archive did
+    // not, which let the same keystroke reach a destructive action that its non-destructive
+    // analogue declined to take.
+    //
+    // `blank` is deliberately **not** checked here, unlike rename: the original archive
+    // path had no such check and the review did not raise one, so only the guards it asked
+    // about were added. Changing that too would be a second behaviour decision beyond what
+    // was reported.
+    if (context.modal !== null || ctx.layout.panelInfo.getSnapshot().activePanelId !== null) {
+      return { status: 'blocked', reason: t('shortcut.noSession') }
+    }
+    return { status: 'handled', run: () => {
+      archiveSession(target.id)
+    } }
   })
 }

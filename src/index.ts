@@ -665,19 +665,14 @@ export class ProjectController extends TypertRemoteService {
   }
 
   /**
-   * Write the global singleton, changing only the fields given.
-   *
-   * `Domain.global.set` replaces the whole value rather than merging into it, so
-   * every writer must spread what is already stored. Routing them all through
-   * here means a writer cannot drop a field it does not know about — which is
-   * exactly what the type checker caught when `newSessionTarget` was added to a
-   * singleton three existing call sites were writing whole.
-   * @param domain - the open domain.
-   * @param patch - the fields to change.
-   */
-  /**
    * Merge a patch into the global record, serialized against every other global
    * write.
+   *
+   * `Domain.global.set` replaces the whole value rather than merging into it, so every
+   * writer must spread what is already stored. Routing them all through here means a writer
+   * cannot drop a field it does not know about — which is exactly what the type checker
+   * caught when `newSessionTarget` was added to a singleton three existing call sites were
+   * writing whole.
    *
    * The read and the write are one critical section: `get()` runs only after the
    * previous write in the chain has settled, so no two overlapping callers can
@@ -1222,20 +1217,32 @@ export class ProjectController extends TypertRemoteService {
 
   /**
    * File one Session under one project, replacing any previous assignment.
+   *
+   * ## Why this runs inside `operate`
+   *
+   * The project-existence check and the assignment write have to be one critical section
+   * against `remove`. Written outside it, a concurrent delete could sweep this project's
+   * assignments and clear `pendingMutation` between the check and the `put`; the assignment
+   * would then land after the sweep and survive as a durable record pointing at a project
+   * that no longer exists. `recoverPendingMutation` cannot repair that afterwards, because
+   * the marker naming the interrupted delete is already gone — so the orphan is permanent
+   * and the Session stays filed nowhere.
    * @param request - Session and target project.
    * @returns the landed assignment.
    */
   @Remote('assign')
   async assign(request: ProjectAssignRequest): Promise<ProjectAssignmentValue> {
     const domain = await this.ready()
-    if (domain.table('projects').get(request.projectId) === undefined) {
-      throw new Error(`unknown project: ${request.projectId}`)
-    }
-    await domain.table('assignments').put(request.sessionId, {
-      projectId: request.projectId,
-      assignedAt: new Date().toISOString(),
+    return await this.operate(domain, async () => {
+      if (domain.table('projects').get(request.projectId) === undefined) {
+        throw new Error(`unknown project: ${request.projectId}`)
+      }
+      await domain.table('assignments').put(request.sessionId, {
+        projectId: request.projectId,
+        assignedAt: new Date().toISOString(),
+      })
+      return { sessionId: request.sessionId, projectId: request.projectId }
     })
-    return { sessionId: request.sessionId, projectId: request.projectId }
   }
 
   /**
@@ -1514,7 +1521,10 @@ export class ProjectController extends TypertRemoteService {
   ): Promise<ProjectProjectDocSpecValue> {
     const domain = await this.ready()
     const record = domain.table('projects').get(request.projectId)
-    if (record === undefined) throw new Error(`no such project: ${request.projectId}`)
+    // `unknown project`, matching the six other lookups in this file: the wording had
+    // drifted to `no such project` here, so a Client or test matching on the message had
+    // to know both spellings for one failure.
+    if (record === undefined) throw new Error(`unknown project: ${request.projectId}`)
     // The shared guard. It is what lets `'none'` and `'default'` through: they are
     // semantic values, not file names, so `isSafeSpecName`'s `.md` requirement must
     // not apply — and `'default'` being refused here meant the dropdown's 默认 row
@@ -1852,22 +1862,51 @@ export class ProjectController extends TypertRemoteService {
       wake = undefined
       pending?.()
     }
-    const refresh = async (): Promise<void> => {
-      try {
-        frames.push({ type: 'baseline', value: await this.baseline() })
-        push()
-      } catch (error) {
-        // `onChanged` fires this without awaiting it, so an escaped rejection here would
-        // be an unhandled rejection and the follower would silently miss that frame.
-        // Logged rather than swallowed: a baseline that keeps failing is a real fault,
-        // and the next `domain/changed` will try again.
-        console.warn('dsh-project-groups: failed to project a follow frame', error)
+    // Refreshes are serialized **and coalesced**: at most one is pending, and a burst of
+    // changes produces one projection rather than one per write.
+    //
+    // `onChanged` fires per `domain/changed`, and a burst is normal — dragging a row issues
+    // one write per changed project — so the earlier shape called this several times in
+    // quick succession. Two problems followed. Each call awaits `this.baseline()`, which
+    // does filesystem I/O (`listUploadedSpecs` reads the uploads directory), so a burst
+    // re-read that directory once per write. And because they were not ordered, a slower,
+    // older projection could push *after* a newer one and the Client would briefly revert
+    // to stale state before the next frame corrected it.
+    //
+    // Coalescing fixes both: while a refresh runs, later requests set a flag instead of
+    // queueing another projection, and one more runs afterwards to pick up whatever landed
+    // meanwhile. The final state is always the latest baseline — which is what a
+    // full-projection frame is for — so dropping the intermediate ones loses nothing.
+    let refreshing = false
+    let refreshAgain = false
+    const refresh = (): void => {
+      if (refreshing) {
+        refreshAgain = true
+        return
       }
+      refreshing = true
+      void (async () => {
+        try {
+          do {
+            refreshAgain = false
+            frames.push({ type: 'baseline', value: await this.baseline() })
+            push()
+          } while (refreshAgain && !signal.aborted)
+        } catch (error) {
+          // `onChanged` fires this without awaiting it, so an escaped rejection here would
+          // be an unhandled rejection and the follower would silently miss that frame.
+          // Logged rather than swallowed: a baseline that keeps failing is a real fault,
+          // and the next `domain/changed` will try again.
+          console.warn('dsh-project-groups: failed to project a follow frame', error)
+        } finally {
+          refreshing = false
+        }
+      })()
     }
     yield { type: 'baseline', value: await this.baseline() }
 
     await this.ready()
-    const onChanged = (): void => { void refresh() }
+    const onChanged = (): void => { refresh() }
     this.followers.add(onChanged)
     const leave = (): void => {
       this.followers.delete(onChanged)
