@@ -19,3 +19,14 @@
 # of this repository complete, and the next person to wonder why `src/vendored`
 # is missing from the graph should find this comment instead of re-deriving it.
 !src/vendored/
+
+# `scripts/` is **first-party source** here too, and the built-in skip list drops it in every
+# filtered mode (`fast` and `moderate` both report it under `excluded.dirs`, with identical node
+# counts, so it is a skip-list rule rather than a per-mode pattern).
+#
+# That is 452 of the review's 641 findings — every `verify-*.mjs`, every `probe-*.mjs`, and
+# `scripts/lib/` — invisible to the graph. The harness is not vendored or generated: it is the
+# repository's own test surface, it is typed, and it is where the largest single batch of review
+# findings lives. Same reasoning as `src/vendored/` above, and the same negation shape: the
+# directory itself, because a skipped parent is pruned before its children are visited.
+!scripts/
