@@ -25,7 +25,10 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
   console.error('usage: node probe-base-workspace-respecify.mjs <dshExe> <asarRoot> <dshHome> [profile]')
   process.exit(2)
 }
-const PORT = profile === 'pg' ? 17985 : 17986
+// Overridable, because a port already in use makes the server fail to bind and the probe then
+// reports only a generic boot timeout — with the number buried in this file, re-running on a busy
+// machine meant editing it.
+const PORT = Number(process.env.DSH_PROBE_PORT ?? (profile === 'pg' ? 17985 : 17986))
 const BIN = `${asarRoot}\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js`
 
 /**
@@ -52,7 +55,15 @@ const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 let out = ''
-const url = await new Promise((resolve, reject) => {
+// The boot await is guarded so a rejection kills the child before it escapes.
+//
+// It sits above the `try/finally` below (that one is opened after the helper definitions, which
+// close over `page`), so a boot timeout or a failed launch used to reject straight out of the
+// module and leave the spawned Host running on the probe's port — the leaked-process failure the
+// rest of the suite was fixed for. Killing here covers every rejection path from the boot alone.
+let url
+try {
+  url = await new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
   // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to
   // stdout, so without this handler the promise stayed pending until the 120 s timeout and
@@ -68,7 +79,13 @@ const url = await new Promise((resolve, reject) => {
     if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
   })
   child.stderr.on('data', (chunk) => { out += chunk })
-})
+  })
+} catch (error) {
+  // Every boot rejection path kills the child before rethrowing: a leaked Host would hold the
+  // probe's port and poison the next run.
+  child.kill()
+  throw error
+}
 
 let browser
 let page
@@ -135,6 +152,17 @@ try {
   const initial = await rpc('workspace/initializeDefault', {})
   const workspace = initial?.workspace ?? null
   console.log(`  默认工作区: ${String(workspace?.path)}`)
+  // Asserted before the first dereference.
+  //
+  // `workspace` is typed nullable, and the line below used to read `workspace.workspaceId`
+  // unguarded — so an unexpected reply shape killed the probe with an opaque
+  // `Cannot read properties of null` instead of a named failed check. Thrown rather than only
+  // recorded, so the `finally` still kills the Host and the run stops here instead of measuring
+  // every later section against a state it never established.
+  check('前置：默认工作区已解析', workspace !== null, JSON.stringify(initial ?? null))
+  if (workspace === null) {
+    throw new Error('workspace/initializeDefault returned no workspace, so this section cannot run')
+  }
   // A second Workspace, so the chooser has something to list once the default's registration is
   // gone. Without it the isolated profile ends up with an **empty** registry and the chooser
   // correctly shows 「暂无工作区」 — which is a different assertion, not this one.
