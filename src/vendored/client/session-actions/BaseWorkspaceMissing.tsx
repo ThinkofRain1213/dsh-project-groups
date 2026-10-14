@@ -88,27 +88,57 @@ function BaseWorkspaceMissingForm({ request, settle, rebuild, choose, t }: {
   const [error, setError] = useState<string | null>(null)
   const [stage, setStage] = useState<Stage>('report')
   const confirmRef = useRef<HTMLButtonElement>(null)
+  const reportPrimaryRef = useRef<HTMLButtonElement>(null)
+  /** Skips the mount pass so `Modal`'s own `data-modal-autofocus` keeps initial focus. */
+  const stageMounted = useRef(false)
 
   // `Modal` focuses `data-modal-autofocus` in an effect keyed on `[dialog, open]`, so a stage switch
-  // does not re-run it.
+  // does not re-run it: this effect is what moves focus across the switch.
   //
-  // Measured, because the obvious reasoning is wrong: this is **not** currently load-bearing. Both
-  // stages render `<div><Button/><Button/>…</div>`, so React reconciles by position and the first
-  // button is the *same DOM element* across the switch — marked it in one stage and found the mark
-  // on the other, still focused — and the browser keeps focus on an element that was never replaced.
-  // Removing this effect does not fail the probe today.
+  // It is written to be **load-bearing rather than incidental**. As originally measured it was not:
+  // both stages render `<div><Button/><Button/>…</div>`, so React reconciles by position, the first
+  // button is the *same DOM element* across the switch, and the browser simply keeps focus on it —
+  // removing the effect did not fail the probe. That made correctness depend on positional
+  // reconciliation in a branch this one does not control: reorder a footer, wrap one in a fragment,
+  // or give the primary action a different position, and the reuse stops and focus silently falls to
+  // nothing.
   //
-  // It stays as insurance against exactly that fragile structure: reorder the two stages' footers,
-  // wrap one in a fragment, or give the primary action a different position, and the reuse stops and
-  // focus silently falls to nothing. The cost is one effect that is a no-op in the current layout.
+  // So it now names a target per stage and focuses it explicitly in both directions, which is
+  // independent of whether React reuses the element. The mount pass is skipped so the modal's own
+  // autofocus still decides where focus starts.
   useEffect(() => {
+    if (!stageMounted.current) {
+      stageMounted.current = true
+      return
+    }
     if (stage === 'confirm') confirmRef.current?.focus()
+    else reportPrimaryRef.current?.focus()
   }, [stage])
 
   const run = (action: () => Promise<void>): void => {
     setBusy(true)
     setError(null)
-    action().then(() => {
+    // The invocation itself is guarded, not just the promise it returns.
+    //
+    // `action` is injected and typed `() => Promise<void>`, but a type is not a runtime
+    // guarantee: an implementation that throws synchronously — before it ever returns a
+    // promise — would escape `run` entirely, because `.then`/`.catch` were only attached
+    // *after* the call. Neither `setBusy(false)` nor `setError(...)` would run, leaving
+    // the dialog permanently disabled in its busy state with no explanation.
+    //
+    // Written as a `try` around the call rather than `Promise.resolve().then(action)` so
+    // the action still starts synchronously, exactly as before; only the failure path
+    // changes. `Promise.resolve` then covers the case where the implementation returns a
+    // non-promise anyway, which the type says cannot happen and a runtime can still do.
+    let started: Promise<void>
+    try {
+      started = Promise.resolve(action())
+    } catch (reason: unknown) {
+      setBusy(false)
+      setError(reason instanceof Error ? reason.message : String(reason))
+      return
+    }
+    started.then(() => {
       setBusy(false)
       // Only a completed repair closes the dialog. A dialog that closed on a failed
       // rebuild would leave the user back where they started, with no explanation.
@@ -132,6 +162,18 @@ function BaseWorkspaceMissingForm({ request, settle, rebuild, choose, t }: {
     }
     settle()
   }
+
+  // Hoisted rather than written twice. Both stages must name the same directory — the
+  // confirm stage repeats it deliberately, because the confirmation is about *which*
+  // directory is created — and two verbatim copies could drift apart, which would make the
+  // two stages disagree about the one thing the user is being asked to check.
+  const pathNotice = (
+    <p className={browserCss.baseMissingPath} role="note">
+      {request.path === null
+        ? t('baseMissing.pathUnknown')
+        : t('baseMissing.path', { path: request.path })}
+    </p>
+  )
 
   return (
     <Modal
@@ -158,6 +200,7 @@ function BaseWorkspaceMissingForm({ request, settle, rebuild, choose, t }: {
         : (
           <div className={browserCss.baseMissingActions}>
             <Button
+              ref={reportPrimaryRef}
               variant="primary"
               disabled={busy || rebuild === undefined}
               // The rebuild writes to the disk, so it asks first. This is a stage change, not a
@@ -175,7 +218,16 @@ function BaseWorkspaceMissingForm({ request, settle, rebuild, choose, t }: {
                 // when the user arrives there, stacking a dialog about a missing Workspace over
                 // the one asking them to pick a replacement.
                 settle()
-                choose?.()
+                // Guarded because `choose` is injected. Consuming the report and then throwing
+                // out of the click handler would leave the user on a blank view with the report
+                // already gone — nothing left to explain what happened, and no way back to it.
+                // The same defensive shape as `run` above covers an injected callback that
+                // throws before it returns anything.
+                try {
+                  choose?.()
+                } catch (cause: unknown) {
+                  console.warn('dsh-project-groups: base-workspace chooser failed', cause)
+                }
               }}
             >
               {t('baseMissing.respecify')}
@@ -194,27 +246,25 @@ function BaseWorkspaceMissingForm({ request, settle, rebuild, choose, t }: {
       {stage === 'confirm'
         ? (
           <>
-            <div className={browserCss.baseMissingConfirm} role="alert">
+            {/* `role="status"` (polite), not `role="alert"`: the error line below is also a
+              * live region, and with both assertive a screen reader announces them over each
+              * other. The error is the urgent one, so it keeps the assertive channel and this
+              * static warning — which mounts with the stage rather than in response to a
+              * failure — uses the polite one. */}
+            <div className={browserCss.baseMissingConfirm} role="status">
               <IconWarningOutlineRegular size={18} className={browserCss.baseMissingConfirmIcon} />
               <p>{t('baseMissing.confirmBody')}</p>
             </div>
             {/* The path again, because the confirmation is precisely about **which** directory is
-              * about to be created — the one thing the user must be able to check here. */}
-            <p className={browserCss.baseMissingPath} role="note">
-              {request.path === null
-                ? t('baseMissing.pathUnknown')
-                : t('baseMissing.path', { path: request.path })}
-            </p>
+              * about to be created — the one thing the user must be able to check here. Shared
+              * with the report stage through `pathNotice`, so the two cannot disagree. */}
+            {pathNotice}
           </>
         )
         : (
           <>
             <p className={browserCss.baseMissingBody}>{t('baseMissing.body')}</p>
-            <p className={browserCss.baseMissingPath} role="note">
-              {request.path === null
-                ? t('baseMissing.pathUnknown')
-                : t('baseMissing.path', { path: request.path })}
-            </p>
+            {pathNotice}
           </>
         )}
       {error !== null && <div className={browserCss.renameError} role="alert">{error}</div>}

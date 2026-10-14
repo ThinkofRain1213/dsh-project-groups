@@ -9,7 +9,7 @@
  * occupant's own create-folder affordance already covers creating one.
  */
 import type { ReactNode, RefObject } from 'react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Button, IconFolderCloseRegular, IconPlusOutlineRegular, Menu, Modal, type MenuEntry,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -22,6 +22,15 @@ import type { DirectoryFlowOwnerProps, WorkspacePickerProps } from './contract/s
 import css from './WorkspacePicker.module.css'
 
 const ADD_WORKSPACE = '::add-workspace'
+
+/**
+ * The menu footer's loading row.
+ *
+ * Only ever compared against itself — it is never dispatched by `handleSelect`, because the
+ * row is `disabled` — so unlike {@link ADD_WORKSPACE} it cannot collide with a Workspace id
+ * in any way that matters.
+ */
+const PENDING_STATUS_ID = '::workspace-picker-pending'
 
 /** Core flow props: the owner supplies popover control and pick semantics. */
 export interface WorkspacePickFlowProps {
@@ -88,7 +97,28 @@ export function WorkspacePickFlow({
   // menu action stays disabled — a late outcome must not race a concurrent
   // selection or adoption.
   const flowBusy = flowOpen || pickingFolder
-  useEffect(() => { onBusyChange?.(flowBusy) }, [flowBusy, onBusyChange])
+  // The callback is held in a ref so the effect below depends only on `flowBusy`.
+  //
+  // Consumers pass inline callbacks, so `onBusyChange` is a new function on every render of
+  // the owner; with it in the dependency list the effect re-fired on every one of those
+  // renders, reporting a value that had not changed. A ref keeps the latest callback without
+  // making its identity an input to the effect.
+  const onBusyChangeRef = useRef(onBusyChange)
+  onBusyChangeRef.current = onBusyChange
+  useEffect(() => {
+    onBusyChangeRef.current?.(flowBusy)
+  }, [flowBusy])
+  // Reset on unmount, in its own effect with no dependencies.
+  //
+  // Not as the return value of the effect above: a cleanup there runs before *every*
+  // re-run, so a change false -> true would report `false` and then `true`, briefly
+  // un-gating the owner for a value that was never current. With `[]` this cleanup runs
+  // once, at unmount.
+  //
+  // Without it, a component that unmounted while `flowBusy` was true left the owner's flag
+  // stuck true for the rest of the session — the sidebar's add-workspace shortcut stays
+  // disabled with nothing on screen to explain why.
+  useEffect(() => () => { onBusyChangeRef.current?.(false) }, [])
 
   // The occupied hole gates the picking affordance: with no composed flow the
   // entry simply is not there (the seam's documented no-flow default). The
@@ -157,8 +187,29 @@ export function WorkspacePickFlow({
   const addIsTheOnlyEntry = !pinAdd && listSettled && addEntries.length === 1
   // `flowBusy` gates this exactly as it disables the equivalent menu entry: a
   // pick still being adopted owns the surface until it settles.
+  //
+  // ## Why the request is marked consumed rather than inferred from `open`
+  //
+  // The original relied on an undocumented invariant: `openDirectoryFlow` calls the owner's
+  // `onClose`, and this effect assumed that synchronously cleared `open`. It does today, but
+  // nothing in this component's contract requires it — an owner that clears `open`
+  // asynchronously, or not at all, would see the effect re-fire as soon as `flowBusy` returned
+  // to false and reopen a flow the user had just cancelled: an open/cancel loop with no way
+  // out of the popover.
+  //
+  // Tracking consumption locally makes one auto-open per `open` request, whatever the owner
+  // does. The flag clears when `open` goes false, so the next request opens again.
+  const autoFlowConsumed = useRef(false)
   useEffect(() => {
-    if (open && addIsTheOnlyEntry && !flowBusy) openDirectoryFlow()
+    if (!open) {
+      autoFlowConsumed.current = false
+      return
+    }
+    if (autoFlowConsumed.current) return
+    if (addIsTheOnlyEntry && !flowBusy) {
+      autoFlowConsumed.current = true
+      openDirectoryFlow()
+    }
   }, [open, addIsTheOnlyEntry, flowBusy, openDirectoryFlow])
 
   /** Owner side of the flow conversation: adopt keeps the flow open (busy) until the Host answers. */
@@ -166,6 +217,13 @@ export function WorkspacePickFlow({
     open: flowOpen,
     busy: pickingFolder,
     onPicked: (path) => {
+      // Guarded, not just gated in the UI. The menu-entry path is disabled by `flowBusy`,
+      // but this callback is driven by the occupant, which is outside this component's
+      // control — a duplicated or misbehaving signal would otherwise start a second
+      // `createWorkspace` while the first adoption is still in flight, racing on `flowOpen`
+      // and `modalError`. The `.finally` below still runs on a duplicate, so the guard is
+      // what prevents the overlap rather than the state update.
+      if (pickingFolder) return
       setPickingFolder(true)
       void adoptDirectory(path).finally(() => { setPickingFolder(false) })
     },
@@ -177,21 +235,62 @@ export function WorkspacePickFlow({
     },
   }
 
+  /**
+   * Dispatch one menu selection.
+   *
+   * ## Why the workspace list is consulted before the sentinel
+   *
+   * `id` arrives as a plain `string` from the menu, and the add entry is identified by the
+   * `ADD_WORKSPACE` sentinel. The original checked the sentinel first and then cast the
+   * remainder to `WorkspaceId`, which meant the brand was asserted rather than established —
+   * and it made the sentinel a magic string that a real Workspace id must never equal: a
+   * Workspace whose id *was* `'::add-workspace'` would have opened the add flow instead of
+   * being selected.
+   *
+   * Looking the id up in `workspaces` first removes both problems. A genuine Workspace id is
+   * matched whatever its spelling, and the value passed on is the one from the typed list
+   * rather than a cast. The sentinel is then only reached when no Workspace claims the id,
+   * so a collision is no longer possible.
+   * @param id - the menu entry's id.
+   */
   const handleSelect = (id: string): void => {
-    if (id === ADD_WORKSPACE) {
-      openDirectoryFlow()
+    const workspace = workspaces.find(item => item.workspaceId === id)
+    if (workspace !== undefined) {
+      onPick(workspace.workspaceId)
       return
     }
-    onPick(id as WorkspaceId)
+    if (id === ADD_WORKSPACE) openDirectoryFlow()
   }
 
+  // The loading status belongs inside the menu, not beside it.
+  //
+  // It used to render as a *sibling* of `<Menu>`, which is `portal`ped: the popover is moved
+  // into a portal container positioned against the anchor, while the status stayed in the
+  // host's normal flow. Its only styles were `margin-top` / `font-size`, so with no anchor of
+  // its own it landed wherever the component happened to sit in the tree rather than near the
+  // popover it describes.
+  //
+  // Passed through the menu's `footer`, which is rendered inside the same portalled surface
+  // and below the scrolling items area. Not appended to `items`: `menuIsEmpty` is derived from
+  // `items.length`, and a status row there would make an otherwise-empty popover look
+  // populated — the very thing the `menuIsEmpty` check exists to prevent.
+  //
+  // `role="status"` is kept on the label so the loading state is still announced; the row is
+  // `disabled`, matching the fact that it reports rather than offers a choice.
+  const menuPending = open && !addIsTheOnlyEntry && !menuIsEmpty && workspaceSnapshot.phase === 'pending'
+  const menuFooter: readonly MenuEntry[] = [
+    ...(pinAdd ? addEntries : []),
+    ...(menuPending
+      ? [{ id: PENDING_STATUS_ID, disabled: true, label: <span className={css.menuStatus} role="status">{t('picker.loading')}</span> }]
+      : []),
+  ]
   return (
     <>
       <Menu
         open={open && !addIsTheOnlyEntry && !menuIsEmpty}
         anchor={null}
         items={items}
-        {...pinAdd ? { footer: addEntries } : {}}
+        {...(menuFooter.length > 0 ? { footer: menuFooter } : {})}
         selectedId={selectedId}
         onSelect={handleSelect}
         onClose={onClose}
@@ -199,7 +298,6 @@ export function WorkspacePickFlow({
         portal
         getAnchorRect={getAnchorRect}
       />
-      {open && !addIsTheOnlyEntry && !menuIsEmpty && workspaceSnapshot.phase === 'pending' && <div className={css.menuStatus} role="status">{t('picker.loading')}</div>}
       {renderDirectoryFlow(flowOwner)}
       <Modal
         open={errorOpen}
