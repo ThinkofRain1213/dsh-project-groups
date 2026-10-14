@@ -194,6 +194,15 @@ interface HashMemo {
 const hashes = new Map<string, HashMemo>()
 
 /**
+ * How many paths the hash memo keeps.
+ *
+ * Generous — the steady-state working set is a handful of files — but finite, because the key
+ * space is not: a project's document path embeds its id, so every create/delete cycle adds a
+ * key that will never be read again. See {@link specSha1}.
+ */
+const HASH_MEMO_LIMIT = 256
+
+/**
  * SHA-1 of one file's content, memoized on path + mtime + size.
  *
  * Synchronous because the caller is `PromptContext.text`, which the official
@@ -216,7 +225,30 @@ export function specSha1(path: string): string | undefined {
   if (memo !== undefined && memo.mtimeMs === stat.mtimeMs && memo.size === stat.size) return memo.sha1
   try {
     const sha1 = createHash('sha1').update(readFileSync(path)).digest('hex')
-    hashes.set(path, { path, mtimeMs: stat.mtimeMs, size: stat.size, sha1 })
+    // Only memoized when the file did not change between the stat and the read.
+    //
+    // The two are separate syscalls, so a writer landing in between makes the digest describe
+    // the **new** bytes while `mtimeMs`/`size` describe the old ones. Caching that pairing
+    // meant the drift check treated a changed spec as unchanged until the mtime ticked again —
+    // silently, and for exactly the case the memo exists to serve. Re-statting and comparing
+    // is what makes the entry a statement about one consistent observation. The digest is
+    // returned either way: it is the content that was actually read, so it is the best answer
+    // available even when the file moved under us.
+    const after = statSync(path)
+    if (after.mtimeMs === stat.mtimeMs && after.size === stat.size) {
+      hashes.set(path, { path, mtimeMs: stat.mtimeMs, size: stat.size, sha1 })
+      // Bounded, because the key space grows with project count: a document path is derived
+      // from a project id, so create/delete cycles mint new keys whose entries are never read
+      // again. A Map iterates in insertion order, so dropping the oldest keeps this a cache
+      // rather than a slow leak — and a dropped entry only costs one stat+read to rebuild.
+      while (hashes.size > HASH_MEMO_LIMIT) {
+        const oldest = hashes.keys().next()
+        if (oldest.done === true) break
+        hashes.delete(oldest.value)
+      }
+    } else {
+      hashes.delete(path)
+    }
     return sha1
   } catch {
     hashes.delete(path)
@@ -323,10 +355,24 @@ export async function listUploadedSpecs(ctx: Context): Promise<string[]> {
  */
 export async function writeUploadedSpec(ctx: Context, name: string, content: string): Promise<boolean> {
   const path = uploadedSpecPath(ctx, name)
-  if (path === undefined || existsSync(path)) return false
+  if (path === undefined) return false
   await mkdir(specsDirectory(ctx), { recursive: true })
-  await writeFile(path, content, 'utf8')
-  return true
+  try {
+    // `flag: 'wx'` — exclusive create — rather than `existsSync` followed by `writeFile`.
+    //
+    // The check-then-write pair is a TOCTOU: two concurrent uploads of the same name could
+    // both observe "absent" and the second would then **overwrite** the first, destroying a
+    // spec the user may have hand-edited — precisely what the contract above says must not
+    // happen. `wx` makes "create only if absent" one atomic operation, so the loser gets
+    // `EEXIST` and the "name is taken" answer the caller already handles.
+    await writeFile(path, content, { encoding: 'utf8', flag: 'wx' })
+    return true
+  } catch (error: unknown) {
+    // Only a taken name is a `false`; anything else (a full disk, a permissions problem) is a
+    // real failure and propagates, as it did before.
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
+    throw error
+  }
 }
 
 /**

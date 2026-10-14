@@ -231,6 +231,11 @@ const projectActions: ProjectActions = {
         // The cast follows `projects.ts`: `Object.keys` widens to `string`, while
         // the map is keyed by the branded id it was built from.
         Object.keys(updatedAt).filter(id => model.projectOf(id as SessionId) === undefined),
+        // The Session being placed is excluded explicitly, rather than relying on the caller
+        // having filtered it out of `updatedAt`. A Session that could count as its own most
+        // recent activity would select its own destination, and the result would still look
+        // like a plausible project — see `recentDestination`.
+        sessionId,
       ),
     )
     // A Session with no project has no assignment record — that absence is what

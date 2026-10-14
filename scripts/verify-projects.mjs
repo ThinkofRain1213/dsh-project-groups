@@ -954,6 +954,40 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
       members({ p1: ['s1'] }),
       ['loose1'],
     ) === 'p1')
+
+  // The Session being placed is never its own destination.
+  //
+  // This was an invariant stated only in prose — "the activity map excludes blank Sessions" —
+  // and enforced entirely by the caller. If a caller leaked an entry for the Session currently
+  // being placed, that Session would be its own most recent activity and would select the
+  // project it is already in, which is the *opposite* of what the policy is for. The exclusion
+  // is now a parameter, so the guarantee no longer depends on the caller getting it right.
+  {
+    const placing = recentDestination(
+      [project('p1', '2026-01-01T00:00:00Z'), project('p2', '2026-01-01T00:00:00Z')],
+      // `s2` is the most recent activity overall, and it is the Session being placed.
+      { s1: early, s2: late },
+      members({ p1: ['s1'], p2: ['s2'] }),
+      [],
+      's2',
+    )
+    check('the Session being placed cannot select its own project', placing === 'p1', String(placing))
+  }
+  check('without the exclusion the same input selects that project (the reason the guard exists)',
+    recentDestination(
+      [project('p1', '2026-01-01T00:00:00Z'), project('p2', '2026-01-01T00:00:00Z')],
+      { s1: early, s2: late },
+      members({ p1: ['s1'], p2: ['s2'] }),
+      [],
+    ) === 'p2')
+  check('the placed Session is excluded from the Ungrouped bucket too',
+    recentDestination(
+      [project('p1', '2026-01-01T00:00:00Z')],
+      { loose1: late },
+      members({ p1: [] }),
+      ['loose1'],
+      'loose1',
+    ) === 'p1')
 }
 
 // 25. Placement is optimistic, and survives the frames that predate it.

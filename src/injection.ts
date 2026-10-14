@@ -374,9 +374,18 @@ function renderDeclaration(input: ProjectInjectionInput): string {
  * @returns one or more lines.
  */
 function renderDirectoryLines(directories: readonly string[]): string[] {
-  if (directories.length === 0) return [`Relevant directory: ${DIRECTORY_UNSET}`]
-  if (directories.length === 1) return [`Relevant directory: ${directories[0]}`]
-  return ['Relevant directories:', ...directories.map(directory => `- ${directory}`)]
+  // Blank entries are dropped before the count is read, the same rule the link block applies
+  // through `nonBlankLinks`.
+  //
+  // They are not filtered on storage — `create`/`update` store `request.directories` as given —
+  // so a dialog row left empty reached here intact and rendered as a bare `- `. Beyond being
+  // noise in the model's context, it also skewed the count: `['', '/a']` took the **plural**
+  // branch and printed an empty bullet, where dropping the blank gives the singular label the
+  // single real directory deserves.
+  const present = directories.filter(directory => directory.trim() !== '')
+  if (present.length === 0) return [`Relevant directory: ${DIRECTORY_UNSET}`]
+  if (present.length === 1) return [`Relevant directory: ${present[0]}`]
+  return ['Relevant directories:', ...present.map(directory => `- ${directory}`)]
 }
 
 /**

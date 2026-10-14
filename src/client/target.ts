@@ -52,6 +52,17 @@ export function resolveTarget(
       return currentSessionId === undefined ? undefined : projectOf(currentSessionId)
     case 'recent':
       return recent()
+    default: {
+      // Exhaustiveness, checked at build time.
+      //
+      // The return type includes `undefined`, so a new `NewSessionTarget` member added later
+      // would not be a type error: the switch would fall out of the bottom and the function
+      // would answer `undefined` — which means **Ungrouped**, a real destination rather than
+      // a failure. Assigning the narrowed value to `never` turns that silent default into a
+      // compile error the moment the union grows.
+      const unhandled: never = target
+      throw new Error(`unhandled new-session target: ${String(unhandled)}`)
+    }
   }
 }
 
@@ -76,6 +87,7 @@ export function resolveTarget(
  * @param loose - the ids in no project, i.e. the Ungrouped bucket. Typed as plain
  * strings rather than `SessionId`s because it is, by construction, a subset of
  * `activity`'s own key domain — the caller derives it with `Object.keys`.
+ * @param exclude - the Session being placed, never a candidate for its own destination.
  * @returns the project id, or `undefined` for Ungrouped.
  */
 export function recentDestination(
@@ -83,6 +95,7 @@ export function recentDestination(
   activity: SessionTimes,
   members: (projectId: string) => readonly SessionId[],
   loose: readonly string[],
+  exclude?: SessionId,
 ): string | undefined {
   let selected: string | undefined
   let selectedTime = Number.NEGATIVE_INFINITY
@@ -96,9 +109,21 @@ export function recentDestination(
     selectedTime = latest
   }
 
+  // The Session being placed is skipped in both scans below.
+  //
+  // The "blank Sessions are excluded from `activity`" rule used to be an invariant stated only
+  // in prose, enforced entirely by the caller. If any caller leaked an entry for the Session
+  // currently being placed, that Session would count as its own most recent activity and
+  // select its own destination — defeating the whole policy, and doing so invisibly because
+  // the result still looks like a plausible project. Taking the id makes the rule structural:
+  // the caller already has it, and there is no longer a way to call this without excluding
+  // the one Session that must never be a candidate.
+  const isCandidate = (sessionId: SessionId): boolean => sessionId !== exclude
+
   for (const project of projects) {
     let latest = Number.NEGATIVE_INFINITY
     for (const sessionId of members(project.projectId)) {
+      if (!isCandidate(sessionId)) continue
       const time = activity[sessionId]
       if (time !== undefined) latest = Math.max(latest, time)
     }
@@ -122,6 +147,7 @@ export function recentDestination(
 
   let looseLatest = Number.NEGATIVE_INFINITY
   for (const sessionId of loose) {
+    if (sessionId === exclude) continue
     const time = activity[sessionId]
     if (time !== undefined) looseLatest = Math.max(looseLatest, time)
   }
