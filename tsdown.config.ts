@@ -22,7 +22,7 @@
  * byte-stable rebuilds across machines).
  */
 import { readFile } from 'node:fs/promises'
-import { basename, dirname, relative, resolve, sep } from 'node:path'
+import { dirname, relative, resolve, sep } from 'node:path'
 import { transform } from 'lightningcss'
 import ts from 'typescript'
 
@@ -39,7 +39,19 @@ import ts from 'typescript'
  * Only files that actually carry a decorator are touched, so the rest of the
  * build keeps its existing pipeline.
  */
-const DECORATOR_SYNTAX = /^\s*@[A-Za-z_$][\w$]*/m
+/**
+ * A decorator at the start of a line.
+ *
+ * Anchored and shaped rather than the bare `/^\s*@/` this used to be, which also matched prose:
+ * a line beginning `@word` inside a block comment, or inside a multi-line template literal. The
+ * cost of such a false hit is only one extra `transpileModule` pass, so the pattern stays
+ * permissive on purpose — requiring the call parentheses would miss a bare `@Injectable` and
+ * change a cheap false positive into a missed file.
+ *
+ * (`\s` became `[ \t]` for the same reason: `\s` matches the newline, so `^\s*@` could match an
+ * `@` on a line of its own after a blank one.)
+ */
+const DECORATOR_SYNTAX = /^[ \t]*@[A-Za-z_$][\w$]*[ \t]*(?:\(|$)/m
 
 const decorators = {
   name: 'dsh-project-groups-decorators',
@@ -51,10 +63,19 @@ const decorators = {
       compilerOptions: {
         target: ts.ScriptTarget.ES2024,
         module: ts.ModuleKind.ESNext,
-        ...(file.endsWith('x') ? { jsx: ts.JsxEmit.ReactJSX } : {}),
+        // An explicit extension test, not `file.endsWith('x')`. That worked only because the
+        // guard above happens to restrict ids to `.ts`/`.tsx`/`.cts`/`.mts`, so it read as a
+        // coincidence rather than a rule and would have flipped `jsx` for an unrelated file the
+        // moment the guard changed.
+        ...(/\.(?:[cm]?tsx)$/.test(file) ? { jsx: ts.JsxEmit.ReactJSX } : {}),
       },
     })
-    return { code: result.outputText.replace(/\n?\/\/# sourceMappingURL=.*$/u, '\n'), map: undefined }
+    // `transpileModule` with no `sourceMap` option emits no `//# sourceMappingURL=` line —
+    // measured, not assumed — so the strip regex that used to be here was dead code. It was
+    // also the one thing in this file that could corrupt input: its `$` anchor still matched a
+    // template literal whose final line read like a source-map comment. Removed rather than
+    // left as defensive-looking noise.
+    return { code: result.outputText, map: undefined }
   },
 }
 
@@ -90,16 +111,41 @@ const INLINE_SAFE = /^(?:@deepseek-ai\/dsh-(?:util-values|util-workspace-path|se
  */
 const TYPE_ONLY = /^@deepseek-ai\/(?:dsh-api-|dsh-client-ui-(?:renderer|layout|session|sidebar|conversation)|dsh-client-locale|dsh-client-shortcuts|dsh-schedule|dsh-subagent|dsh-jobs|dsh-agent)(?:\/|$)/
 
-/** Classify one import specifier for the bundler. */
-function classifySpecifier(specifier: string): 'external' | 'inline' | 'unresolved' {
-  if (TYPE_ONLY.test(specifier)) return 'inline'
-  if (PLATFORM_MODULES.includes(specifier)) return 'external'
+/**
+ * Classify one import specifier for the bundler.
+ *
+ * No `'external'` result: the caller decides externals before it gets here, in one place that
+ * also covers the non-scoped platform modules (`react`, `react-dom`) which the
+ * `@deepseek-ai/` guard below would have rejected. Returning `'external'` from here was dead
+ * code — every `PLATFORM_MODULES` entry was already answered above — and a second, unreachable
+ * path for one decision is how the two drift apart.
+ *
+ * `'typeOnly'` is its own outcome rather than folded into `'inline'`. Listing these packages
+ * exists so a future **value** import of one is refused; returning the safe-inline value meant
+ * such an import would have been bundled silently, which is the opposite of the intent.
+ * @param specifier - the import specifier.
+ * @returns how the bundler should treat it.
+ */
+function classifySpecifier(specifier: string): 'inline' | 'typeOnly' | 'unresolved' {
+  if (TYPE_ONLY.test(specifier)) return 'typeOnly'
   if (INLINE_SAFE.test(specifier)) return 'inline'
   return 'unresolved'
 }
 
 /** This plugin's package name; the id the loader keys the bundle under. */
 const PACKAGE_NAME = 'dsh-project-groups'
+
+/**
+ * The mode used for **both** the `define` substitutions and the resolver's `conditionNames`.
+ *
+ * These used to be computed independently: `conditionNames` normalized anything that was not
+ * `'development'` to `'production'`, while `define` baked the raw `process.env.NODE_ENV` in. A
+ * build with `NODE_ENV=test` therefore resolved React's **production** entry points while the
+ * injected constant still said `'test'`, so any library branching on
+ * `process.env.NODE_ENV !== 'production'` took its development path against production code —
+ * a mismatch with no error and no obvious symptom. One value, so they cannot diverge.
+ */
+const MODE = process.env.NODE_ENV === 'development' ? 'development' : 'production'
 
 /** Virtual-id wrapper keeping module CSS away from tsdown's own css pipeline. */
 const CSS_VIRTUAL_PREFIX = '\0dsh-css:'
@@ -123,16 +169,13 @@ const client = {
   // which a CJS output cannot carry). Substituting both keeps the factory from
   // throwing at boot.
   define: {
-    'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'production'),
-    'import.meta.env.MODE': JSON.stringify(process.env.NODE_ENV ?? 'production'),
-    'import.meta.env': JSON.stringify({ MODE: process.env.NODE_ENV ?? 'production' }),
+    'process.env.NODE_ENV': JSON.stringify(MODE),
+    'import.meta.env.MODE': JSON.stringify(MODE),
+    'import.meta.env': JSON.stringify({ MODE }),
   },
   inputOptions: {
     resolve: {
-      conditionNames: [
-        (process.env.NODE_ENV ?? 'production') === 'development' ? 'development' : 'production',
-        'browser', 'import', 'module', 'default',
-      ],
+      conditionNames: [MODE, 'browser', 'import', 'module', 'default'],
     },
   },
   plugins: [{
@@ -151,10 +194,19 @@ const client = {
       if (PLATFORM_MODULES.includes(source)) return { id: source, external: true }
       if (!source.startsWith('@deepseek-ai/')) return null
       switch (classifySpecifier(source)) {
-        case 'external':
-          return { id: source, external: true }
         case 'inline':
           return null
+        // Reachable only for a **value** import of a type-only package: `import type` is erased
+        // before this plugin runs, so anything arriving here as a type-only target is a value
+        // edge. Bundling it would create a second runtime instance of a controller whose Symbol
+        // identity has to match the shell's, which is the failure this gate exists to prevent —
+        // so it is an error, exactly like an unrecognized package.
+        case 'typeOnly':
+          throw new Error(
+            `client bundle purity: "${source}" is listed as a type-only target (TYPE_ONLY) but is `
+            + 'imported as a value. Use `import type`, or — if a value import is genuinely needed — '
+            + 'declare it a platform module so the shell answers it instead of bundling a duplicate.',
+          )
         default:
           throw new Error(
             `client bundle purity: "${source}" is neither a shell platform module (PLATFORM_MODULES), `
@@ -176,6 +228,13 @@ const client = {
       const fileId = resolve(process.cwd(), identity)
       this.addWatchFile(fileId)
       const source = await readFile(fileId)
+      // The tag id is the **repo-relative identity**, not `basename(fileId)`.
+      //
+      // `basename` made two stylesheets with the same file name in different directories emit the
+      // same `data-plugin-css` id, and the emitted guard then found the first tag and skipped
+      // injecting the second — silently dropping its classes at runtime, with a correct-looking
+      // build. `identity` is already computed above and is unique per file; the five stylesheets
+      // in this tree happen not to collide today, so this was latent rather than live.
       const { code, exports: cssExports } = transform({
         // The repo-relative identity, not the absolute path: lightningcss
         // derives the CSS Module hash from this, so an absolute path would make
@@ -191,7 +250,7 @@ const client = {
       for (const local of Object.keys(cssExports ?? {}).sort()) classMap[local] = cssExports[local].name
       return [
         `const css = ${JSON.stringify(code.toString())};`,
-        `const tagId = ${JSON.stringify(`${PACKAGE_NAME}/${basename(fileId)}`)};`,
+        `const tagId = ${JSON.stringify(`${PACKAGE_NAME}/${identity}`)};`,
         'if (typeof document !== \'undefined\' && document.querySelector(\'style[data-plugin-css=\' + JSON.stringify(tagId) + \']\') === null) {',
         '  const tag = document.createElement(\'style\');',
         `  tag.dataset.plugin = ${JSON.stringify(PACKAGE_NAME)};`,

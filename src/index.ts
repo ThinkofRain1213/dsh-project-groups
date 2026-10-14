@@ -332,7 +332,14 @@ export class ProjectController extends TypertRemoteService {
   /** Live followers, each woken by a landed write. */
   private readonly followers = new Set<() => void>()
   /** Serializes domain opens so repeated activation cannot open twice. */
-  private opening: Promise<void> | undefined
+  /**
+   * The in-flight open, carrying the domain it opened.
+   *
+   * `Promise<Domain<…>>` rather than `Promise<void>` because `ready()` returns this promise's
+   * own value: re-reading `this.domain` after awaiting it could see `undefined` if `close()`
+   * cleared the field in between (see `ready`).
+   */
+  private opening: Promise<Domain<typeof projectDomainSpec>> | undefined
   /** Listener for `domain/changed`, held so the close path can drop it. */
   private detach: (() => void) | undefined
   /**
@@ -552,10 +559,18 @@ export class ProjectController extends TypertRemoteService {
         if (change.domain !== PROJECT_DOMAIN_NAME) return
         for (const wake of [...this.followers]) wake()
       })
+      // The promise's own value, so a caller never has to re-read mutable state.
+      return opened
     })()
-    await this.opening
-    /* v8 ignore next -- the open assigned `domain`, or it threw and this line is unreachable. */
-    return this.domain as Domain<typeof projectDomainSpec>
+    // Returned from the promise rather than re-read as `this.domain`.
+    //
+    // `close()` clears `this.domain`, and it can land between this open resolving and a
+    // **second** caller's `await this.opening` completing — that caller's await resolves from
+    // the promise it captured, and re-reading `this.domain` afterwards would hand back
+    // `undefined`, so the next `domain.table(...)` throws. A first caller that arrives after
+    // the disposal instead hits the `disposed` guard above and gets the explicit rejection,
+    // which is the intended path; this one is the ordering that had no guard at all.
+    return await this.opening
   }
 
   private async close(): Promise<void> {
@@ -1586,12 +1601,20 @@ export class ProjectController extends TypertRemoteService {
   async specsUsedBy(request: ProjectSpecsUsedByRequest): Promise<ProjectSpecsUsedByValue> {
     const domain = await this.ready()
     const global = domain.global.get()
+    // Trimmed, like `uploadSpec`, `deleteSpec` and `readSpec`.
+    //
+    // Those three normalize the caller-supplied name before touching the store, so an
+    // untrimmed name from the same surface trimmed to a real file for them and matched
+    // **nothing** here — the "N projects use this spec" warning under-reported for a name the
+    // delete would happily have removed. Same normalization, so the two agree on which file
+    // the name means.
+    const name = request.name.trim()
     const titles: string[] = []
     for (const id of this.order()) {
       const record = domain.table('projects').get(id)
       if (record === undefined) continue
       const spec = resolveSpec(this.ctx, global, record)
-      if (spec.mode === 'custom' && spec.fileName === request.name) titles.push(record.title)
+      if (spec.mode === 'custom' && spec.fileName === name) titles.push(record.title)
     }
     return { titles: titles.sort((a, b) => a.localeCompare(b)) }
   }
