@@ -143,8 +143,22 @@ export function SpecPicker({
    */
   const askDelete = async (name: string): Promise<void> => {
     setError(null)
+    // Dependants are read **before** the confirmation opens. Opening first rendered the
+    // dialog with the *previous* call's `deleteUsedBy` (or an empty list) and updated it
+    // once the promise resolved, so a second delete briefly showed the wrong spec's
+    // dependant count — contradicting the comment that says dependants are read first.
+    // A rejection must not leave the dialog half-open either, so it is caught here and
+    // reported in the same error row the rest of this dialog uses.
+    let usedBy: readonly string[]
+    try {
+      usedBy = await onUsedBy(name)
+    } catch (cause) {
+      setError(t('specUploadFailed'))
+      console.error('reading spec dependants failed', cause)
+      return
+    }
+    setDeleteUsedBy(usedBy)
     setPendingDelete(name)
-    setDeleteUsedBy(await onUsedBy(name))
   }
 
   // The delete confirmation. One dialog with two states rather than a nested
@@ -167,9 +181,21 @@ export function SpecPicker({
                 void (async () => {
                   setBusy(true)
                   try {
-                    await onDelete(pendingDelete)
+                    // `onDelete` resolves false when nothing was removed. Ignoring that
+                    // closed the dialog and cleared `staged` anyway, silently
+                    // de-selecting a spec that still exists. The confirmation now stays
+                    // open and says so. A rejection is caught for the same reason the
+                    // upload path catches: `void` would otherwise drop it.
+                    const removed = await onDelete(pendingDelete)
+                    if (!removed) {
+                      setError(t('specDeleteFailed'))
+                      return
+                    }
                     if (staged === pendingDelete) setStaged(undefined)
                     setPendingDelete(null)
+                  } catch (cause) {
+                    setError(t('specDeleteFailed'))
+                    console.error('spec delete failed', cause)
                   } finally {
                     setBusy(false)
                   }
@@ -222,13 +248,20 @@ export function SpecPicker({
           >
             {t('specUpload')}
           </Button>
-          {/* 取消 writes nothing, always: no setting, and no deletion of its own. */}
-          <Button variant="outline" onClick={onCancel}>{t('cancel')}</Button>
+          {/* 取消 writes nothing, always: no setting, and no deletion of its own.
+           * Disabled while an upload is in flight: closing now would unmount the dialog
+           * while `onUpload` is still writing, and the in-flight handler would then call
+           * `setStaged`/`setError`/`setBusy` on an unmounted component. */}
+          <Button variant="outline" disabled={busy} onClick={onCancel}>{t('cancel')}</Button>
           <Button
             variant="primary"
-            // Never disabled. With nothing selected this commits "no spec", which
-            // is a real choice rather than a dead end — the notice above has just
+            // Not gated on `noneSelected`: with nothing selected this commits "no spec",
+            // which is a real choice rather than a dead end — the notice above has just
             // said so, and the caller stores 'none' for it.
+            //
+            // Gated on `busy`, though: 确认 during an upload commits the stale `staged`
+            // value while the write that would replace it is still in flight.
+            disabled={busy}
             onClick={() => { onConfirm(staged) }}
           >
             {t('confirm')}

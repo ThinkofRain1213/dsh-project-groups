@@ -527,7 +527,13 @@ export class ProjectModel {
   async start(): Promise<() => void> {
     const baseline = await this.remote.baseline()
     if (!baseline.ok) throw new Error(baseline.error?.message ?? 'project baseline failed')
-    this.accept(baseline.value as ProjectBaseline)
+    // `ok` alone does not imply a `value`. A Host answering `{ ok: true }` with no value
+    // would cast the empty value straight into `accept`, where `baseline.projects.map(...)`
+    // throws a cryptic TypeError out of the sidebar's startup path. Both empty arms are
+    // rejected here so the failure names itself.
+    const initial = baseline.value
+    if (initial === undefined || initial === null) throw new Error('project baseline returned no value')
+    this.accept(initial as ProjectBaseline)
 
     // `follow` answers a stream handle rather than a promise; the shape is the
     // Gateway's, so it is read structurally here to keep this file free of a
@@ -743,8 +749,20 @@ export class ProjectModel {
     } catch (error: unknown) {
       // Only revert when the Host has not already answered with something newer:
       // a frame that arrived meanwhile is more current than this rollback.
+      //
+      // And revert only **this project's key**, not the whole map. The guard above
+      // already isolates the decision to this project, but restoring `previous`
+      // wholesale also discarded any concurrent change to a *different* project that
+      // landed while this write was in flight — an optimistic toggle or a follow frame
+      // — contradicting the per-write-unit discipline this file documents for `place`.
+      // When the key was previously untouched its absence is preserved rather than
+      // written back as an explicit `undefined`.
       if (this.state.expansions[projectId] === expanded) {
-        this.state = Object.freeze({ ...this.state, expansions: previous })
+        const { [projectId]: _reverted, ...rest } = this.state.expansions
+        const restored = Object.prototype.hasOwnProperty.call(previous, projectId)
+          ? { ...rest, [projectId]: previous[projectId] }
+          : rest
+        this.state = Object.freeze({ ...this.state, expansions: Object.freeze(restored) })
         for (const listener of [...this.listeners]) listener()
       }
       throw error

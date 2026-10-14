@@ -188,12 +188,18 @@ const projectActions: ProjectActions = {
     // An unavailable picker is "nothing chosen", not an error: the dialog renders
     // its add control disabled in that case, so this is the unreachable arm.
     if (picker === undefined) return null
-    const result = await picker.pick()
-    // A cancelled pick answers null from the Host anyway, so the cancel and the
-    // failure arms land on the same "nothing added" outcome. Surfacing a Remote
-    // error would put an infrastructure message in a title field's error row,
-    // where the user is not looking for it.
-    return result.ok ? (result.value ?? null) : null
+    // A cancelled pick answers null from the Host, so the cancel, the `ok === false`,
+    // and the *rejected* arms all land on the same "nothing added" outcome. The
+    // rejection arm needs the catch: without it a rejected Remote promise propagates out
+    // of this action into the dialog's `.catch` and puts an infrastructure message in the
+    // title field's error row — exactly what the comment above says to avoid.
+    try {
+      const result = await picker.pick()
+      return result.ok ? (result.value ?? null) : null
+    } catch (error) {
+      console.warn('dsh-project-groups: directory pick failed', error)
+      return null
+    }
   },
   deleteProject: async (id) => { await requireModel().remove(id) },
   reorderProject: async (id, beforeId) => { await requireModel().reorder(id, beforeId) },
