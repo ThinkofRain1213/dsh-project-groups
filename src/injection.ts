@@ -317,14 +317,23 @@ export function renderProjectInjection(input: ProjectInjectionInput): string {
  */
 function declaredSegments(input: ProjectInjectionInput): string {
   const segments = ['`owning project`']
-  if (input.project !== undefined) segments.push('`relevant directories`')
-  // Same rule as the directories above, and for the same reason: a filed project *has* both
-  // fields, so both segments exist whether or not they carry anything yet. The declaration names
-  // the fields the block is about, not the fields that happen to be non-empty — and since
-  // `renderLinkLines` now always prints a line for a filed project, there is nothing for this to
-  // disagree with.
-  if (input.project !== undefined) segments.push('`related links`')
-  if (input.document !== undefined) segments.push('`work document`')
+  if (input.project !== undefined) {
+    segments.push('`relevant directories`')
+    // Same rule as the directories above, and for the same reason: a filed project *has*
+    // both fields, so both segments exist whether or not they carry anything yet. The
+    // declaration names the fields the block is about, not the fields that happen to be
+    // non-empty — and since `renderLinkLines` now always prints a line for a filed
+    // project, there is nothing for this to disagree with.
+    segments.push('`related links`')
+  }
+  // Gated on **both**, because `renderProjectInjection` emits the document lines only
+  // inside its `project !== undefined` branch. Gating on `document` alone let a caller
+  // that supplied `document` without a `project` announce a segment the body never
+  // contains — the drift this helper's contract forbids. The Host's own call site happens
+  // to gate documents on a project already, but the renderer is exported and the preview
+  // and tests call it directly, so the invariant is enforced here rather than left to
+  // callers.
+  if (input.project !== undefined && input.document !== undefined) segments.push('`work document`')
   return segments.join(' ')
 }
 

@@ -126,11 +126,41 @@ export function uploadedSpecPath(ctx: Context, fileName: string): string | undef
 }
 
 /**
+ * Windows reserved device names, without extension.
+ *
+ * Opening `CON.md`, `NUL.md`, `AUX.md`, `COM1.md`, … on Windows does not create a
+ * regular file: the name resolves to the device no matter what follows the dot. A spec
+ * by that name would be silently unwritable (writes go nowhere, or fail) rather than
+ * stored, so the name is refused up front.
+ */
+const WINDOWS_RESERVED_BASE = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i
+
+/**
  * Whether a name is a bare, single-segment spec file name.
  *
  * The check is what keeps an upload or a delete from addressing anything outside
  * the specs directory: a name carrying a separator, a drive, or a parent hop
  * would let a Remote caller write wherever it liked.
+ *
+ * ## Why filesystem normalization is checked too
+ *
+ * A separator check alone is not enough, because some names are distinct as strings
+ * yet resolve to something that is not the intended file. Reserved device names
+ * (`CON.md`, `NUL.md`, `AUX.md`, `COM1.md`, …) are the real case: on Windows the name
+ * resolves to the device no matter what follows the dot, so a spec by that name is
+ * silently unwritable rather than stored.
+ *
+ * The Windows "trailing dot or space is stripped" hazard needs no check of its own,
+ * because it cannot arise here: any such name fails the `endsWith('.md')` test above
+ * (`a.md.` and `a.md ` both end in a dot/space, not in `.md`). An earlier draft of this
+ * guard tested the stem for a trailing dot and rejected `a..md`, which is a legitimate,
+ * distinct name — the interior dot is not stripped by Windows. The extension check is
+ * what covers that case, and it covers it without the false rejection.
+ *
+ * Case and Unicode folding (`Ａ.md` vs `A.md` on a case-insensitive filesystem) is
+ * likewise **not** rejected: refusing it would break legitimate names on
+ * case-sensitive filesystems, and the collision it can cause is caught by the
+ * exists-check at write time rather than being a path-safety hole.
  * @param name - candidate file name.
  * @returns true when the name may be joined onto the specs directory.
  */
@@ -143,6 +173,12 @@ export function isSafeSpecName(name: string): boolean {
   if (name.startsWith('.')) return false
   /* eslint-disable-next-line no-control-regex -- rejecting control characters is the point */
   if (/[\u0000-\u001f]/.test(name)) return false
+  // Strip the extension, then reject a base that names a device. The base cannot end in
+  // a dot or space: such a name would not have passed the `endsWith('.md')` test above,
+  // so no separate check is needed — see the doc comment.
+  const base = name.slice(0, -SPEC_EXTENSION.length)
+  if (base.length === 0) return false
+  if (WINDOWS_RESERVED_BASE.test(base)) return false
   return true
 }
 

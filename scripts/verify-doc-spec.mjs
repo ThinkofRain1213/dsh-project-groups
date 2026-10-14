@@ -56,10 +56,22 @@ console.log('=== spec file names: anything that could escape the directory ===')
 for (const bad of [
   '', 'a/b.md', 'a\\b.md', '..', '../x.md', '..\\x.md', '/abs.md', 'C:\\x.md',
   '.hidden.md', 'no-extension', 'x.txt', 'a\u0000b.md', 'x'.repeat(129) + '.md',
+  // Windows: the extension is irrelevant to a device name — `CON.md` opens the device,
+  // not a file, so the write goes nowhere instead of being stored.
+  'CON.md', 'con.md', 'NUL.md', 'AUX.md', 'PRN.md', 'COM1.md', 'LPT9.md',
+  // Windows strips a trailing dot/space, so these would alias `a.md`. They are refused
+  // by the `endsWith('.md')` test — asserted so the reason is recorded.
+  'a.md.', 'a.md ', 'a.md..',
 ]) {
   check(`rejects ${JSON.stringify(bad)}`, isSafeSpecName(bad) === false)
 }
-for (const good of ['a.md', 'my-spec.md', 'team.spec.md', '未命名.md', 'x'.repeat(120) + '.md']) {
+for (const good of [
+  'a.md', 'my-spec.md', 'team.spec.md', '未命名.md', 'x'.repeat(120) + '.md',
+  // Legitimate despite the dots: only a *trailing* dot/space is stripped by Windows, and
+  // these do not have one. An earlier draft of the device-name guard rejected `a..md` by
+  // testing the stem for a trailing dot; these assertions are what caught that.
+  'a..md', 'a.b.md', 'COM0.md', 'console.md',
+]) {
   check(`accepts ${JSON.stringify(good)}`, isSafeSpecName(good) === true)
 }
 // A joined name must stay inside the specs directory, which is the property the

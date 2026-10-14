@@ -60,12 +60,21 @@ async function stdoutOf(file: string, args: readonly string[]): Promise<string |
       { timeout: LOOKUP_TIMEOUT_MS, windowsHide: true },
       (error, stdout) => {
         // A missing command, a non-zero exit, and a timeout are one case here: the
-        // caller has a `null` answer for all three.
+        // caller has a `null` answer for all three. Logged rather than dropped silently,
+        // because a persistent misconfiguration (`xdg-user-dir` not installed, say) is
+        // otherwise indistinguishable from a genuinely absent Documents folder.
         if (error !== null) {
+          console.warn(`dsh-project-groups: ${file} lookup failed`, error)
           resolve(null)
           return
         }
-        resolve(stdout.replace(/[\r\n]+$/, ''))
+        // Trimmed, not just stripped of trailing newlines: PowerShell and `osascript`
+        // can emit a leading BOM or leading whitespace, and either survives a
+        // trailing-only strip. `isAbsolute` then answers false for a path that was in
+        // fact obtained, and the caller reports "Documents folder unavailable" for a
+        // lookup that succeeded. Interior whitespace is left alone — only the ends are
+        // a transport artifact.
+        resolve(stdout.replace(/^\uFEFF/, '').trim())
       },
     )
   })
