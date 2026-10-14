@@ -139,6 +139,11 @@ function useTitleMarquee(title: RefObject<HTMLSpanElement | null>): { enter: () 
       const range = element.scrollWidth - element.clientWidth
       if (range <= MIN_TITLE_REVEAL_PX) return
       if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        // A frame from a previous `enter` is cancelled before jumping to the far edge.
+        // Returning without this left that animation running, so the reduced-motion jump was
+        // immediately undone by the next frame of the still-alive marquee — motion the user
+        // had explicitly asked not to see.
+        cancelAnimationFrame(frame.current)
         placeTitle(element, range, range)
         return
       }

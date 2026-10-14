@@ -28,8 +28,17 @@ export function derive<S, T>(source: HostObservable<S>, project: (snapshot: S) =
     getSnapshot: () => {
       const snapshot = source.getSnapshot()
       if (!computed || snapshot !== seen) {
+        // `seen` is committed only **after** `project` returns.
+        //
+        // Advancing it first meant a projection that threw left the memo claiming to have
+        // handled that snapshot: on a later read of the same snapshot the `snapshot !== seen`
+        // test was false, so the stale `value` was returned without re-running and without
+        // surfacing the error again. A projection bug became a silently wrong value. With the
+        // order reversed a throw leaves `seen` untouched, so the next read retries and throws
+        // again where a caller can see it.
+        const next = project(snapshot)
         seen = snapshot
-        value = project(snapshot)
+        value = next
         computed = true
       }
       return value as T

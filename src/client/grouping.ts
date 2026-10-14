@@ -56,6 +56,30 @@ const EMPTY_SPECS: readonly string[] = Object.freeze([])
 const installHooks: ((live: ProjectModel) => void)[] = []
 
 /**
+ * Call every listener, isolating a failure to the listener that caused it.
+ *
+ * These callbacks are arbitrary external subscribers — React components, the vendored
+ * browser's selectors — so one of them throwing is possible and must not be contagious.
+ * Without isolation a single throw aborted the loop: every *later* listener went
+ * un-notified for what may be a real state change, and in `installProjectModel`'s case the
+ * remaining seats were never wired at all, leaving them parked forever.
+ *
+ * Logged rather than rethrown: the caller here is an install or a state transition with no
+ * useful recovery, and turning one subscriber's bug into a broken sidebar is worse than
+ * losing that subscriber's update.
+ * @param listeners - the callbacks to invoke, in order.
+ */
+function notifyAll(listeners: readonly (() => void)[]): void {
+  for (const notify of listeners) {
+    try {
+      notify()
+    } catch (error: unknown) {
+      console.warn('dsh-project-groups: an observable listener threw', error)
+    }
+  }
+}
+
+/**
  * Build one seat that may be subscribed to before the model exists.
  *
  * ## Why every subscribe has to be cancellable after the re-seat
@@ -87,10 +111,19 @@ function deferredSeat<T>(
   installHooks.push((live) => {
     const waiting = [...early]
     early.clear()
-    for (const notify of waiting) liveOff.set(notify, attach(live, notify))
+    // Each subscription is isolated too: a seat whose `attach` throws must not stop the
+    // remaining listeners from being wired, which would leave them parked despite the model
+    // having arrived.
+    for (const notify of waiting) {
+      try {
+        liveOff.set(notify, attach(live, notify))
+      } catch (error: unknown) {
+        console.warn('dsh-project-groups: failed to re-seat a listener', error)
+      }
+    }
     // The snapshot these listeners last read was the empty/pre-model one; the
     // model now has the Host's, so one notification is a real change.
-    for (const notify of waiting) notify()
+    notifyAll(waiting)
   })
   return {
     getSnapshot: () => read(model),
@@ -126,7 +159,26 @@ export function projectModel(): ProjectModel | undefined {
  */
 export function installProjectModel(started: ProjectModel): void {
   model = started
-  for (const install of installHooks) install(started)
+  // One hook throwing must not skip the remaining seats.
+  //
+  // These are the module's own re-seat steps, but they run caller-supplied listeners
+  // (through `attach` and the notify pass), so a subscriber's bug could otherwise abort this
+  // loop and leave every later seat parked forever — its subscribers waiting for a model
+  // that had already arrived.
+  for (const install of installHooks) {
+    try {
+      install(started)
+    } catch (error: unknown) {
+      console.warn('dsh-project-groups: a seat failed to install', error)
+    }
+  }
+  // The hooks are one-shot: they exist to move parked subscribers onto the first model, and
+  // that has now happened. Keeping them meant a second `installProjectModel` call would
+  // re-run all of them and the array grew for the process's life; clearing them makes the
+  // single-invocation contract structural rather than a comment. (A re-install after a
+  // teardown re-registers its own hooks through the seats' own `subscribe`, so nothing is
+  // lost — those seats rebuild their parking sets on the next early subscribe.)
+  installHooks.length = 0
 }
 
 /**
@@ -392,11 +444,17 @@ export function installLocaleService(service: LocaleServiceLike | undefined): vo
     // No service: the fallback snapshot is all there is, so the waiters are done
     // waiting. Notifying is the honest signal — they read `'zh'` before and after,
     // and leaving them parked would misreport a service that will never come.
-    for (const notify of waiting) notify()
+    notifyAll(waiting)
     return
   }
-  for (const notify of waiting) localeLiveOff.set(notify, service.subscribe(notify))
-  for (const notify of waiting) notify()
+  for (const notify of waiting) {
+    try {
+      localeLiveOff.set(notify, service.subscribe(notify))
+    } catch (error: unknown) {
+      console.warn('dsh-project-groups: failed to re-seat a locale listener', error)
+    }
+  }
+  notifyAll(waiting)
 }
 
 /**
