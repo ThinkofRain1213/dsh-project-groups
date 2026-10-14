@@ -281,6 +281,13 @@ export class ProjectModel {
   private placementSeq = 0
 
   /**
+   * The disposer for the follow stream currently running, if any.
+   *
+   * Tracked so `start()` can abort a previous follower instead of leaking it — see `start`.
+   */
+  private stopFollowing: (() => void) | undefined
+
+  /**
    * @param remote - the mounted `projectGroups` namespace.
    */
   constructor(private readonly remote: ProjectRemote) {}
@@ -554,9 +561,18 @@ export class ProjectModel {
 
   /**
    * Load the Host's current projection and subscribe to its changes.
-   * @returns a disposer that stops following.
+   *
+   * Idempotent: a second call without disposing the first aborts the previous follower before
+   * subscribing again. Each call makes its own `AbortController` and its own `follow`
+   * subscription, so without this the earlier stream kept running — the model accepted duplicate
+   * frames for every landed write (harmless, because `accept` is idempotent, therefore invisible)
+   * while the old subscription leaked. The harness calls `start()` 37 times across its blocks,
+   * which is where the duplicate-frame accounting became hard to reason about.
+   * @returns a disposer that stops following this one.
    */
   async start(): Promise<() => void> {
+    this.stopFollowing?.()
+
     const baseline = await this.remote.baseline()
     if (!baseline.ok) throw new Error(baseline.error?.message ?? 'project baseline failed')
     // `ok` alone does not imply a `value`. A Host answering `{ ok: true }` with no value
@@ -584,7 +600,14 @@ export class ProjectModel {
         console.warn('project stream ended:', error)
       }
     })()
-    return () => { controller.abort() }
+    // Tracked so a later `start()` can abort it, and cleared on disposal so a repeat call after
+    // `stop()` is not mistaken for a live follower.
+    const stop = (): void => {
+      controller.abort()
+      if (this.stopFollowing === stop) this.stopFollowing = undefined
+    }
+    this.stopFollowing = stop
+    return stop
   }
 
   /**

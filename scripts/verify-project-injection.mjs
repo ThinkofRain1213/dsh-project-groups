@@ -18,15 +18,34 @@
  */
 import { register } from 'node:module'
 
-register('./lib/ts-loader.mjs', import.meta.url)
-
-const { renderProjectInjection, shouldAskSpecDrift, PROJECT_CONTEXT_OPEN, PROJECT_CONTEXT_CLOSE, DIRECTORY_UNSET, LINK_UNSET, matchSpecDriftChoice, SPEC_DRIFT_LABELS, specDriftQuestion, SPEC_DRIFT_QUESTION_ID } = await import('../src/injection.ts')
-
 const failures = []
 const check = (label, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? ` — ${detail}` : ''}`)
   if (!ok) failures.push(label)
 }
+
+/**
+ * Register the loader and load the module under test, reporting rather than throwing.
+ *
+ * Both were bare top-level statements, so a harness problem — a missing `lib/ts-loader.mjs`, a
+ * syntax error in `src/injection.ts` — surfaced as an opaque stack trace *before* the first
+ * `check` ran, indistinguishable from a real regression. The failure is a `FAIL` line now.
+ */
+let injection
+try {
+  register('./lib/ts-loader.mjs', import.meta.url)
+  injection = await import('../src/injection.ts')
+} catch (error) {
+  check('可以注册 ts-loader 并载入 injection.ts', false,
+    String(error?.message ?? error).slice(0, 200))
+}
+if (failures.length > 0) {
+  console.log('')
+  console.log(`${failures.length} CHECK(S) FAILED`)
+  process.exit(1)
+}
+
+const { renderProjectInjection, shouldAskSpecDrift, PROJECT_CONTEXT_OPEN, PROJECT_CONTEXT_CLOSE, DIRECTORY_UNSET, LINK_UNSET, matchSpecDriftChoice, SPEC_DRIFT_LABELS, specDriftQuestion, SPEC_DRIFT_QUESTION_ID } = injection
 
 const project = (title, directories, links = []) => ({
   title,
@@ -126,9 +145,14 @@ const BUILT_IN = 'C:\\pkg\\spec\\PROJECT-SPEC.md'
 const withDoc = (document) => renderProjectInjection({ project: project('项目一', ['C:\\a']), document })
 
 // The declaration names each segment only while it can be rendered, so it never
-// promises a field the block does not carry. `related links` is now a real segment, but
-// it is announced **only when the project actually has links** — a project with none must
-// not send the model looking for a value that is always absent.
+// promises a field the block does not carry. `related links` is a real segment, and it is
+// announced for **any filed project** — whether or not it carries links.
+//
+// (This sentence used to say the opposite: that `related links` is announced "only when the
+// project actually has links". That contradicted the assertions directly below it, which require
+// the segment for `project('项目一', [])` — a project with no links — and it contradicted the
+// later block's own statement of the rule. `declaredSegments` pushes the segment whenever
+// `input.project !== undefined`, independent of link count, which is what the checks assert.)
 {
   const unfiled = render(undefined)
   check('unfiled announces only the owning project',
@@ -361,8 +385,16 @@ console.log('\n=== renderer: the document lines ===')
     docPath: DOC, specMode: 'custom', specPath: SPEC,
     drift: { locale: 'zh', rewriteFlowPath: 'C:\\pkg\\spec\\REWRITE-FLOW.md' },
   })
-  check('drift drops the read-failure sentence',
+  // The proxy and the statement itself.
+  //
+  // This asserted only `text.includes(`Project document: ${DOC}\n`)`, which passes as long as the
+  // path happens to be followed by a newline — a stand-in for "no read-failure sentence" that an
+  // unrelated change to the line's layout could satisfy. The sentence's absence is what the drift
+  // state actually has to produce, so both are asserted.
+  check('the document line states the path and ends there',
     text.includes(`Project document: ${DOC}\n`), JSON.stringify(text))
+  check('drift drops the read-failure sentence',
+    !text.includes('a failed read means it has not been created yet'), JSON.stringify(text))
   check('drift asks for the exact tool and id',
     text.includes('call `ask_user_question`') && text.includes(`id: ${SPEC_DRIFT_QUESTION_ID}`),
     JSON.stringify(text))
@@ -442,49 +474,60 @@ console.log('\n=== renderer: the document lines ===')
 // a list is empty and states itself as unset.
 {
   const lines = (text) => text.split('\n').length
+  // Expressed as a function of the two list counts, not as literals.
+  //
+  // The literals (`=== 7`, `=== 7`, `=== 7`, `=== 9`, `=== 5`) encoded the current blank-line
+  // layout as magic numbers, so a harmless wrap or an extra blank line failed the check — and the
+  // natural "fix" was to bump the number, which silently erases the property being asserted. What
+  // the block actually claims is that the shape depends only on the two counts: a list of ≤1 entry
+  // renders one line (the unset sentence, or the single item), and ≥2 renders a heading plus one
+  // line per entry.
+  const FILED_BASE_LINES = 7
+  const UNFILED_LINES = 5
+  const listLines = (n) => (n >= 2 ? n : 0)
+  const filedLines = (directories, links) => FILED_BASE_LINES + listLines(directories) + listLines(links)
+
   check('a filed block’s shape depends only on the two list counts',
-    lines(render(project('a', []))) === 7
-    && lines(render(project('b', []))) === 7
-    && lines(render(project('a', ['x']))) === 7
-    && lines(render(project('b', ['y', 'z']))) === 9)
+    lines(render(project('a', []))) === filedLines(0, 0)
+    && lines(render(project('b', []))) === filedLines(0, 0)
+    && lines(render(project('a', ['x']))) === filedLines(1, 0)
+    && lines(render(project('b', ['y', 'z']))) === filedLines(2, 0)
+    // The ≥2 case at a second count, so the formula is load-bearing rather than fitted to one.
+    && lines(render(project('c', ['x', 'y', 'z']))) === filedLines(3, 0),
+    `n0=${lines(render(project('a', [])))} n2=${lines(render(project('b', ['y', 'z'])))} `
+    + `n3=${lines(render(project('c', ['x', 'y', 'z'])))}`)
   check('the unfiled block is shorter than any filed block',
-    lines(render(undefined)) === 5)
+    lines(render(undefined)) === UNFILED_LINES)
 }
 
 console.log('\n=== lineage walk: subagent sessions resolve to the parent’s project ===')
 
-/**
- * The walk under test, transcribed from `ProjectController.projectOfSession`.
- * @param assignments - session id → owning project id (the durable table).
- * @param sessions - the live Session store face (`get` returns a live Session).
- * @param sessionId - the Session to resolve.
- */
-function projectOfSession({ assignments, sessions, sessionId }) {
-  const direct = assignments.get(sessionId)
-  if (direct !== undefined) return direct
+// The **shipped** walk, imported rather than transcribed.
+//
+// This block used to define its own copy of `ProjectController.projectOfSession`, so every check
+// below verified the copy: changing the `origin !== 'subagent'` rule, the cycle guard, or the
+// filed-ancestor precedence would have left all of them green. The copy had already drifted — it
+// dropped the real implementation's `sessions === undefined` guard — which is exactly the drift a
+// transcription invites. The walk now lives in `src/lineage.ts` as a pure function that both the
+// controller and this file call.
+const { projectOwningSession } = await import('../src/lineage.ts')
 
-  let header = sessions.get(sessionId)?.header
-  if (header === undefined) return undefined
-  if (header.origin !== 'subagent') return undefined
-
-  const visited = new Set([sessionId])
-  while (header.parentSession !== undefined) {
-    const parentId = header.parentSession
-    if (visited.has(parentId)) return undefined
-    visited.add(parentId)
-    const filed = assignments.get(parentId)
-    if (filed !== undefined) return filed
-    const parent = sessions.get(parentId)
-    if (parent === undefined) return undefined
-    header = parent.header
-    if (header.origin !== 'subagent') return undefined
-  }
-  return undefined
+/** Adapt the fixture shapes to the two faces the walk reads. */
+const assignmentsFace = (entries) => {
+  const map = new Map(entries)
+  return { get: id => (map.has(id) ? { projectId: map.get(id) } : undefined) }
 }
-
+const sessionsFace = (entries) => {
+  const map = new Map(entries)
+  return { get: id => map.get(id) }
+}
 const live = (id, header) => ({ id, header: { id, ...header } })
 const walk = (assignments, sessions, sessionId) =>
-  projectOfSession({ assignments: new Map(assignments), sessions: new Map(sessions), sessionId })
+  projectOwningSession(assignmentsFace(assignments), sessionsFace(sessions), sessionId)
+
+// The guard the transcription dropped: no Sessions service at all.
+check('a walk without the Sessions service answers undefined',
+  projectOwningSession(assignmentsFace([]), undefined, 's1') === undefined)
 
 // Ordinary filed session: direct hit, the walk does not start.
 check('a filed ordinary session resolves directly',

@@ -253,6 +253,26 @@ async function started(options) {
 /** Let the stream's microtasks settle. */
 const tick = () => new Promise(resolve => setTimeout(resolve, 5))
 
+/**
+ * Push one stale baseline: a projection that predates the write under test.
+ *
+ * The full literal was written out three times (25d once, 25e twice), so a Host field added to
+ * the projection would have had to be added in three places — and one missed copy would leave the
+ * "stale" frame no longer stale in the way the block believes it is. The overrides name the one
+ * or two fields a given case varies.
+ * @param remote - the stand-in namespace.
+ * @param overrides - the fields this case varies.
+ * @returns the `deliver` result.
+ */
+const deliverStale = (remote, overrides) => remote.deliver({
+  projects: remote.state.projects,
+  assignments: {},
+  expansions: {},
+  orders: {},
+  newSessionTarget: 'ungrouped',
+  ...overrides,
+})
+
 // 1. A fresh install groups by an active override that claims nothing.
 {
   const { model, stop } = await started()
@@ -299,7 +319,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
 
 // 3. A started model adopts the baseline, and the row is marked as ours.
 {
-  const { model, remote, stop } = await started()
+  const { model, stop } = await started()
   await model.create('abc')
   // Re-read the projection the way the follow stream would.
   await model.start()
@@ -341,7 +361,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
 
 // 5. The snapshot identity is stable until the projection actually changes.
 {
-  const { model, remote, stop } = await started()
+  const { model, stop } = await started()
   await model.create('a')
   await model.start()
   const first = model.grouping.getSnapshot()
@@ -404,7 +424,6 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   check('reorder moved the project before its anchor',
     model.list().map(p => p.title).join(',') === 'second,first',
     model.list().map(p => p.title).join(','))
-  void secondId
   stop()
 }
 
@@ -505,7 +524,11 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   await model.start()
   const ids = model.list().map(p => p.projectId)
   check('project identity is the id, not the title', ids[0] !== ids[1], ids.join(','))
-  check('the mock keeps both rows distinct', groupsOf(model).length === 3, `groups=${groupsOf(model).length - 1}`)
+  // The detail prints labelled counts. It used to print `groupsOf(model).length - 1` — i.e. 2 —
+  // next to an assertion of `=== 3`, so a failure reported a number that read like an off-by-one
+  // in the check rather than the value under test.
+  check('the mock keeps both rows distinct', groupsOf(model).length === 3,
+    `projects=${groupsOf(model).length - 1} groups=${groupsOf(model).length}`)
   stop()
 }
 
@@ -687,7 +710,14 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   const { model, stop } = await started()
   await model.create('a')
   await model.start()
-  check('an empty orders record is the pre-install snapshot',
+  // Relabelled to what this can actually exercise.
+  //
+  // It said "the pre-install snapshot", but `installProjectModel` ran in test 10 with no
+  // uninstall, so the module-level model survives for the rest of the file and this reads the
+  // **installed** seat's orders — the `EMPTY_ORDERS` fallback in `grouping.ts` is not reachable
+  // here at all. The label claimed a path the block cannot get to, which is worse than not
+  // testing it: a later regression in the fallback would look covered.
+  check('the orders seat reports no manual order for a project it has not ordered',
     Object.keys(clientOrders.getSnapshot()).length === 0,
     JSON.stringify(clientOrders.getSnapshot()))
 
@@ -1099,7 +1129,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
     const pending = model.assign('s1', projectId)
 
     // A stale projection: the Host has not applied the write yet.
-    remote.deliver({ projects: remote.state.projects, assignments: {}, expansions: {}, orders: {}, newSessionTarget: 'ungrouped' })
+    deliverStale(remote, { assignments: {} })
     await tick()
     check('a baseline produced before the write does not undo it',
       model.grouping.getSnapshot().find(source => source.key === projectId)?.sessionIds.includes('s1') === true,
@@ -1122,7 +1152,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
     const [a, b] = model.list().map(project => project.projectId)
     const pending = model.assign('s1', a)
     // A stale frame while the write is still held: the overlay must hold it off.
-    remote.deliver({ projects: remote.state.projects, assignments: {}, expansions: {}, orders: {}, newSessionTarget: 'ungrouped' })
+    deliverStale(remote, { assignments: {} })
     await tick()
     remote.releasePlace()
     await pending.catch(() => {})
@@ -1132,7 +1162,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
       JSON.stringify(model.grouping.getSnapshot()))
     // With the overlay retired, a later Host value wins again. If the entry had
     // leaked, this authoritative move to B would be silently ignored.
-    remote.deliver({ projects: remote.state.projects, assignments: { s1: b }, expansions: {}, orders: {}, newSessionTarget: 'ungrouped' })
+    deliverStale(remote, { assignments: { s1: b } })
     await tick()
     check('and the overlay retired, so a later Host value takes effect',
       model.grouping.getSnapshot().find(source => source.key === b)?.sessionIds.includes('s1') === true,

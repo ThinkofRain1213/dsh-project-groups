@@ -31,6 +31,7 @@ import type { Domain, DomainChanged } from '@deepseek-ai/dsh-storage-domain'
 import type {} from '@deepseek-ai/dsh-storage-domain'
 import { PROJECT_DOMAIN_NAME, projectDomainSpec, type BaseWorkspaceSetting, type GlobalRecord, type ProjectRecord } from './spec.ts'
 import { defaultWorkspacePath as deriveDefaultWorkspacePath } from './default-workspace.ts'
+import { projectOwningSession } from './lineage.ts'
 import {
   renderProjectInjection,
   shouldAskSpecDrift,
@@ -895,30 +896,14 @@ export class ProjectController extends TypertRemoteService {
   /**
    * Resolve the project owning one Session, following subagent lineage.
    *
-   * ## Why this walk exists
+   * The walk itself lives in {@link projectOwningSession} — a pure function over the two lookups
+   * — so the harness can assert the shipped rule instead of a transcription of it. The copy in
+   * `scripts/verify-project-injection.mjs` had already drifted (it dropped the `sessions ===
+   * undefined` guard) while every check there stayed green, which is the failure a transcription
+   * invites.
    *
-   * A subagent's session never reaches `assignments`: only `session.create` with a
-   * `workspaceId` attaches anything, and a delegated child is created through the
-   * Agent registry instead. Without this, every delegated child would report itself
-   * ungrouped even though it is working inside its parent's project.
-   *
-   * ## Mirrored from the official walk
-   *
-   * The shape copies `underArchivedSession`
-   * (`packages/api/session-controller/src/archived-session-gate.ts`):
-   * the same synchronous store hop, the same `origin === 'subagent'` gate on the
-   * edge, and the same visited set against a corrupt lineage. That function is the
-   * one to copy rather than `forkWorkspace`, which answers the same question with
-   * an async `sessionQuery.traceSession()` and is therefore only usable from an
-   * occasional caller — this runs for every prepared request.
-   *
-   * ## A closed ancestor is still readable
-   *
-   * The parent's **project** is available even after that parent Session has
-   * closed: `assignments` is this plugin's own durable table keyed by session id,
-   * and the id survives in `header.parentSession`. Only climbing *past* the
-   * ancestor needs the live store. The official walk reads its set the same way —
-   * `archived.includes(parentId)` when the parent Session is absent.
+   * The reasoning that belongs to the walk — why a subagent's parent counts and a fork's does
+   * not, why a closed ancestor is still readable, and how it terminates — is documented there.
    * @param domain - the open domain.
    * @param sessionId - the Session whose owning project is required.
    * @returns the owning project id, or undefined when the Session is unfiled.
@@ -927,38 +912,11 @@ export class ProjectController extends TypertRemoteService {
     domain: Domain<typeof projectDomainSpec>,
     sessionId: SessionId,
   ): string | undefined {
-    const assignments = domain.table('assignments')
-
-    // The Session itself: the common case, and the only case for an ordinary one.
-    const direct = assignments.get(String(sessionId))?.projectId
-    if (direct !== undefined) return direct
-
-    const sessions = this.ctx.get('sessions') as SessionsFace | undefined
-    if (sessions === undefined) return undefined
-
-    let header = sessions.get(sessionId)?.header
-    if (header === undefined) return undefined
-    // Only a subagent's parent is a candidate ancestor. A fork of a filed Session
-    // is an independent conversation — the judgement the official walk documents
-    // on its own `origin` check.
-    if (header.origin !== 'subagent') return undefined
-
-    const visited = new Set<SessionId>([sessionId])
-    while (header.parentSession !== undefined) {
-      const parentId = header.parentSession
-      if (visited.has(parentId)) return undefined // cycle in a corrupt lineage
-      visited.add(parentId)
-      const filed = assignments.get(String(parentId))?.projectId
-      if (filed !== undefined) return filed
-      const parent = sessions.get(parentId)
-      // A closed ancestor cannot be inspected further: the store holds live
-      // Sessions only, and the next parent id rides on a header we cannot read.
-      // Stopping is the honest answer; continuing would mean guessing.
-      if (parent === undefined) return undefined
-      header = parent.header
-      if (header.origin !== 'subagent') return undefined
-    }
-    return undefined
+    return projectOwningSession(
+      domain.table('assignments'),
+      this.ctx.get('sessions') as SessionsFace | undefined,
+      sessionId,
+    )
   }
 
   /**
