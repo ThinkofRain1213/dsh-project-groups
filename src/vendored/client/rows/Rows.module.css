@@ -262,9 +262,21 @@
   gap: 10px;
 }
 
+/*
+ * Revealed on pointer hover, on an open menu, or on keyboard focus.
+ *
+ * `:hover` alone made these unreachable without a pointer: a keyboard user tabbing to a row
+ * (or to an action button inside it) never triggers hover, so `.rowActions` stayed
+ * `display: none` and the menu and every action were unreachable. `:focus-within` on the row
+ * covers both — focusing the row itself and focusing any control it holds — which is what
+ * makes the tab order reach them.
+ */
 .projectRow:hover .rowActions,
 .sessionRow:hover .rowActions,
 .searchResultRow:hover .rowActions,
+.projectRow:focus-within .rowActions,
+.sessionRow:focus-within .rowActions,
+.searchResultRow:focus-within .rowActions,
 .projectRow.menuOpen .rowActions,
 .sessionRow.menuOpen .rowActions {
   display: inline-flex;

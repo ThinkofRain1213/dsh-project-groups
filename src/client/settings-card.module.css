@@ -201,11 +201,16 @@
 /*
  * A group heading with an explanation under it — the same title/description pair the rows use.
  *
- * `gap: 4px` is `.rowText`'s value, deliberately: a 14px heading and its 12px `.desc` are the
- * same two things here as there, so they are held together the same way, and the reader sees one
- * vocabulary rather than a second spacing rule that happens to look similar. The 8px between
- * this pair and the cards below it is `.group`'s own `gap`, which is what separates a heading
- * from what it introduces.
+ * `gap: 4px` is the tighter of the card's two title/description values; `.rowText` uses 6px
+ * because a settings row also carries a control on the right, while a heading here stands
+ * alone above its cards. The pair is still deliberately held together the same way — one
+ * vocabulary of title-to-description spacing, not a second rule that happens to look similar.
+ * The 8px between this pair and the cards below it is `.group`'s own `gap`, which is what
+ * separates a heading from what it introduces.
+ *
+ * (An earlier version of this comment claimed 4px *was* `.rowText`'s value. It is not, and a
+ * reader checking that claim would have found the comment wrong rather than the code — the
+ * assertion is gone rather than restated.)
  *
  * Only the base-workspace group uses this. 文档规范 and the official 外观 row need no
  * explanation; this one does, and the explanation belongs to the heading rather than standing
@@ -310,10 +315,7 @@
   color: color-mix(in srgb, var(--dsw-alias-label-tertiary) 40%, var(--dsw-alias-bg-base));
 }
 
-.cube:disabled .cubeWarn {
-  color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, var(--dsw-alias-bg-base));
-}
-
+.cube:disabled .cubeWarn,
 .cube:disabled .cubeNotice {
   color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, var(--dsw-alias-bg-base));
 }
@@ -322,6 +324,11 @@
 .cube:disabled .cubeAction {
   color: color-mix(in srgb, var(--dsw-alias-label-primary) 40%, var(--dsw-alias-bg-base));
   border-color: color-mix(in srgb, var(--dsw-alias-border-l3) 40%, transparent);
+  /* Dimming the colours alone left the control reading as interactive: `.cubeAction` carries
+   * `cursor: pointer`, and its `:hover` fill still applied on a disabled card. A disabled
+   * affordance should not invite a click or light up under the pointer, so the cursor is
+   * corrected here and the hover fill is scoped to the enabled card just below. */
+  cursor: not-allowed;
 }
 
 /*
@@ -427,13 +434,27 @@
   cursor: pointer;
 }
 
-.cubeAction:hover {
+/*
+ * Scoped to the enabled card.
+ *
+ * Not a specificity fix: `.cube:disabled .cubeAction` sets `color`, `border-color` and
+ * `cursor`, and this rule sets `background` — the two share no property, so no cascade
+ * contest exists between them. The consequence is the same, though, and it is why the
+ * scoping is needed: the disabled rule dims the *look* of the control but nothing in it
+ * stops `background` from changing on hover, so an unreachable card still lit up under the
+ * pointer. Either add `background` to the disabled rule or exclude the disabled card here;
+ * excluding it keeps the disabled styling in one place.
+ */
+.cube:not(:disabled) .cubeAction:hover {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
 /* Keyboard users must see where they are, since this is a span rather than a button. */
 .cubeAction:focus-visible {
-  outline: 2px solid var(--dsw-alias-state-business-primary);
+  /* The shared token, not a literal `2px`: `.iconButton:focus-visible` and
+   * `.injectionDiffToggle:focus-visible` in this file already use it, and a hard-coded
+   * width here would diverge from them the moment the theme changes the ring. */
+  outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-alias-state-business-primary);
   outline-offset: 1px;
 }
 
@@ -464,7 +485,16 @@
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
-.pickerRowActive {
+/*
+ * The active row keeps its selected fill under the pointer.
+ *
+ * `.pickerRow:hover` is class + pseudo-class, so it outranks a bare `.pickerRowActive` and
+ * hovering a selected row replaced the selected fill with the hover fill — the row stopped
+ * looking selected exactly while the user was pointing at it. The `:hover` form here matches
+ * the specificity of the rule it has to beat and wins on order.
+ */
+.pickerRowActive,
+.pickerRowActive:hover {
   background: var(--dsw-alias-bg-module-platform);
 }
 
@@ -706,7 +736,8 @@
   display: flex;
 }
 
-/* A label and its block are one unit: 4px is the card's heading-to-description value. */
+/* A label and its block are one unit; this is the card's tighter title-to-description gap (see
+ * `.groupHeading`, which uses the same 4px for the same reason). */
 .injectionVariant {
   flex-direction: column;
   gap: 4px;
