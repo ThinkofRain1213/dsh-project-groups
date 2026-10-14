@@ -13,6 +13,7 @@
     "url": "https://github.com/ThinkofRain1213/dsh-project-groups/issues"
   },
   "main": "lib/index.js",
+  "types": "./src/index.ts",
   "exports": {
     ".": {
       "types": "./src/index.ts",
@@ -114,7 +115,11 @@
     "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:client-seats && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:project-directories && pnpm verify:project-injection && pnpm verify:doc-spec && pnpm verify:locales && pnpm verify:release && pnpm verify:host-import && pnpm probe"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1"
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-storage": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
@@ -123,6 +128,7 @@
     "@deepseek-ai/dsh-api-remotes": "0.2.0-rc.2",
     "@deepseek-ai/dsh-api-session-controller": "0.2.0-rc.2",
     "@deepseek-ai/dsh-api-workspace-controller": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-connection": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-locale": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-product-analytics": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-shortcuts": "0.2.0-rc.2",

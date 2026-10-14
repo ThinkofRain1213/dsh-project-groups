@@ -1,10 +1,28 @@
 node_modules/
+
+# Logs. Blanket rather than scoped because a log can appear anywhere a script is run from, and
+# no intentional fixture matches it today. If one is ever needed, keep it tracked with an
+# explicit `!` negation for that path — widening this rule is what would make the intent
+# ambiguous.
 *.log
 .DS_Store
 Thumbs.db
 
 # Pack output (pnpm pack / npm pack) — released via npm, never committed.
+#
+# `!`-negating a release tarball here would be wrong: nothing in this repository or its
+# workflows expects one to be present, and the release path publishes straight to npm.
 *.tgz
+
+# Build and tooling caches. Deliberately *not* a broad `build/` or `dist/` rule: `lib/` is the
+# committed bundle, it is listed in `package.json#files`, and it ships to npm — so a pattern
+# that could capture it would silently untrack the artifact this repository exists to publish.
+*.tsbuildinfo
+.eslintcache
+coverage/
+.pnpm-store/
+.vscode/
+.idea/
 
 # Local credentials and key material. This project reads `DSH_HOME` and
 # `NODE_ENV` from the environment, so a local `.env` is a normal thing to create

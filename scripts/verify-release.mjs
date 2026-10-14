@@ -116,6 +116,67 @@ console.log('=== 6. 工作区没有误提交的产物 ===')
   check('CHANGELOG.md 存在且被 files 收录', existsSync('CHANGELOG.md') && pkg.files.includes('CHANGELOG.md'))
 }
 
+console.log('=== 7. pnpm 豁免表与 lockfile 的 dsh 集合一致 ===')
+{
+  // `pnpm-workspace.yaml` hard-codes the exact version `0.2.0-rc.2` for every entry, so bumping
+  // the DSH version in one place and not the other makes `pnpm install` fail the release-age
+  // check for dozens of packages at once — with an error that names none of them as the cause.
+  //
+  // The list is compared against the **lockfile**, not against `devDependencies`. That was the
+  // review's suggestion and it is wrong for this repository: `minimumReleaseAgeExclude` has to
+  // cover every package pnpm resolves, and 49 of the 75 entries are transitive dependencies of
+  // the DSH packages rather than direct ones. Asserting equality with `devDependencies` fails
+  // immediately, and a one-directional "every devDependency is exempt" check would pass while
+  // the transitive half silently rotted. Measured: the exempt set and the lockfile's
+  // `@deepseek-ai/dsh-*` set are exactly equal, 75 either way.
+  const workspace = readFileSync('pnpm-workspace.yaml', 'utf8')
+  const lockfile = readFileSync('pnpm-lock.yaml', 'utf8')
+  const exempt = [...workspace.matchAll(/^ {2}- '([^']+)'$/gm)].map(m => m[1])
+  // The package name without its trailing `@version`.
+  const nameOf = entry => entry.replace(/@[^@]*$/, '')
+  const versionOf = entry => entry.slice(nameOf(entry).length + 1)
+
+  const exemptByName = new Map(exempt.map(e => [nameOf(e), versionOf(e)]))
+  const inLock = new Map()
+  for (const m of lockfile.matchAll(/^ {2}(@deepseek-ai\/dsh-[a-z0-9-]+):/gm)) inLock.set(m[1], null)
+  for (const m of lockfile.matchAll(/'(@deepseek-ai\/dsh-[a-z0-9-]+)@([^']+)'/g)) {
+    if (!inLock.has(m[1])) inLock.set(m[1], m[2])
+  }
+
+  const declared = Object.keys(pkg.devDependencies ?? {}).filter(n => n.startsWith('@deepseek-ai/dsh-'))
+
+  check('pnpm 豁免表非空', exempt.length > 0, String(exempt.length))
+  check('pnpm 豁免表覆盖全部直接 dsh 依赖',
+    declared.every(n => exemptByName.has(n)),
+    JSON.stringify(declared.filter(n => !exemptByName.has(n)).sort()))
+  check('pnpm 豁免表覆盖 lockfile 的全部 dsh 包',
+    [...inLock.keys()].every(n => exemptByName.has(n)),
+    JSON.stringify([...inLock.keys()].filter(n => !exemptByName.has(n)).sort()))
+  check('pnpm 豁免表没有 lockfile 中不存在的 dsh 条目',
+    [...exemptByName.keys()].every(n => inLock.has(n)),
+    JSON.stringify([...exemptByName.keys()].filter(n => !inLock.has(n)).sort()))
+  // The version is the part that breaks: an exempt entry for a version `pnpm install` no longer
+  // resolves protects nothing, and the failure surfaces as an unrelated release-age error.
+  const versionMismatch = [...exemptByName.entries()]
+    .filter(([name, version]) => inLock.get(name) !== null && inLock.get(name) !== version)
+    .map(([name, version]) => `${name}: exempt=${version} lockfile=${inLock.get(name)}`)
+  check('pnpm 豁免版本与 lockfile 一致', versionMismatch.length === 0,
+    JSON.stringify(versionMismatch.slice(0, 5)))
+  // A duplicate is invisible in review and usually means one entry replaced another.
+  check('pnpm 豁免表无重复条目', new Set(exempt).size === exempt.length,
+    `entries=${exempt.length} unique=${new Set(exempt).size}`)
+  // Sorted by package name, so a base package precedes its suffixed siblings
+  // (`dsh-session-format` before `dsh-session-format-catalog`). A plain string sort does not:
+  // the `@` ending a name sorts after the `-` starting a suffix.
+  const sorted = [...exempt].sort((a, b) => {
+    const an = nameOf(a), bn = nameOf(b)
+    if (an !== bn) return an < bn ? -1 : 1
+    return a < b ? -1 : a > b ? 1 : 0
+  })
+  check('pnpm 豁免表按包名有序', JSON.stringify(exempt) === JSON.stringify(sorted),
+    String(exempt.find((e, i) => e !== sorted[i]) ?? ''))
+}
+
 console.log('')
 console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`)
 process.exit(failures.length === 0 ? 0 : 1)

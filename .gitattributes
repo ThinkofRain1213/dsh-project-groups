@@ -12,8 +12,56 @@
 #
 # Forcing LF everywhere makes the checkout — and therefore the artifact —
 # platform-independent.
+#
+# ## Re-normalisation: checked, and not needed here
+#
+# A rule like this one does not rewrite blobs that are **already committed** — those keep
+# whatever line endings they were stored with until a `git add --renormalize .` pass is run
+# and committed. So the rule alone is not proof, and the review was right to ask.
+#
+# Measured on this repository: of all 142 tracked files, **zero** contain a CR in the index,
+# and `git add --renormalize .` stages nothing beyond the working-tree edits already present.
+# There is nothing to fix, so no renormalisation commit is required. If a CRLF blob ever does
+# land (an editor writing one under a rule this file does not cover, say), the check is:
+#
+#   git add --renormalize . && git diff --cached --name-only   # empty means clean
+#
+# ## The one exception the blanket rule would otherwise swallow
+#
+# `eol=lf` applies to *every* text file, including the few types that genuinely need CRLF on
+# Windows. None exist in this repository today; the carve-out is here so that adding one is not
+# silently broken by this file, and so the constraint is visible rather than rediscovered.
+#
+# These come **after** the blanket rule on purpose: for the same attribute, the last matching
+# pattern wins, so putting them above it would have them overridden by the very rule they exist
+# to except. (`git check-attr eol -- scripts/foo.ps1` is how to confirm the order.)
+
 * text=auto eol=lf
 
-# Media is binary; keep git from inspecting or converting it.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary formats; keep git from inspecting or converting them.
+#
+# The list is explicit rather than "media", because `text=auto` falls back to git's NUL-byte
+# heuristic for anything unlisted — and that heuristic is not guaranteed for every binary
+# format, so an unlisted one can be mangled by EOL normalisation. Extend this list when a new
+# binary type lands rather than assuming the heuristic covers it.
 *.png binary
 *.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.pdf binary
+*.wasm binary
+*.node binary

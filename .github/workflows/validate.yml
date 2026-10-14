@@ -17,6 +17,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# One run per ref. Without this a same-repo feature branch triggers both a `push` and a
+# `pull_request` run, and every further push to an open PR stacks another full six-leg matrix
+# instead of superseding it.
+#
+# `cancel-in-progress` is off for `main` on purpose: a run on main is the record that the
+# branch is green, so a later push must queue behind it rather than cancel it. On any other ref
+# the newer commit is the one worth testing.
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 permissions:
   contents: read
 
@@ -24,13 +35,23 @@ jobs:
   validate:
     name: Node ${{ matrix.node }} · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # Install, typecheck, build, thirteen verify scripts and the probe bundle, across six
+    # legs with `fail-fast: false`. Several probes stand up fake environments or wait on IPC,
+    # so a hung one would otherwise occupy runners until GitHub's 6-hour default cap — and with
+    # fail-fast off, all six legs would hang in parallel.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        # tsdown 0.22 requires ^22.18.0 || >=24.11.0, so neither older Node 22
-        # nor Node 23 is usable here. The floor matches `engines`.
+        # tsdown 0.22 requires ^22.18.0 || >=24.11.0, so neither older Node 22 nor Node 23 is
+        # usable here.
+        #
+        # The leg is 22.19.0, not 22.18.0: `engines` declares `^22.19.0 || >=24.0.0`, and a CI
+        # leg **below** the declared floor does not test the floor — pnpm without `engine-strict`
+        # installs anyway, so it would have passed while proving nothing about supported
+        # runtimes. This is the lowest version the manifest actually claims.
         os: [ubuntu-latest, windows-latest, macos-latest]
-        node: [22.18.0, 24]
+        node: [22.19.0, 24]
     steps:
       - uses: actions/checkout@v7
       # Third-party action pinned to a commit SHA rather than the mutable `v4`
@@ -50,15 +71,40 @@ jobs:
       - name: Build the node and client bundles
         run: pnpm run build
       - name: Assert the committed bundles are in sync with src/
-        # The build is deterministic, so a dirty `lib/` here means a source
-        # change was committed without its regenerated artifact.
-        run: git diff --exit-code -- lib/
+        # The build is deterministic, so a dirty `lib/` here means a source change was committed
+        # without its regenerated artifact.
+        #
+        # Porcelain, not `git diff --exit-code -- lib/`: `git diff` compares only **tracked**
+        # files, so a change that made the build emit a brand-new artifact under `lib/` — or
+        # delete one — reported clean while the committed bundles were out of sync. `lib/` is
+        # what `files` ships, so that is exactly the drift this step exists to catch.
+        #
+        # `git status --porcelain` always exits 0, so it has to be tested rather than chained.
+        run: |
+          set -euo pipefail
+          CHANGED="$(git status --porcelain -- lib/)"
+          if [ -n "$CHANGED" ]; then
+            printf '%s\n' "$CHANGED"
+            echo '::error::lib/ is not in sync with src/ — run `pnpm build` and commit the result.'
+            exit 1
+          fi
       - name: Verify the vendored patch ledger
         # Every patch id must still match a row, and the official ui-workspace
         # row must still be disabled rather than replaced.
         run: pnpm run verify:patch
       - name: Verify the grouping seam
         run: pnpm run verify:grouping
+      - name: Verify the client seat registration
+        # The phase-2 gate: it imports the built client under a fresh module instance per case
+        # and asserts the seat registry, so it catches a slot registered against the wrong face
+        # or a seat that stops being re-seated on install.
+        #
+        # Absent from this workflow until now, like `verify:host-import` below — the header
+        # promised "all of `pnpm check` except `verify:bundle`", and two members of it were
+        # running on no runner. The step list is now checked against `scripts.check` rather than
+        # maintained by hand; `verify:client-seats` is the one most likely to be forgotten
+        # again, because it is the newest.
+        run: pnpm run verify:client-seats
       - name: Verify New Session placement
         run: pnpm run verify:new-session
       - name: Verify the project model
@@ -79,5 +125,13 @@ jobs:
         # locale descriptions matching the feature set, the two READMEs staying
         # structurally equal, and `files` covering what ships.
         run: pnpm run verify:release
+      - name: Verify the host bundle imports
+        # Part of `pnpm check`, and one of the pure-Node contract checks — it loads the built
+        # `lib/index.js` and asserts every bare specifier resolves, which is what catches a
+        # decorator or specifier that typechecks and builds but fails at DSH load time.
+        #
+        # It was simply absent from this workflow while the header above promised CI runs the
+        # whole gate "except `verify:bundle`", so that check ran on no runner at all.
+        run: pnpm run verify:host-import
       - name: Run the self-contained probes
         run: pnpm run probe

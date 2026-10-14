@@ -1,8 +1,39 @@
+# pnpm install settings for this repository — deliberately **not** a workspace.
+#
+# There is no `packages:` list because there are no workspace projects: this is a single-package
+# repository (one manifest, one lockfile), and this file exists only to carry the two settings
+# below. Adding `packages: ['.']` would declare a one-project workspace, which changes pnpm's
+# resolution and hoisting behaviour for no benefit. Recorded so the absence reads as a decision
+# rather than an unfinished monorepo definition.
+#
+# `virtualStoreDirMaxLength: 60`: the default store path length overflows the Windows MAX_PATH
+# budget for this dependency tree, whose packages carry long scoped names.
 virtualStoreDirMaxLength: 60
+
+# Release-age exemptions.
+#
+# `minimumReleaseAge` normally holds a package back until it is old enough to have been vetted;
+# these are exempt because the whole `@deepseek-ai/dsh-*` set is published in lockstep and pinned
+# to the exact prerelease `0.2.0-rc.2` — there is no older, "safer" version of any of them to
+# wait for.
+#
+# ⚠️ **Coupled to the lockfile.** Every entry hard-codes `0.2.0-rc.2`, so bumping the DSH version
+# without updating this list makes `pnpm install` fail the release-age check for dozens of
+# packages at once, with an error that does not name the cause.
+#
+# The list must cover every `@deepseek-ai/dsh-*` package pnpm **resolves** — which is the whole
+# lockfile set, not just `package.json`'s direct dependencies: 49 of the 75 entries below are
+# transitive. `verify:release` asserts set and version equality against the lockfile, so the two
+# cannot drift silently, and asserts the sort order too.
+#
+# Sorted by **package name**, so a base package precedes its suffixed siblings
+# (`dsh-session-format` before `dsh-session-format-catalog`). A plain string sort would not: the
+# `@` that ends the name sorts after the `-` that begins the suffix. Strict order is what makes a
+# dropped entry visible in review rather than merely absent.
 minimumReleaseAgeExclude:
+  - '@deepseek-ai/dsh-agent@0.2.0-rc.2'
   - '@deepseek-ai/dsh-agent-default-model@0.2.0-rc.2'
   - '@deepseek-ai/dsh-agent-preset-registry@0.2.0-rc.2'
-  - '@deepseek-ai/dsh-agent@0.2.0-rc.2'
   - '@deepseek-ai/dsh-api-gateway@0.2.0-rc.2'
   - '@deepseek-ai/dsh-api-remotes@0.2.0-rc.2'
   - '@deepseek-ai/dsh-api-session-controller@0.2.0-rc.2'
@@ -27,8 +58,8 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-client-ui-sidebar@0.2.0-rc.2'
   - '@deepseek-ai/dsh-client-ui-slots@0.2.0-rc.2'
   - '@deepseek-ai/dsh-commands@0.2.0-rc.2'
-  - '@deepseek-ai/dsh-compaction-image-offload@0.2.0-rc.2'
   - '@deepseek-ai/dsh-compaction@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-compaction-image-offload@0.2.0-rc.2'
   - '@deepseek-ai/dsh-config-editor@0.2.0-rc.2'
   - '@deepseek-ai/dsh-credentials@0.2.0-rc.2'
   - '@deepseek-ai/dsh-deque@0.2.0-rc.2'
@@ -43,25 +74,25 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-native-command@0.2.0-rc.2'
   - '@deepseek-ai/dsh-package-manifest@0.2.0-rc.2'
   - '@deepseek-ai/dsh-ptc-runtime@0.2.0-rc.2'
-  - '@deepseek-ai/dsh-sandbox-policy@0.2.0-rc.2'
   - '@deepseek-ai/dsh-sandbox@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-sandbox-policy@0.2.0-rc.2'
   - '@deepseek-ai/dsh-schedule@0.2.0-rc.2'
   - '@deepseek-ai/dsh-scope@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-session@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-session-format@0.2.0-rc.2'
   - '@deepseek-ai/dsh-session-format-catalog@0.2.0-rc.2'
   - '@deepseek-ai/dsh-session-format-v0-to-v1@0.2.0-rc.2'
   - '@deepseek-ai/dsh-session-format-v1-to-v2@0.2.0-rc.2'
   - '@deepseek-ai/dsh-session-format-v2-to-v3@0.2.0-rc.2'
   - '@deepseek-ai/dsh-session-format-v3-to-v4@0.2.0-rc.2'
-  - '@deepseek-ai/dsh-session-format@0.2.0-rc.2'
   - '@deepseek-ai/dsh-session-persistence@0.2.0-rc.2'
   - '@deepseek-ai/dsh-session-projection@0.2.0-rc.2'
   - '@deepseek-ai/dsh-session-query@0.2.0-rc.2'
   - '@deepseek-ai/dsh-session-title@0.2.0-rc.2'
-  - '@deepseek-ai/dsh-session@0.2.0-rc.2'
   - '@deepseek-ai/dsh-settings@0.2.0-rc.2'
   - '@deepseek-ai/dsh-skill@0.2.0-rc.2'
-  - '@deepseek-ai/dsh-storage-domain@0.2.0-rc.2'
   - '@deepseek-ai/dsh-storage@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-storage-domain@0.2.0-rc.2'
   - '@deepseek-ai/dsh-subagent@0.2.0-rc.2'
   - '@deepseek-ai/dsh-system-prompt@0.2.0-rc.2'
   - '@deepseek-ai/dsh-timeout@0.2.0-rc.2'

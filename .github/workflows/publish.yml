@@ -55,6 +55,24 @@ jobs:
   publish:
     name: Publish trusted npm release
     runs-on: ubuntu-latest
+    # Serialized per release tag.
+    #
+    # The already-published check and `npm publish` are two separate steps, so without this two
+    # overlapping runs — a `release: published` event plus a manual `workflow_dispatch`, or a
+    # re-run — could both observe `skip=false` and race to publish the same version. The first
+    # would succeed and the second would fail on a duplicate, which is a confusing result for an
+    # operator who did nothing wrong.
+    #
+    # `cancel-in-progress: false` on purpose: the waiting run should proceed and then find the
+    # version already published (the step below reports that as an idempotent skip), not be
+    # cancelled part-way through a publish.
+    concurrency:
+      group: publish-${{ github.event.release.tag_name || inputs.tag }}
+      cancel-in-progress: false
+    # A hung `pnpm install`, build, or `npm publish` (a network stall) would otherwise hold the
+    # runner — and the `id-token: write` capability it carries — for up to GitHub's 6-hour
+    # default. This job is install + typecheck + build + publish; 20 minutes is generous.
+    timeout-minutes: 20
     # `id-token: write` is granted on the job rather than the workflow: only this
     # job publishes, so a step added elsewhere in the workflow cannot mint an OIDC
     # token for the trusted publisher as a side effect of running.
@@ -92,6 +110,10 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          # Keyed off the `pnpm` that `pnpm/action-setup` just put on PATH, which is why this
+          # has to come after it (it does). Without the cache every publish re-downloads the
+          # whole store, which is both slower and more exposed to a transient registry failure.
+          cache: pnpm
       - name: Install npm with trusted-publishing support
         run: npm install --global npm@11.5.1
       - name: Verify tag matches package version
@@ -108,7 +130,24 @@ jobs:
       - name: Build the node and client bundles
         run: pnpm run build
       - name: Assert the committed bundles are in sync with src/
-        run: git diff --exit-code -- lib/
+        run: |
+          set -euo pipefail
+          # `git status --porcelain`, not `git diff --exit-code -- lib/`.
+          #
+          # `git diff` compares only **tracked** files, so a source change that made the build
+          # emit a brand-new artifact under `lib/` — or delete one — left this step reporting
+          # clean while the committed bundles were in fact out of sync. `files` ships `lib`, so
+          # `npm publish` would then have shipped the mismatch, which is exactly the guarantee
+          # this step exists to make. Porcelain covers modified, added and deleted at once.
+          #
+          # Note `git status --porcelain` always exits 0, so it has to be tested rather than
+          # chained into an `&&`.
+          CHANGED="$(git status --porcelain -- lib/)"
+          if [ -n "$CHANGED" ]; then
+            printf '%s\n' "$CHANGED"
+            echo '::error::lib/ is not in sync with src/ — run `pnpm build` and commit the result.'
+            exit 1
+          fi
       - name: Verify the release facts
         # The same gate a release is cut under, minus `verify:bundle` — that one
         # needs a locally installed DSH's app.asar, which a runner does not have.
