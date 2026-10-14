@@ -304,6 +304,28 @@ export function reconcileManualOrder(
   }
   const result = [...pins, ...ordered, ...ordinary, ...archives]
   const pending = new Set(ordinary)
+  /**
+   * Move a forked Session next to the row it was forked from, depth-first.
+   *
+   * ## Known imprecision, measured rather than assumed
+   *
+   * The review flagged this as a bug: a fork whose parent is **pinned** should land after
+   * the pin, and it does not — `result` is `[...pins, ...ordered, ...ordinary, ...]`, so
+   * a pinned parent's `indexOf` is near the front and the child is spliced in ahead of the
+   * row it came from.
+   *
+   * I first "fixed" it by computing the removal index before the insertion and re-reading
+   * the parent's index afterwards. A five-case differential test against the original —
+   * pinned parent, ordered parent, ordinary parent both ways round, and a three-deep
+   * chain — showed **identical output in all five**. The change was a no-op and its
+   * comment described a mechanism that did not exist, so it was reverted rather than kept
+   * as false reassurance.
+   *
+   * The ordering defect is real but subtler than a one-line index fix: it follows from
+   * where a pinned ancestor sits relative to `ordinary`, and correcting it means deciding
+   * whether a fork should follow its pin at all. That is a behaviour decision, not a
+   * cleanup, so it is left as the upstream code has it and recorded here instead.
+   */
   const placeFork = (id: SessionId): void => {
     if (!pending.delete(id)) return
     const parentId = summaries[id]?.parentId
@@ -462,9 +484,15 @@ function groupByWorkspace(
     // The archived-only view lists archives, not the Workspace inventory, so
     // a Workspace without archived Sessions contributes no group.
     if (archivedFilter === 'only' && members.length === 0) continue
+    // `Date.parse` answers NaN for a missing or malformed `createdAt`, and `buildGroup`
+    // types the field as `number | undefined` — so a bare `Date.parse(...)` hands the
+    // group a NaN that claims to be a real timestamp. `undefined` is the honest value for
+    // "no usable creation time": consumers that sort or compare on it then fall back
+    // predictably instead of propagating a NaN that makes every comparison false.
+    const created = Date.parse(workspace.createdAt)
     groups.push(buildGroup(
       workspace.workspaceId, workspace.workspaceId, workspace.path,
-      Date.parse(workspace.createdAt), workspace.title, members,
+      Number.isFinite(created) ? created : undefined, workspace.title, members,
     ))
   }
   const stray = list.ids
@@ -843,6 +871,16 @@ function folderPath(path: string): string {
 /**
  * Find the nearest registered ancestor, excluding the Workspace directory itself.
  * Paths use Host spelling; matching is case-sensitive, like Workspace identity.
+ *
+ * ## Why a root folder cannot be a parent
+ *
+ * {@link folderPath} strips trailing separators, so both `/` and `//` normalize to the
+ * empty string. That made the prefix test degenerate for a root: `${root}/` becomes `/`,
+ * and **every** absolute path starts with `/`, so a registered `/` (or `C:/` for that
+ * matter — `folderPath('C:/')` is `C:`) matched as the parent of everything. The guard
+ * below skips a root outright, which is also the honest answer: the filesystem root is
+ * not a meaningful "owning folder" for a Workspace, and the official sidebar does not
+ * offer it as one.
  * @param path - Workspace directory.
  * @param parents - registered Workspace directory paths.
  * @returns the owning parent path, or undefined when no parent contains the Workspace.
@@ -853,6 +891,9 @@ export function owningParentFolder(path: string, parents: readonly string[]): st
   let length = -1
   for (const parent of parents) {
     const root = folderPath(parent)
+    // A root normalizes to '' (POSIX) or a bare drive ('C:'); neither can be a parent,
+    // and both would otherwise prefix-match every path below them.
+    if (root === '' || /^[A-Za-z]:$/.test(root)) continue
     if (root.length > length && child !== root && child.startsWith(`${root}/`)) {
       owner = parent
       length = root.length

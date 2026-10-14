@@ -28,7 +28,8 @@ globalThis.window = {
   },
 }
 
-const { deriveGroups, deriveSearchResults, UNGROUPED_KEY, owningSourceKey } = await import('../src/vendored/client/tree.ts')
+const { deriveGroups, deriveSearchResults, UNGROUPED_KEY, owningSourceKey, owningParentFolder } =
+  await import('../src/vendored/client/tree.ts')
 
 const failures = []
 const check = (label, ok, detail) => {
@@ -231,6 +232,56 @@ const overlapping = [
 check('two sources claiming one Session label deterministically',
   labelOfId(searchFor('s', overlapping), 's1') === '先',
   String(labelOfId(searchFor('s', overlapping), 's1')))
+
+// A Workspace whose `createdAt` is missing or malformed must not hand a group a NaN.
+//
+// `buildGroup` types the field `number | undefined`, so a bare `Date.parse(...)` produced
+// a NaN that claimed to be a real timestamp; consumers sorting or comparing on it then had
+// every comparison answer false. Asserted for all three cases so the guard cannot be
+// dropped, and so the valid case is pinned too — the fix must not turn a real date into
+// `undefined`.
+{
+  const emptyList = { ids: [], byId: {}, projectionsBySession: {} }
+  const emptyRowState = { pinnedSessionIds: [], archivedSessionIds: [], archivedFilter: 'default' }
+  const emptyView = { expandedGroups: [] }
+  const createdAtOf = (createdAt) => {
+    const one = {
+      workspaceId: 'w1', path: 'C:/w1', title: 'w1', sessionIds: [],
+      createdAt, updatedAt: '2026-01-01T00:00:00.000Z',
+    }
+    return deriveGroups(emptyList, [one], emptyRowState, new Map(), emptyView)[0]?.createdAt
+  }
+  check('a missing createdAt yields undefined, not NaN', createdAtOf('') === undefined, String(createdAtOf('')))
+  check('a malformed createdAt yields undefined, not NaN',
+    createdAtOf('not-a-date') === undefined, String(createdAtOf('not-a-date')))
+  check('a valid createdAt is preserved',
+    createdAtOf('2024-01-01T00:00:00.000Z') === Date.parse('2024-01-01T00:00:00.000Z'),
+    String(createdAtOf('2024-01-01T00:00:00.000Z')))
+  check('no group ever carries a NaN createdAt',
+    !deriveGroups(emptyList, [{ workspaceId: 'w1', path: 'C:/w1', title: 'w1', sessionIds: [], createdAt: 'x', updatedAt: 'y' }],
+      emptyRowState, new Map(), emptyView).some(group => Number.isNaN(group.createdAt)))
+}
+
+// `owningParentFolder` had no coverage at all, which is how its root case went unnoticed:
+// `folderPath` strips trailing separators, so `/` normalizes to empty and `C:/` to `C:`,
+// and the prefix test `${root}/` then matched **every** path below a registered root.
+{
+  check('a POSIX root is never a parent',
+    owningParentFolder('/a/b', ['/']) === undefined, String(owningParentFolder('/a/b', ['/'])))
+  check('a bare drive is never a parent',
+    owningParentFolder('C:/a/b', ['C:/']) === undefined, String(owningParentFolder('C:/a/b', ['C:/'])))
+  check('the nearest real ancestor wins',
+    owningParentFolder('/a/b/c', ['/a', '/a/b']) === '/a/b',
+    String(owningParentFolder('/a/b/c', ['/a', '/a/b'])))
+  check('an unrelated sibling is not a parent',
+    owningParentFolder('/x/y', ['/a']) === undefined, String(owningParentFolder('/x/y', ['/a'])))
+  check('a Workspace is not its own parent',
+    owningParentFolder('/a/b', ['/a/b']) === undefined, String(owningParentFolder('/a/b', ['/a/b'])))
+  check('trailing separators do not change the answer',
+    owningParentFolder('/a/b', ['/']) === undefined
+    && owningParentFolder('/a/b/', ['/a']) === '/a',
+    `${String(owningParentFolder('/a/b', ['/']))} / ${String(owningParentFolder('/a/b/', ['/a']))}`)
+}
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)
 process.exit(failures.length === 0 ? 0 : 1)
