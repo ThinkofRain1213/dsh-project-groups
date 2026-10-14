@@ -168,14 +168,31 @@ export function installWorkspaceShortcuts(
     ctx.effect(() => ctx.shortcuts.register({
       id: id as ShortcutCommandId, label, aliases, defaults: {
         'desktop:macos': { code, modifiers }, 'desktop:windows': { code, modifiers }, 'desktop:linux': { code, modifiers },
-        // `web:linux` alongside the other two: the desktop entries cover three platforms,
-        // and the web defaults covered only macOS and Windows, so a browser on Linux fell
-        // through to no binding at all and the command was unreachable there.
-        // (`ShortcutProfile` is `` `${ShortcutRuntime}:${ShortcutPlatform}` ``, and
-        // `ShortcutPlatform` includes `'linux'`.)
+        // `web:linux` is deliberately **absent**, and adding it breaks the whole plugin.
+        //
+        // An `ocr` review finding argued that a browser on Linux falls through to no binding, so
+        // the command is unreachable there, and that the entry was simply missing. That reads as
+        // correct and is the opposite of the truth: the shortcut service has a *hard* restriction
+        // on web bindings, and `defaults['web:linux']` is the one key that trips it.
+        //
+        // Measured from `@deepseek-ai/dsh-client-shortcuts/lib/client.js`: `register` walks every
+        // `runtime × platform` pair, and for one whose default is present it calls
+        // `isWebBindingAllowed`. For `platform: 'linux'` that returns true only for the three
+        // bindings `primary+Slash`, `primary+shift+Comma`, `primary+shift+Period` — every other
+        // web binding is refused. Our commands are `KeyN`/`KeyK`/`KeyO`/`KeyG`/`KeyF`/`KeyA` with
+        // `primary`(+`alt`), so **none** qualify and the first one throws:
+        //
+        //     Unsupported Web shortcut: session.new
+        //
+        // `register` runs inside `ctx.effect(...)`, which executes its callback synchronously
+        // during `apply`. So that throw fails the entire client plugin: `uiWorkspace` is never
+        // provided, the eleven official entries that wait on it stay `pending`, and the side panel
+        // shows "Failed to load plugins" — with no shortcut involved, at load time.
+        //
+        // This is why upstream has no `web:linux` key: it is not an omission to be fixed on
+        // re-sync. Leave it out, and do not "complete" the platform list.
         'web:macos': { code, modifiers: webModifiers },
         'web:windows': { code, modifiers: webModifiers },
-        'web:linux': { code, modifiers: webModifiers },
       },
       regions: ['page', 'editable'], modals: [], resolve,
     }), `ui-workspace: ${id}`)
