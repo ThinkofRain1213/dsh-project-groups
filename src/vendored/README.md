@@ -263,6 +263,8 @@ Each fix is marked in the source with a comment naming the defect, so a
 | `rows/WorkspaceBrowser.tsx` | the link row's `settled` check state was a two-level nested ternary, the shape the style rule forbids; flattened to a chain | re-apply |
 | `session-actions/ArchiveSession.tsx` | the confirm handler used `.then`/`.catch` and repeated `setArchiving(false)` in both callbacks; now one `async` function with a single `try`/`catch`, which is both the project's async convention and the place the loading/error/reset transitions belong | re-apply |
 | `WorkspacePicker.tsx` | `adoptDirectory` used a `.then`/`.catch` chain; now `async`/`await` with one `try`/`catch` | re-apply |
+| `css-modules.d.ts` | the bodyless `declare module '*.css'` types every plain CSS import as `any`; documented as deliberate (an ambient wildcard cannot be annotated inline), and recorded that nothing in this tree imports a plain `.css` today — only `*.module.css`, which has a real shape | keep the comment; narrow it if a side-effect import is ever added |
+| `rows/WorkspaceBrowser.tsx` | three comment defects: the row-identity explanation was repeated verbatim across two consecutive blocks (second truncated), and "The search results' restore button…" sat above the New-project dialog where it described nothing (the real copy is above `onSessionUnarchive`) | re-apply the removals |
 
 ### Deliberate behaviour deviations
 

@@ -966,8 +966,6 @@ function LinkRows({
           // The row's **own** identity. Keying by index made a removal hand every later component
           // the next row's value, so it re-checked text nobody touched and briefly showed the
           // verdict that belonged to the value it used to hold.
-          // The row's **own** identity. Keying by index made a removal hand every later component
-          // the next row's value.
           key={row.id}
           id={row.id}
           url={row.url}
@@ -2796,8 +2794,6 @@ export function WorkspaceBrowser({
     }).finally(() => { setPickingRenameDirectory(false) })
   }
 
-  // The search results' restore button; the row actions own the rest of the
-  // Session verbs as slot entries.
   // New-project dialog. Structurally the rename dialog with an empty seed: a
   // project is a title plus the directories it associates, and neither exists
   // until the dialog is confirmed. Browser-owned for the same reason the others

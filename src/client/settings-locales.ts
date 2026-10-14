@@ -9,7 +9,9 @@
  * The namespace name follows the official convention for a plugin's own settings
  * page (`settings.pluginInventory`, `settings.agentPreset`).
  */
-import type {} from '@deepseek-ai/dsh-client-ui-slots'
+// The augmentation target, and — since `LocaleNamespaceMap` is imported here — the type the
+// namespace-id guard at the bottom compares against.
+import type { LocaleNamespaceMap } from '@deepseek-ai/dsh-client-ui-slots'
 
 /** Dictionary namespace owned by the settings card. */
 export const SETTINGS_NS = 'settings.projectGroups'
@@ -263,3 +265,23 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     'settings.projectGroups': ProjectGroupsSettingsKey
   }
 }
+
+/**
+ * Compile-time guard: the literal in the augmentation above and {@link SETTINGS_NS} must be the
+ * same string.
+ *
+ * The namespace is written twice because TypeScript requires an interface member key to be a
+ * string literal, so the augmentation cannot reference the constant. That makes a one-sided
+ * rename compile clean while silently detaching the typed lookup from the runtime namespace
+ * registration — the card would then render untranslated keys with no error anywhere.
+ *
+ * `LocaleNamespaceMap` is imported rather than copied, so this compares against the same
+ * interface the augmentation targets: change the literal there and `typeof SETTINGS_NS` no
+ * longer extends its keys, the conditional resolves to `never`, and the assignment below fails
+ * to compile. The `void` is what keeps the value from being reported as unused; the assertion
+ * is the point, not the runtime value.
+ */
+type SettingsNamespaceIsRegistered =
+  typeof SETTINGS_NS extends keyof LocaleNamespaceMap ? true : never
+const settingsNamespaceIsRegistered: SettingsNamespaceIsRegistered = true
+void settingsNamespaceIsRegistered

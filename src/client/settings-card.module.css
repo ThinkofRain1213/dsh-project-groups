@@ -504,6 +504,29 @@
   color: var(--dsw-alias-label-primary);
 }
 
+/*
+ * `.pickerName` when it is a real button — the spec picker's select affordance.
+ *
+ * The resets make a button render like the span it replaced, and `flex: 1` keeps the click
+ * target as wide as the row rather than only as wide as the text, which is what it was when the
+ * row itself carried the click handler. A separate class rather than more `.pickerName` rules
+ * because the browser picker uses that class on a span.
+ */
+.pickerNameButton {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.pickerNameButton:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
 /* The subtitle that distinguishes two same-titled Workspaces. */
 .pickerPath {
   overflow-wrap: anywhere;

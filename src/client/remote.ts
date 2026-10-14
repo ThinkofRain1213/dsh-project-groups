@@ -19,8 +19,8 @@
  *    (`packages/typert/protocol/src/types.ts`).
  *
  * So the pass-through codec below satisfies the contract exactly. That is
- * honest rather than a shortcut: every payload in `src/protocol.ts` is flat
- * JSON — strings and arrays of strings — so there is nothing to coerce and a
+ * honest rather than a shortcut: every payload in `src/protocol.ts` is plain
+ * JSON data — objects, arrays, strings and booleans — so there is nothing to coerce and a
  * schema would only restate the interface next to it. A payload that grows a
  * non-JSON field is the point at which this needs a real codec.
  *
@@ -90,7 +90,7 @@ export const projectGroupsRemote: TypertRemoteContribution = {
   descriptors: [
     unary('baseline', [], 'ProjectBaseline'),
     unary('create', ['request'], 'ProjectValueResult'),
-    unary('update', ['request'], 'ProjectValueResult'),
+    unary('update', ['request'], 'ProjectUpdateValue'),
     unary('delete', ['request'], 'ProjectDeleteValue'),
     unary('reorder', ['request'], 'ProjectOrderValue'),
     unary('assign', ['request'], 'ProjectAssignmentValue'),

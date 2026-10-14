@@ -289,36 +289,48 @@ export function SpecPicker({
         </p>
       )}
       {specs.length === 0 ? null : (
-        <div role="listbox" aria-label={t('specPickerAria')} className={css.pickerList}>
+        <ul aria-label={t('specPickerAria')} className={css.pickerList}>
           {specs.map(name => {
             const active = name === staged
             return (
-              <div
+              <li
                 key={name}
-                role="option"
-                aria-selected={active}
                 className={active ? `${css.specRow} ${css.pickerRowActive}` : css.specRow}
-                onClick={() => { setStaged(name) }}
               >
-                <span className={css.pickerName}>{name}</span>
+                {/*
+                  A real button, not a `div role="option"`.
+ 
+                  The listbox shape made the rows unreachable: `role="option"` carries no
+                  keyboard behaviour of its own, so nothing here could be selected without a
+                  mouse — while the delete control *inside* the option was focusable, which is
+                  also invalid ARIA (an option must not contain interactive children). Real
+                  buttons fix both at once: each is tabbable and Enter/Space activates it, and
+                  the delete button is now a **sibling** rather than a parent-nested child.
+
+                  `aria-pressed` carries the selection, so nothing has to manage a roving
+                  tabindex the way a radiogroup would.
+                */}
+                <button
+                  type="button"
+                  className={`${css.pickerName} ${css.pickerNameButton}`}
+                  aria-pressed={active}
+                  onClick={() => { setStaged(name) }}
+                >
+                  {name}
+                </button>
                 <button
                   type="button"
                   className={css.iconButton}
                   aria-label={`${t('specDelete')}: ${name}`}
                   disabled={busy}
-                  onClick={(event) => {
-                    // The row's own click would otherwise stage the spec on the
-                    // way to deleting it.
-                    event.stopPropagation()
-                    void askDelete(name)
-                  }}
+                  onClick={() => { void askDelete(name) }}
                 >
                   <IconTrashOutlineRegular size={14} />
                 </button>
-              </div>
+              </li>
             )
           })}
-        </div>
+        </ul>
       )}
     </Modal>
   )

@@ -40,7 +40,7 @@
  */
 import type { ProjectRecord } from '../spec.ts'
 import type { DocumentInjection, InjectionLocale, ProjectInjectionInput } from '../injection.ts'
-import { renderProjectInjection } from '../injection.ts'
+import { PROJECT_CONTEXT_CLOSE, renderProjectInjection } from '../injection.ts'
 import type { ProjectGroupsSettingsKey } from './settings-locales.ts'
 
 /**
@@ -172,14 +172,30 @@ const SEGMENT_STARTS = [
  * two lists sit adjacent in the block by design, so every directory sample showed a link line too.
  * @param text - a rendered block.
  * @param from - the first line of the segment wanted.
- * @returns that segment, frame excluded.
+ * @returns that segment, frame excluded; empty when `from` is not a start the renderer emits.
  */
 function segmentFrom(text: string, from: string): string {
   const lines = text.split('\n')
   const at = lines.findIndex(line => line.startsWith(from))
-  if (at === -1) return text
-  // The last line is always the closing frame; start by dropping it, then stop at the next start.
-  const body = lines.slice(at, -1)
+  if (at === -1) {
+    // The label was not found, so `SEGMENT_STARTS` no longer matches what the renderer emits.
+    //
+    // Returning the whole block here — which is what this did — showed the panel every segment at
+    // once for the one group whose label had drifted, which reads as a layout bug rather than as
+    // the drift it is. An empty segment is visibly wrong in exactly the group that is wrong, and
+    // the warning names the label so the `SEGMENT_STARTS` entry can be fixed. Not a throw: this
+    // runs inside a settings-card render, and one stale label should not take the card down.
+    console.warn(`dsh-project-groups: injection preview found no segment starting with ${JSON.stringify(from)}`)
+    return ''
+  }
+  // The closing frame is the last line, and that is checked rather than assumed.
+  //
+  // `lines.slice(at, -1)` hard-coded "the last line is always the closing frame": a trailing blank
+  // line, or a frame that changed shape, would silently drop a real line of content instead — the
+  // same class of quiet wrongness as the label drift above. When the last line is not the frame,
+  // nothing is dropped.
+  const closes = lines[lines.length - 1]?.trim() === PROJECT_CONTEXT_CLOSE
+  const body = lines.slice(at, closes ? -1 : undefined)
   const next = body.findIndex((line, index) => index > 0 && SEGMENT_STARTS.some(start => line.startsWith(start)))
   return (next === -1 ? body : body.slice(0, next)).join('\n').trimEnd()
 }
@@ -190,9 +206,15 @@ function segmentFrom(text: string, from: string): string {
  * ## Why grouped rather than listed flat
  *
  * The block is built one function per segment, and a reader arrives with a segment in mind — "what
- * happens to my links" — not with a shape in mind. Grouping also makes the one genuinely surprising
- * contrast visible: an unset directory still prints a sentence, while an empty link list prints
- * **no line at all**.
+ * happens to my links" — not with a shape in mind. Grouping also makes one genuinely surprising
+ * contrast visible: an unset directory and an empty link list both state themselves with a
+ * sentence (`Relevant directory: …` / `Related link: …`), while a document segment that cannot
+ * resolve prints a line that says so rather than vanishing.
+ *
+ * (This used to say the empty link list prints **no line at all** — the opposite of what
+ * `renderLinkLines` does, and the opposite of what the links-group comment below it describes. The
+ * renderer was changed to state the unset case rather than drop it, and this sentence was not
+ * updated with it.)
  *
  * ## Gated exactly as the Host gates
  *
