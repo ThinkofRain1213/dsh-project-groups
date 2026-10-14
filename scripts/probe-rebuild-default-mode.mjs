@@ -18,7 +18,7 @@
  * Usage: node probe-rebuild-default-mode.mjs <dshExe> <asarRoot> <dshHome> [profile]
  */
 import { spawn } from 'node:child_process'
-import { mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdirSync, existsSync, readFileSync } from 'node:fs'
 import { redactToken } from './lib/redact.mjs'
 import { chromium } from 'playwright-core'
 
@@ -43,6 +43,13 @@ const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--
 let out = ''
 const url = await new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-1500))}`)), 120_000)
+  // A failed `spawn` (bad exe path, permission denied) emits `'error'` and never writes to stdout,
+  // so without this listener the promise never settled from that path and the failure surfaced two
+  // minutes later as a misleading 'boot timeout'. Rejecting here reports the real reason at once.
+  child.on('error', (error) => {
+    clearTimeout(timer)
+    reject(new Error(`spawn failed for ${exe}: ${error.message}`))
+  })
   child.stdout.on('data', (chunk) => {
     out += String(chunk)
     const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
@@ -51,8 +58,12 @@ const url = await new Promise((resolve, reject) => {
   child.stderr.on('data', (chunk) => { out += chunk })
 })
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
+// Declared here because `rpc` closes over `page`; **assigned** inside the `try` below, so a
+// launch failure (no browser binary) reaches the `finally` that kills the child. Launching at this
+// point threw straight out of the script and left the backend running with no cleanup and no
+// diagnostic.
+let browser
+let page
 
 const rpc = (method, args) => page.evaluate(async ({ method, args }) => {
   const token = new URL(location.href).searchParams.get('token') ?? ''
@@ -77,13 +88,20 @@ const registryState = () => {
       rows: Object.entries(parsed.tables?.workspaces ?? {})
         .map(([id, row]) => ({ id, path: row.path })),
     }
-  } catch {
+  } catch (error) {
+    // Logged, not swallowed. Returning `null` silently made the checks below compare against
+    // `undefined` (e.g. `newId !== before?.defaultWorkspaceId`) and pass vacuously, so an
+    // unreadable registry turned the probe's core conclusion into an unreliable one with nothing
+    // in the output to say so.
+    console.warn(`registryState: cannot read the workspace registry — ${String(error?.message ?? error)}`)
     return null
   }
 }
 
-let running = child
 try {
+  browser = await chromium.launch({ headless: true })
+  page = await browser.newPage()
+
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(8000)
 
@@ -94,6 +112,12 @@ try {
   const before = registryState()
   console.log(`  defaultWorkspaceId=${String(before?.defaultWorkspaceId)}`)
   check('拿到默认工作区', workspace !== null)
+  // `check` records a failure but does not abort, so without this the rest of the probe
+  // dereferences `workspace.workspaceId` on `null` and dies with a TypeError — a stack trace
+  // instead of a verdict.
+  if (workspace === null) {
+    throw new Error('the default Workspace did not resolve, so the method below cannot run')
+  }
 
   console.log('')
   console.log('=== 2. 删除它的注册（模拟用户误删）===')
@@ -135,15 +159,30 @@ try {
   } else {
     console.log('  ⇒ 重建后 initializeDefault 恢复解析 ⇒ 3b 对两种模式都成立。')
   }
-  check('（记录事实）重建后 initializeDefault 是否恢复', true,
-    stillBroken ? '仍然解析不到' : '恢复解析')
+  // A **recorded fact**, not a check.
+  //
+  // This line used to read `check('（记录事实）…', true, …)` — the assertion was the literal
+  // `true`, so it could never fail, and the script then printed 'ALL CHECKS PASSED' and exited 0
+  // even when `stillBroken` was `false`, i.e. when the very outcome the probe exists to detect had
+  // occurred. The verdict is this probe's whole output, so it is stated as a fact, repeated in the
+  // summary below, and the exit code reports whether the *measurement* was obtained — which is
+  // what the checks above actually test.
+  const verdict = stillBroken
+    ? 'default 模式：重建后仍未恢复解析 ⇒ 3b 的重建对 default 不成立'
+    : 'default 模式：重建后恢复解析 ⇒ 3b 对两种模式都成立'
+  console.log(`  [记录] ${verdict}`)
 
   console.log('')
   console.log('=== 结果 ===')
+  console.log(`记录的事实：${verdict}`)
   console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED:\n  ${failures.join('\n  ')}`)
 } finally {
-  running.kill()
-  await browser.close()
-  rmSync(`${dshHome}/rebuild-probe`, { recursive: true, force: true })
+  child.kill()
+  // Guarded: the launch itself may have thrown, which is the case this `finally` exists for.
+  if (browser !== undefined) await browser.close()
+  // No `rmSync` here. This used to delete `${dshHome}/rebuild-probe` — a name this script never
+  // creates (nothing in the file writes it) — with `recursive: true, force: true`, so it would
+  // silently wipe any pre-existing directory of that name under a shared `DSH_HOME`. The probe
+  // creates nothing of its own to clean up: the directory it rebuilds is the Workspace's own path.
 }
 process.exit(failures.length === 0 ? 0 : 1)
