@@ -347,6 +347,14 @@ export class ProjectController extends TypertRemoteService {
   private operationTail: Promise<void> = Promise.resolve()
 
   /**
+   * Whether {@link close} has run.
+   *
+   * Read by {@link ready} so an open that resolves after teardown does not repopulate
+   * `this.domain` or re-install a `domain/changed` listener on a disposed service.
+   */
+  private disposed = false
+
+  /**
    * `ask_user_question` calls carrying our drift question, by call id.
    *
    * The call and its result arrive as two separate `session/event`s, and only the
@@ -522,7 +530,20 @@ export class ProjectController extends TypertRemoteService {
    */
   private async ready(): Promise<Domain<typeof projectDomainSpec>> {
     this.opening ??= (async () => {
-      this.domain = await this.ctx.storageDomain.open(projectDomainSpec)
+      const opened = await this.ctx.storageDomain.open(projectDomainSpec)
+      // A `close()` can land while this open is in flight — the disposer fires on
+      // unload, and an open started by `injectionText` or a Remote call may still be
+      // resolving. Without this check the assignment below would run *after* teardown:
+      // `this.domain` would be repopulated on a disposed service, the `domain/changed`
+      // listener would outlive the plugin, and nothing would ever close that domain.
+      // Leaving `this.domain` unset is the honest outcome — the caller that awaited
+      // this open sees the rejection/undefined state through the disposal path rather
+      // than a live domain the plugin no longer owns.
+      if (this.disposed) {
+        await opened.close()
+        throw new Error('dsh-project-groups: disposed while opening the project domain')
+      }
+      this.domain = opened
       // A marker left by a crash is cleared before any reader can observe the
       // half-applied state, and before a later mutation could overwrite the only
       // durable record of what still needs repairing.
@@ -538,6 +559,10 @@ export class ProjectController extends TypertRemoteService {
   }
 
   private async close(): Promise<void> {
+    // Set before anything else: `ready()` may be mid-open, and it checks this flag after
+    // its own await. Setting it first means an open that resolves from here on sees the
+    // disposal, closes what it opened, and does not assign.
+    this.disposed = true
     const domain = this.domain
     this.detach?.()
     this.detach = undefined
@@ -659,19 +684,30 @@ export class ProjectController extends TypertRemoteService {
    * read the same snapshot. The chain continues past a failure — a rejected write
    * must not wedge every later one — and the failure still reaches its own caller.
    *
+   * **The patch may be a function, and a list-building caller must use that form.**
+   * Passing a value means computing it before the call, which reads the global
+   * *outside* the critical section — the very read the chain exists to serialize. A
+   * caller that derived `projectIds` from `this.order()` and then queued it could
+   * lose a concurrent edit: both callers read the same pre-write list, and the later
+   * write silently dropped the earlier one's change. Taking the current record as an
+   * argument moves the derivation inside the chain, so the list is built from
+   * whatever the previous write actually left behind.
+   *
    * **Deliberately not merged into one verb per field pair.** A combined
    * `setDocSpecModeAndFileName` would fix the reported symptom while leaving the
    * hazard for the next pair of fields, which is why the queue is here instead.
    * @param domain - the open domain.
-   * @param patch - the fields to merge into the stored global.
+   * @param patch - the fields to merge, or a function deriving them from the current record.
    * @returns when this write has landed.
    */
   private async setGlobal(
     domain: Domain<typeof projectDomainSpec>,
-    patch: Partial<GlobalRecord>,
+    patch: Partial<GlobalRecord> | ((current: GlobalRecord) => Partial<GlobalRecord>),
   ): Promise<void> {
-    const write = this.globalWriteChain.then(() =>
-      domain.global.set({ ...domain.global.get(), ...patch }))
+    const write = this.globalWriteChain.then(() => {
+      const current = domain.global.get()
+      return domain.global.set({ ...current, ...(typeof patch === 'function' ? patch(current) : patch) })
+    })
     // Keep the chain alive after a rejection while letting this caller observe it.
     this.globalWriteChain = write.then(() => undefined, () => undefined)
     return write
@@ -1041,10 +1077,13 @@ export class ProjectController extends TypertRemoteService {
       }
       await this.setGlobal(domain, { pendingMutation: { operation: 'create', projectId } })
       await domain.table('projects').put(projectId, record)
-      await this.setGlobal(domain, {
-        projectIds: [projectId, ...this.order()],
+      // Derived inside the queued write: reading `this.order()` here would be a read
+      // outside the critical section, so a concurrent `create`/`reorder` landing in
+      // between would be silently dropped by this write.
+      await this.setGlobal(domain, current => ({
+        projectIds: [projectId, ...(current.projectIds ?? [])],
         pendingMutation: undefined,
-      })
+      }))
       return { project: this.projectValue(projectId, record) }
     })
   }
@@ -1084,25 +1123,31 @@ export class ProjectController extends TypertRemoteService {
     const title = request.title.trim()
     if (title === '') throw new Error('a project title is required')
     const domain = await this.ready()
-    const record = domain.table('projects').get(request.projectId)
-    if (record === undefined) throw new Error(`unknown project: ${request.projectId}`)
-    this.assertTitleFree(domain, title, request.projectId)
-    const next: ProjectRecord = {
-      ...record,
-      title,
-      directories: [...request.directories],
-      // Written explicitly, not left to the spread above: `next` starts as
-      // `{ ...record }`, so omitting this would **silently keep the old links** — the
-      // edit dialog would appear to save and change nothing.
-      //
-      // The same blank-drop `create` applies, from the same function: a rule written twice
-      // is a rule that disagrees with itself eventually (`docSpec` in Z-3 was exactly that —
-      // `create` accepted a value the edit path refused).
-      links: nonBlankLinks(request.links),
-      updatedAt: new Date().toISOString(),
-    }
-    await domain.table('projects').put(request.projectId, next)
-    return { project: this.projectValue(request.projectId, next) }
+    // Inside `operate`, like `create`: the uniqueness check and the write it guards
+    // must be one critical section. Running them outside let two concurrent writers both
+    // pass `assertTitleFree` and both store the same title — producing exactly the two
+    // indistinguishable rows that check exists to prevent.
+    return await this.operate(domain, async () => {
+      const record = domain.table('projects').get(request.projectId)
+      if (record === undefined) throw new Error(`unknown project: ${request.projectId}`)
+      this.assertTitleFree(domain, title, request.projectId)
+      const next: ProjectRecord = {
+        ...record,
+        title,
+        directories: [...request.directories],
+        // Written explicitly, not left to the spread above: `next` starts as
+        // `{ ...record }`, so omitting this would **silently keep the old links** — the
+        // edit dialog would appear to save and change nothing.
+        //
+        // The same blank-drop `create` applies, from the same function: a rule written twice
+        // is a rule that disagrees with itself eventually (`docSpec` in Z-3 was exactly that —
+        // `create` accepted a value the edit path refused).
+        links: nonBlankLinks(request.links),
+        updatedAt: new Date().toISOString(),
+      }
+      await domain.table('projects').put(request.projectId, next)
+      return { project: this.projectValue(request.projectId, next) }
+    })
   }
 
   /**
@@ -1129,10 +1174,10 @@ export class ProjectController extends TypertRemoteService {
   async remove(request: ProjectDeleteRequest): Promise<void> {
     const domain = await this.ready()
     await this.operate(domain, async () => {
-      await this.setGlobal(domain, {
-        projectIds: this.order().filter(id => id !== request.projectId),
+      await this.setGlobal(domain, current => ({
+        projectIds: (current.projectIds ?? []).filter(id => id !== request.projectId),
         pendingMutation: { operation: 'delete', projectId: request.projectId },
-      })
+      }))
       for (const [sessionId, record] of [...domain.table('assignments').entries()]) {
         if (record.projectId === request.projectId) await domain.table('assignments').delete(sessionId)
       }
@@ -1145,20 +1190,34 @@ export class ProjectController extends TypertRemoteService {
 
   /**
    * Move one project in display order.
+   *
+   * ## Why the whole computation runs inside `operate`
+   *
+   * The list it reorders is read from the global record and written back, so the read
+   * and the write have to be one critical section. Reading `this.order()` first and
+   * then queuing the derived list — the earlier shape — let a concurrent `create` or
+   * `reorder` land in between: this call would then write back a list built from the
+   * pre-write state and silently drop the other's change. Running on `operationTail`
+   * also serializes this verb against the compound mutations (`create`/`delete`),
+   * which it previously was not.
    * @param request - project to move and the project it should precede.
    * @returns the new order.
    */
   @Remote('reorder')
   async reorder(request: ProjectReorderRequest): Promise<ProjectOrderValue> {
     const domain = await this.ready()
-    const current = [...this.order()]
-    if (!current.includes(request.projectId)) throw new Error(`unknown project: ${request.projectId}`)
-    const rest = current.filter(id => id !== request.projectId)
-    const index = request.beforeId === undefined ? rest.length : rest.indexOf(request.beforeId)
-    if (index === -1) throw new Error(`unknown project: ${String(request.beforeId)}`)
-    const projectIds = [...rest.slice(0, index), request.projectId, ...rest.slice(index)]
-    await this.setGlobal(domain, { projectIds })
-    return { projectIds }
+    return await this.operate(domain, async () => {
+      const current = [...this.order()]
+      if (!current.includes(request.projectId)) throw new Error(`unknown project: ${request.projectId}`)
+      const rest = current.filter(id => id !== request.projectId)
+      const index = request.beforeId === undefined ? rest.length : rest.indexOf(request.beforeId)
+      if (index === -1) throw new Error(`unknown project: ${String(request.beforeId)}`)
+      const projectIds = [...rest.slice(0, index), request.projectId, ...rest.slice(index)]
+      // Still the function form: the derivation above must see the record this write
+      // will actually merge into, which `operate` guarantees by having waited.
+      await this.setGlobal(domain, () => ({ projectIds }))
+      return { projectIds }
+    })
   }
 
   /**
@@ -1794,15 +1853,32 @@ export class ProjectController extends TypertRemoteService {
       pending?.()
     }
     const refresh = async (): Promise<void> => {
-      frames.push({ type: 'baseline', value: await this.baseline() })
-      push()
+      try {
+        frames.push({ type: 'baseline', value: await this.baseline() })
+        push()
+      } catch (error) {
+        // `onChanged` fires this without awaiting it, so an escaped rejection here would
+        // be an unhandled rejection and the follower would silently miss that frame.
+        // Logged rather than swallowed: a baseline that keeps failing is a real fault,
+        // and the next `domain/changed` will try again.
+        console.warn('dsh-project-groups: failed to project a follow frame', error)
+      }
     }
     yield { type: 'baseline', value: await this.baseline() }
 
     await this.ready()
     const onChanged = (): void => { void refresh() }
     this.followers.add(onChanged)
-    const leave = (): void => { this.followers.delete(onChanged) }
+    const leave = (): void => {
+      this.followers.delete(onChanged)
+      // Resolve a pending `wake` as well. Aborting while the loop is parked here
+      // previously left the generator suspended forever: `while (!signal.aborted)` was
+      // never reached again, so the `finally` that removes the listener never ran, and
+      // nothing else could wake it — `leave` only deleted the follower. Waking it lets
+      // the loop observe `signal.aborted` on its next iteration and exit through the
+      // `finally`.
+      push()
+    }
     signal.addEventListener('abort', leave, { once: true })
     try {
       while (!signal.aborted) {
