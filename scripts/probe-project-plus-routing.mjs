@@ -91,16 +91,42 @@ try {
   calls.length = 0
   const row = page.locator('div').filter({ hasText: new RegExp(`^\\s*${title}\\s*$`) }).first()
   const plus = row.locator('button[aria-label*="新建会话"], button[aria-label*="新会话"]').first()
-  let plusCount = await plus.count()
+  const plusCount = await plus.count()
   console.log(`  行内 ＋ 命中: ${String(plusCount)}`)
-  if (plusCount === 0) {
-    // Fall back to the row's hover-revealed control, located by its accessible name.
+
+  // The target is whichever locator actually matched, tracked as a value rather than
+  // re-derived from a count — the earlier version keyed off `plusCount === 1` and got
+  // both branches backwards:
+  //
+  //   - `plus` is already `.first()`, so `plus.count()` is only ever 0 or 1. When the
+  //     row-scoped locator DID match, `plusCount === 1` sent `target` to the page-wide
+  //     `.first()` button, discarding the row scoping this block exists to enforce —
+  //     the click could land on the sidebar's own ＋ and the measurement would be of
+  //     the wrong endpoint.
+  //   - When the row scope matched nothing and the page-wide query found several,
+  //     `plusCount` became that larger number, so `target` fell back to the zero-match
+  //     `plus` and `click({ force: true })` timed out instead of failing with a reason.
+  //
+  // Choosing the locator first, then clicking it, removes the count from the decision.
+  let target = plusCount > 0 ? plus : undefined
+  if (target === undefined) {
+    // Fall back to the page-level control, but only to locate it: the probe still needs
+    // a ＋ that belongs to this project, so a page-wide match is reported as a failure
+    // rather than clicked.
     const all = page.locator('button[aria-label*="新建会话"], button[aria-label*="新会话"]')
-    console.log(`  全页 ＋ 数量: ${String(await all.count())}`)
-    plusCount = await all.count()
+    const allCount = await all.count()
+    console.log(`  行内未命中；全页 ＋ 数量: ${String(allCount)}`)
+    if (allCount > 0) target = all.first()
   }
-  if (plusCount > 0) {
-    const target = plusCount === 1 ? page.locator('button[aria-label*="新建会话"], button[aria-label*="新会话"]').first() : plus
+  console.log(`  项目行自己的 ＋ 是否命中: ${plusCount > 0 ? '是' : '否 ← 下面点的是全页控件，结论不可信'}`)
+  if (target !== undefined) {
+    // The row's ⊕ is a hover-revealed icon button: it resolves in the DOM but is not
+    // actionable until the row is hovered, so clicking it cold times out even with
+    // `force: true`. Every other probe that presses a row's ＋ hovers first
+    // (`probe-two-project-plus.mjs` does exactly this), and this one was the exception —
+    // which meant its click never landed at all.
+    await row.hover({ timeout: 5000 }).catch(() => {})
+    await page.waitForTimeout(400)
     await target.click({ force: true })
   }
   await page.waitForTimeout(6000)

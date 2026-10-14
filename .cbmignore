@@ -1,0 +1,21 @@
+# codebase-memory-mcp discovery rules for this repository.
+#
+# `src/vendored/` is a directory of **first-party source** that this plugin owns:
+# it is a byte-derived copy of upstream's `ui-workspace` client, patched in place,
+# reviewed and released as part of this package. The indexer's built-in skip list
+# treats a directory named `vendored` as third-party code and drops the whole
+# subtree — which is the opposite of what it is here. Roughly a fifth of the
+# findings from the 2026-10-14 review live in that subtree, so leaving it out
+# means the graph cannot answer questions about those files.
+#
+# The negation has to name the directory itself, not the files under it: a skipped
+# parent is pruned before its children are visited, so `!src/vendored/**` alone
+# would re-include nothing. Per the upstream discovery documentation, a
+# `.cbmignore` negation can override the ordinary entries in the built-in skip
+# list; only the four safety-core directories (`.git`, `node_modules`, and the two
+# worktree directories) are immune to it.
+#
+# Keep this file even though it changes only indexing: it is what makes an index
+# of this repository complete, and the next person to wonder why `src/vendored`
+# is missing from the graph should find this comment instead of re-deriving it.
+!src/vendored/

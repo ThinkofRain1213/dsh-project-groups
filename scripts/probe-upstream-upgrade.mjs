@@ -22,6 +22,7 @@
 import { spawn } from 'node:child_process'
 import { chromium } from 'playwright-core'
 import { findInstalledAsar, readAsarFile } from './lib/asar.mjs'
+import { redactToken } from './lib/redact.mjs'
 
 const [exe, asarRoot, dshHome, profile = 'pg'] = process.argv.slice(2)
 if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
@@ -54,25 +55,56 @@ console.log(`installed ui-workspace  : ${String(installedWorkspace)}`)
 console.log(`upstream matches vendor : ${installedWorkspace === VENDORED_FROM}`)
 console.log('')
 
-const child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
-  env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-})
-let out = ''
-const url = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`boot timeout:\n${out.slice(-2000)}`)), 120_000)
-  child.stdout.on('data', (chunk) => {
-    out += String(chunk)
-    const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
-    if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
+// Everything from the spawn onward lives inside the `try` below, so that *every*
+// failure path reaches the `finally` that kills the child and closes the browser.
+//
+// The earlier shape spawned and launched before the `try`, which meant a boot
+// timeout (120 s — reached exactly when `exe`/`BIN` is wrong, or the process dies
+// before printing `dsh web:`) rejected outside it and left the spawned Host running
+// as an orphan. The port is fixed (`PORT` above), so the orphan then held it and
+// poisoned the next run — the recurring "port already in use" failures across these
+// probes.
+//
+// `running`/`browser` are `let` and start undefined because the `finally` has to
+// tolerate a throw before either exists (a spawn that fails synchronously, a launch
+// that never returns). The review suggested `const` for `running` on the grounds that
+// nothing reassigns it; that was true of the old shape, where it was initialised from
+// `child` before the `try`, and stops being true once the assignment moves inside.
+let running
+let browser
+try {
+  running = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
+    env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
   })
-  child.stderr.on('data', (chunk) => { out += chunk })
-})
+  // Backstop for a failure that bypasses the `finally` (an uncaught throw in a
+  // signal handler, or a killed process): registered once the child exists.
+  process.on('exit', () => {
+    if (running !== undefined && running.exitCode === null && running.signalCode === null) running.kill()
+  })
+  let out = ''
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`boot timeout:\n${redactToken(out.slice(-2000))}`)), 120_000)
+    // A spawn that never produced a process (bad path) or one that died at once
+    // rejects here instead of waiting out the full 120 s and then reporting a bare
+    // "boot timeout" with no cause.
+    running.on('error', (error) => { clearTimeout(timer); reject(error) })
+    running.on('exit', (code, signal) => {
+      clearTimeout(timer)
+      reject(new Error(`Host exited before printing its URL (code ${String(code)}, signal ${String(signal)}):\n${redactToken(out.slice(-2000))}`))
+    })
+    running.stdout.on('data', (chunk) => {
+      out += String(chunk)
+      const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out)
+      if (m !== null) { clearTimeout(timer); setTimeout(() => resolve(m[1]), 3000) }
+    })
+    running.stderr.on('data', (chunk) => { out += chunk })
+  })
 
-const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage()
-const pageErrors = []
-const consoleErrors = []
+  browser = await chromium.launch({ headless: true })
+  const page = await browser.newPage()
+  const pageErrors = []
+  const consoleErrors = []
 page.on('pageerror', (error) => pageErrors.push(error.message))
 page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()) })
 
@@ -92,8 +124,6 @@ const dismiss = async () => {
   }
 }
 
-let running = child
-try {
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(9000)
   await dismiss()
@@ -123,6 +153,6 @@ try {
   console.log(`  是否出现启动级错误    : ${pageErrors.length === 0 ? '✅ 无' : `❌ ${pageErrors.length} 个`}`)
   console.log(`  上游版本是否仍匹配 vendor: ${installedWorkspace === VENDORED_FROM ? '✅ 匹配（无需同步）' : `⚠️ 已变（vendor ${VENDORED_FROM} → 安装 ${String(installedWorkspace)}）`}`)
 } finally {
-  running.kill()
-  await browser.close()
+  running?.kill()
+  await browser?.close()
 }
