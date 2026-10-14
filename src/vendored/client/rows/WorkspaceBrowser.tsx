@@ -2167,6 +2167,12 @@ function SearchResults({
       groupingOverride],
   )
   const pending = currentRemote.status === 'loading'
+  // A failed Host search is not an empty one. With `status === 'error'` the items are
+  // empty and `pending` is false, so the empty-state branch below would render
+  // `search.noMatches` — telling the user "nothing matched" when in fact nothing was
+  // asked successfully. The two need different words, and the failure needs to be
+  // visible, so the error state is pulled out here.
+  const searchFailed = currentRemote.status === 'error'
   const currentId = panelActive
     ? undefined
     : Object.values(list.byId).find(session => (session.retainedBy.mainView ?? 0) > 0)?.id
@@ -2201,7 +2207,10 @@ function SearchResults({
             ))}
           </div>
         )}
-        {!pending && results.items.length === 0 && (
+        {searchFailed && results.items.length === 0 && (
+          <div className={css.empty} role="alert">{t('search.failed')}</div>
+        )}
+        {!pending && !searchFailed && results.items.length === 0 && (
           <div className={css.empty}>{t('search.noMatches')}</div>
         )}
         {results.hasMore && (
@@ -2796,6 +2805,14 @@ export function WorkspaceBrowser({
   // composition without projects can perform.
   const [creating, setCreating] = useState(false)
   const [createDraft, setCreateDraft] = useState('')
+  /**
+   * Whether the create dialog's name field is mid-composition (IME).
+   *
+   * Its own ref rather than the rename dialog's `composingRef`: the two dialogs can be
+   * open at different times and share no state, so one flag for both would let one
+   * dialog's composition block or unblock the other's Enter.
+   */
+  const createComposingRef = useRef(false)
   const [createDirectories, setCreateDirectories] = useState<readonly string[]>([])
   /** The create dialog's link draft, reset per open like its directory list. */
   const [createRows, setCreateRows] = useState<readonly LinkRowDraft[]>([])
@@ -3372,7 +3389,14 @@ export function WorkspaceBrowser({
             data-modal-autofocus
             disabled={createBusy}
             onChange={(e) => { setCreateDraft(e.target.value) }}
-            onKeyDown={(e) => { if (e.key === 'Enter') confirmCreate() }}
+            // The same IME guard the rename dialog carries. Without it, pressing Enter
+            // to commit a Chinese or Japanese composition also fires `confirmCreate()`,
+            // creating the project with the half-composed name the user was still
+            // editing. `onCompositionStart`/`End` bracket the composition; Enter during
+            // one belongs to the IME, not to this dialog.
+            onCompositionStart={() => { createComposingRef.current = true }}
+            onCompositionEnd={() => { createComposingRef.current = false }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !createComposingRef.current) confirmCreate() }}
           />
           <div className={css.directoryBlock}>
             <DirectoryHeader

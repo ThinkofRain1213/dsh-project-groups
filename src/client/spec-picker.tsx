@@ -122,6 +122,16 @@ export function SpecPicker({
         return
       }
       setStaged(file.name)
+    } catch (cause) {
+      // The only caller fires this with `void upload(event)`, so an escaped rejection
+      // would be swallowed entirely: the dialog would keep `busy` clear (the `finally`
+      // below) while showing no reason and leaving the old selection staged, which reads
+      // as "nothing happened". `file.text()` can reject on an unreadable file and
+      // `onUpload` rejects when the Remote write fails, so both need surfacing.
+      setError(t('specUploadFailed'))
+      // Kept for the console rather than folded into the message: the user-facing text
+      // is localized, and the cause is what a bug report needs.
+      console.error('spec upload failed', cause)
     } finally {
       setBusy(false)
     }

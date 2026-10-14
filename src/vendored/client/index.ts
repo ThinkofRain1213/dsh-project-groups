@@ -737,9 +737,18 @@ export function apply(
  * The activity a Host `workspace/session-active` refusal reported, or nothing
  * for any other failure. The class identity check goes by name: client plugin
  * bundles do not share error-class identity.
+ *
+ * The name is all that can be trusted, so the shape is checked before it is read.
+ * `reason.name` proves the error *claims* to be a `WorkspaceArchiveError`; it does not
+ * prove `rpcError` exists. Dereferencing `rpcError.code` on an error that merely carries
+ * the name — a re-thrown plain error, or one crossing another bundle boundary — throws a
+ * `TypeError` from inside the `.catch()` of `archiveInjected`, which turns a recoverable
+ * archive refusal into an unhandled rejection and loses the notice and confirmation the
+ * user was owed.
  */
 function activeSessionRefusal(reason: unknown): readonly SessionActivity[] | undefined {
   if (!(reason instanceof Error) || reason.name !== 'WorkspaceArchiveError') return undefined
-  const { rpcError } = reason as WorkspaceArchiveError
-  return rpcError.code === 'workspace/session-active' ? rpcError.details.activity : undefined
+  const { rpcError } = reason as Partial<WorkspaceArchiveError>
+  if (rpcError === undefined || rpcError === null) return undefined
+  return rpcError.code === 'workspace/session-active' ? rpcError.details?.activity : undefined
 }

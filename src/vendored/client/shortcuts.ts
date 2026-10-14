@@ -116,9 +116,18 @@ export function installWorkspaceShortcuts(
     if (target.blank) return { status: 'blocked', reason: t('shortcut.noCompletedTurn') }
     return { status: 'handled', run: () => {
       void navigation.forkSession(target.id).catch((error: unknown) => {
-        // Client plugin bundles do not share error-class identity.
-        const unavailable = error instanceof Error && error.name === 'SessionForkError'
-          && (error as SessionForkError).rpcError.code === 'session/fork-unavailable'
+        // Client plugin bundles do not share error-class identity, so the check is on
+        // `name` — but a name alone proves nothing about the shape. An error carrying
+        // `name === 'SessionForkError'` without an `rpcError` (a re-thrown plain error, or
+        // one crossing another bundle boundary) would make the dereference below throw
+        // *inside* the catch handler, masking the real fork failure and skipping
+        // `forkFailed` entirely — so the notice the user needs would never appear.
+        // Optional chaining treats a missing `rpcError` as the generic failure, which is
+        // what it is.
+        const rpcCode = error instanceof Error && error.name === 'SessionForkError'
+          ? (error as Partial<SessionForkError>).rpcError?.code
+          : undefined
+        const unavailable = rpcCode === 'session/fork-unavailable'
         controls.forkFailed(unavailable ? 'unavailable' : 'failed')
         if (!unavailable) console.warn('session fork rejected:', error)
       })

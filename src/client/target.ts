@@ -103,7 +103,20 @@ export function recentDestination(
       if (time !== undefined) latest = Math.max(latest, time)
     }
     // Without this a project the user just created could never be chosen.
-    if (latest === Number.NEGATIVE_INFINITY) latest = Date.parse(project.createdAt)
+    //
+    // Guarded against a non-finite parse: `Date.parse` returns NaN for an
+    // unparseable `createdAt`, and NaN would poison `consider` rather than merely
+    // losing this one candidate. `latest <= selectedTime` is false when `latest` is
+    // NaN, so `consider` assigns `selectedTime = NaN`; every later comparison is then
+    // false too, `consider` returns early for every remaining candidate, and the
+    // selection freezes on whichever project happened to come first — silently
+    // inverting the "most recently active" rule this function exists to implement.
+    // A record with a bad date therefore contributes nothing, which is the honest
+    // reading of a date that cannot be parsed.
+    if (latest === Number.NEGATIVE_INFINITY) {
+      const created = Date.parse(project.createdAt)
+      if (Number.isFinite(created)) latest = created
+    }
     consider(project.projectId, latest)
   }
 

@@ -160,6 +160,20 @@ export type ProjectGroupsCardProps =
   & InjectFace<ProjectGroupsCardInjected>
 
 /**
+ * The fallback for the optional `workspaces` seat, so the card calls a hook on every
+ * render regardless of whether that seat is bound.
+ *
+ * A plain function rather than an inline arrow in the call site: it has to be a stable
+ * module-level identity, and it must not read anything, because its whole job is to
+ * answer "no registry" while still being a hook call React can count.
+ * @param _select - the selector, ignored: there is no snapshot to project.
+ * @returns undefined, the same value the old conditional call produced.
+ */
+function useNoWorkspaces(_select: (source: WorkspaceSource) => WorkspaceSource): undefined {
+  return undefined
+}
+
+/**
  * Render the New Session destination selector and the base-workspace choice.
  * @param props - composed slot props.
  * @returns the settings rows.
@@ -215,8 +229,16 @@ export function ProjectGroupsCard({
    * `'custom'` unconditionally, so replacing the file while 默认 was selected also
    * jumped the card to 自定义.
    */
-  const [specPickerSwitchesMode, setSpecPickerSwitchesMode] = useState(true)  // The hook is optional in the face, so the call is guarded rather than assumed.
-  const workspaceSnapshot = useWorkspaces === undefined ? undefined : useWorkspaces(value => value)
+  const [specPickerSwitchesMode, setSpecPickerSwitchesMode] = useState(true)
+  // Called unconditionally, through a constant fallback hook. React matches hooks by
+  // call order, so `useWorkspaces === undefined ? undefined : useWorkspaces(...)` would
+  // shift the order if the optional prop ever appeared or disappeared between renders
+  // (the controller being recomposed, or the runtime binding for the seat changing) —
+  // which React reports as a hook-order error and which can mis-associate state.
+  // `useNoWorkspaces` returns the same `undefined` the guard produced, so behaviour is
+  // unchanged for a face that omits the seat.
+  const useWorkspaceHook = useWorkspaces ?? useNoWorkspaces
+  const workspaceSnapshot = useWorkspaceHook(value => value)
   const workspaces = workspaceSnapshot?.items ?? []
   const [picking, setPicking] = useState(false)
   // The two states of the card's own 重建 action: whether the confirmation is showing, and

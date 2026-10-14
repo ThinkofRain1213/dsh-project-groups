@@ -48,35 +48,67 @@ const EMPTY_ORDERS: Readonly<Record<string, readonly string[]>> = Object.freeze(
  * the same instance.
  */
 let model: ProjectModel | undefined
-/** Listeners attached before the model existed, handed to it on install. */
-const pending = new Set<() => void>()
-/** The same, for {@link clientExpansions}; the two observables have separate seats. */
-const pendingExpansions = new Set<() => void>()
-/** The same, for {@link clientOrders}. */
-const pendingOrders = new Set<() => void>()
-/** The same, for {@link clientNewSessionTarget}. */
-const pendingTargets = new Set<() => void>()
-/** The same, for {@link clientBaseWorkspace}. */
-const pendingBase = new Set<() => void>()
-/** The same, for {@link clientCreateOpensSession}. */
-const pendingCreateOpens = new Set<() => void>()
-/** The same, for {@link clientInjectProjectInfo}. */
-const pendingInjectInfo = new Set<() => void>()
-/** The same, for {@link clientInjectProjectDoc}. */
-const pendingInjectDoc = new Set<() => void>()
 
 /** The empty spec list, shared so the pre-model snapshot is identity-stable. */
 const EMPTY_SPECS: readonly string[] = Object.freeze([])
 
-/**
- * Seats built by {@link pendingSeat}, each of which knows how to re-register
- * itself once the model exists.
- *
- * The named `pending*` sets above predate this and are kept as they are: they
- * carry per-seat comments explaining their own lifecycle, and rewriting working
- * code to use the new helper would be churn without a behaviour change.
- */
+/** Each seat's re-registration step, run once the model exists. */
 const installHooks: ((live: ProjectModel) => void)[] = []
+
+/**
+ * Build one seat that may be subscribed to before the model exists.
+ *
+ * ## Why every subscribe has to be cancellable after the re-seat
+ *
+ * A subscriber that arrives early is parked in `early`; when the baseline lands
+ * the seat attaches it to the live model. That attachment returns its own
+ * unsubscribe, and the returned disposer must reach **it** — not just the parked
+ * entry. Discarding it made the disposer stop detaching anything the moment the
+ * model arrived: the caller's `cancel()` removed an entry from a set that had
+ * already been cleared, while the listener stayed attached to the live
+ * observable for the lifetime of the page.
+ *
+ * That is a listener leak with a visible symptom beyond memory: a React
+ * component that subscribed before the baseline and later unmounted kept being
+ * notified, so it re-rendered after unmount.
+ *
+ * `liveOff` holds the current unsubscribe for every listener that was re-seated,
+ * and the disposer cancels whichever registration is live — parked or attached.
+ * @param read - resolves the value, from the model when there is one.
+ * @param attach - registers a listener on the live model, returning its unsubscribe.
+ * @returns the observable handed to the browser or the settings card.
+ */
+function deferredSeat<T>(
+  read: (live: ProjectModel | undefined) => T,
+  attach: (live: ProjectModel, listener: () => void) => () => void,
+): HostObservable<T> {
+  const early = new Set<() => void>()
+  const liveOff = new Map<() => void, () => void>()
+  installHooks.push((live) => {
+    const waiting = [...early]
+    early.clear()
+    for (const notify of waiting) liveOff.set(notify, attach(live, notify))
+    // The snapshot these listeners last read was the empty/pre-model one; the
+    // model now has the Host's, so one notification is a real change.
+    for (const notify of waiting) notify()
+  })
+  return {
+    getSnapshot: () => read(model),
+    subscribe: (listener) => {
+      const live = model
+      if (live !== undefined) return attach(live, listener)
+      early.add(listener)
+      return () => {
+        early.delete(listener)
+        const off = liveOff.get(listener)
+        if (off !== undefined) {
+          liveOff.delete(listener)
+          off()
+        }
+      }
+    },
+  }
+}
 
 /** @returns the live model, once its baseline has landed. */
 export function projectModel(): ProjectModel | undefined {
@@ -88,55 +120,13 @@ export function projectModel(): ProjectModel | undefined {
  *
  * The browser subscribes to {@link clientGrouping} during its own registration,
  * which can precede the Remote baseline; those subscribers read an empty
- * snapshot then, and nothing would tell them the real one had arrived. They are
- * re-registered on the live model and notified once for the change in identity.
+ * snapshot then, and nothing would tell them the real one had arrived. Each seat
+ * re-registers its own early subscribers — see {@link deferredSeat}.
  * @param started - the started model.
  */
 export function installProjectModel(started: ProjectModel): void {
   model = started
-  // The helper-built seats first: each re-registers its own early subscribers.
   for (const install of installHooks) install(started)
-  const early = [...pending]
-  pending.clear()
-  for (const notify of early) started.grouping.subscribe(notify)
-  // The snapshot these listeners last read was the empty override; the model now
-  // has the Host's, so one notification is a real change rather than a no-op.
-  for (const notify of early) notify()
-
-  const earlyExpansions = [...pendingExpansions]
-  pendingExpansions.clear()
-  for (const notify of earlyExpansions) started.expansions.subscribe(notify)
-  for (const notify of earlyExpansions) notify()
-
-  const earlyOrders = [...pendingOrders]
-  pendingOrders.clear()
-  for (const notify of earlyOrders) started.orders.subscribe(notify)
-  for (const notify of earlyOrders) notify()
-
-  const earlyTargets = [...pendingTargets]
-  pendingTargets.clear()
-  for (const notify of earlyTargets) started.newSessionTarget$.subscribe(notify)
-  for (const notify of earlyTargets) notify()
-
-  const earlyBase = [...pendingBase]
-  pendingBase.clear()
-  for (const notify of earlyBase) started.baseWorkspace$.subscribe(notify)
-  for (const notify of earlyBase) notify()
-
-  const earlyCreateOpens = [...pendingCreateOpens]
-  pendingCreateOpens.clear()
-  for (const notify of earlyCreateOpens) started.createOpensSession$.subscribe(notify)
-  for (const notify of earlyCreateOpens) notify()
-
-  const earlyInjectInfo = [...pendingInjectInfo]
-  pendingInjectInfo.clear()
-  for (const notify of earlyInjectInfo) started.injectProjectInfo$.subscribe(notify)
-  for (const notify of earlyInjectInfo) notify()
-
-  const earlyInjectDoc = [...pendingInjectDoc]
-  pendingInjectDoc.clear()
-  for (const notify of earlyInjectDoc) started.injectProjectDoc$.subscribe(notify)
-  for (const notify of earlyInjectDoc) notify()
 }
 
 /**
@@ -146,17 +136,10 @@ export function installProjectModel(started: ProjectModel): void {
  * Remote namespace is ready: until the first baseline lands the snapshot is an
  * empty override, which renders exactly what a fresh install looks like.
  */
-export const clientGrouping: HostObservable<readonly GroupSource[] | undefined> = {
-  getSnapshot: () => model?.grouping.getSnapshot() ?? EMPTY,
-  subscribe: (listener) => {
-    const live = model
-    if (live === undefined) {
-      pending.add(listener)
-      return () => { pending.delete(listener) }
-    }
-    return live.grouping.subscribe(listener)
-  },
-}
+export const clientGrouping: HostObservable<readonly GroupSource[] | undefined> = deferredSeat(
+  live => live?.grouping.getSnapshot() ?? EMPTY,
+  (live, listener) => live.grouping.subscribe(listener),
+)
 
 /**
  * The recorded expansion of each project row, handed to the vendored browser.
@@ -166,17 +149,10 @@ export const clientGrouping: HostObservable<readonly GroupSource[] | undefined> 
  * plugin's own Host state rather than the browser's view store, which the
  * official plugin shares and prunes — see `src/vendored/README.md`.
  */
-export const clientExpansions: HostObservable<Readonly<Record<string, boolean>>> = {
-  getSnapshot: () => model?.expansions.getSnapshot() ?? EMPTY_EXPANSIONS,
-  subscribe: (listener) => {
-    const live = model
-    if (live === undefined) {
-      pendingExpansions.add(listener)
-      return () => { pendingExpansions.delete(listener) }
-    }
-    return live.expansions.subscribe(listener)
-  },
-}
+export const clientExpansions: HostObservable<Readonly<Record<string, boolean>>> = deferredSeat(
+  live => live?.expansions.getSnapshot() ?? EMPTY_EXPANSIONS,
+  (live, listener) => live.expansions.subscribe(listener),
+)
 
 /**
  * The recorded manual order of each project's members, handed to the vendored
@@ -186,17 +162,10 @@ export const clientExpansions: HostObservable<Readonly<Record<string, boolean>>>
  * it with its own hook, and it carries the plugin's Host state rather than the
  * view store the official plugin shares and prunes.
  */
-export const clientOrders: HostObservable<Readonly<Record<string, readonly string[]>>> = {
-  getSnapshot: () => model?.orders.getSnapshot() ?? EMPTY_ORDERS,
-  subscribe: (listener) => {
-    const live = model
-    if (live === undefined) {
-      pendingOrders.add(listener)
-      return () => { pendingOrders.delete(listener) }
-    }
-    return live.orders.subscribe(listener)
-  },
-}
+export const clientOrders: HostObservable<Readonly<Record<string, readonly string[]>>> = deferredSeat(
+  live => live?.orders.getSnapshot() ?? EMPTY_ORDERS,
+  (live, listener) => live.orders.subscribe(listener),
+)
 
 /**
  * The stored New Session destination, for this plugin's own settings card.
@@ -215,17 +184,10 @@ export const clientOrders: HostObservable<Readonly<Record<string, readonly strin
  * `EMPTY_STATE.newSessionTarget` and the Host's own default — so the card shows
  * the value a fresh install would actually use rather than a blank.
  */
-export const clientNewSessionTarget: HostObservable<NewSessionTarget> = {
-  getSnapshot: () => model?.target() ?? 'ungrouped',
-  subscribe: (listener) => {
-    const live = model
-    if (live === undefined) {
-      pendingTargets.add(listener)
-      return () => { pendingTargets.delete(listener) }
-    }
-    return live.newSessionTarget$.subscribe(listener)
-  },
-}
+export const clientNewSessionTarget: HostObservable<NewSessionTarget> = deferredSeat(
+  live => live?.target() ?? 'ungrouped',
+  (live, listener) => live.newSessionTarget$.subscribe(listener),
+)
 
 /** The base-workspace setting a fresh install uses: the official default Workspace. */
 const DEFAULT_BASE_WORKSPACE: BaseWorkspaceSetting = Object.freeze({ mode: 'default' })
@@ -245,17 +207,10 @@ const DEFAULT_BASE_WORKSPACE: BaseWorkspaceSetting = Object.freeze({ mode: 'defa
  * `EMPTY_STATE` carries and what the Host defaults to — so the card shows the value a
  * fresh install would actually use rather than a blank.
  */
-export const clientBaseWorkspace: HostObservable<BaseWorkspaceSetting> = {
-  getSnapshot: () => model?.baseWorkspaceSetting() ?? DEFAULT_BASE_WORKSPACE,
-  subscribe: (listener) => {
-    const live = model
-    if (live === undefined) {
-      pendingBase.add(listener)
-      return () => { pendingBase.delete(listener) }
-    }
-    return live.baseWorkspace$.subscribe(listener)
-  },
-}
+export const clientBaseWorkspace: HostObservable<BaseWorkspaceSetting> = deferredSeat(
+  live => live?.baseWorkspaceSetting() ?? DEFAULT_BASE_WORKSPACE,
+  (live, listener) => live.baseWorkspace$.subscribe(listener),
+)
 
 /**
  * Whether creating a project opens a Session, handed to the vendored browser **and**
@@ -270,17 +225,10 @@ export const clientBaseWorkspace: HostObservable<BaseWorkspaceSetting> = {
  * Before the model exists the snapshot is `true`, matching `EMPTY_STATE` and the
  * Host's default — so a fresh install shows the behaviour it would actually get.
  */
-export const clientCreateOpensSession: HostObservable<boolean> = {
-  getSnapshot: () => model?.createOpensSessionValue() ?? true,
-  subscribe: (listener) => {
-    const live = model
-    if (live === undefined) {
-      pendingCreateOpens.add(listener)
-      return () => { pendingCreateOpens.delete(listener) }
-    }
-    return live.createOpensSession$.subscribe(listener)
-  },
-}
+export const clientCreateOpensSession: HostObservable<boolean> = deferredSeat(
+  live => live?.createOpensSessionValue() ?? true,
+  (live, listener) => live.createOpensSession$.subscribe(listener),
+)
 
 /**
  * Whether a Session's project info is injected, read by the settings card.
@@ -292,17 +240,10 @@ export const clientCreateOpensSession: HostObservable<boolean> = {
  * Before the model exists the snapshot is `true`, matching `EMPTY_STATE` and the
  * Host's schema default — a fresh install shows the behaviour it would get.
  */
-export const clientInjectProjectInfo: HostObservable<boolean> = {
-  getSnapshot: () => model?.injectProjectInfoValue() ?? true,
-  subscribe: (listener) => {
-    const live = model
-    if (live === undefined) {
-      pendingInjectInfo.add(listener)
-      return () => { pendingInjectInfo.delete(listener) }
-    }
-    return live.injectProjectInfo$.subscribe(listener)
-  },
-}
+export const clientInjectProjectInfo: HostObservable<boolean> = deferredSeat(
+  live => live?.injectProjectInfoValue() ?? true,
+  (live, listener) => live.injectProjectInfo$.subscribe(listener),
+)
 
 /**
  * Whether the work-document line is injected too, read by the settings card.
@@ -314,17 +255,10 @@ export const clientInjectProjectInfo: HostObservable<boolean> = {
  * Before the model exists the snapshot is `false`, matching `EMPTY_STATE` and the
  * Host's schema default: the document is the extra feature, so it starts off.
  */
-export const clientInjectProjectDoc: HostObservable<boolean> = {
-  getSnapshot: () => model?.injectProjectDocValue() ?? false,
-  subscribe: (listener) => {
-    const live = model
-    if (live === undefined) {
-      pendingInjectDoc.add(listener)
-      return () => { pendingInjectDoc.delete(listener) }
-    }
-    return live.injectProjectDoc$.subscribe(listener)
-  },
-}
+export const clientInjectProjectDoc: HostObservable<boolean> = deferredSeat(
+  live => live?.injectProjectDocValue() ?? false,
+  (live, listener) => live.injectProjectDoc$.subscribe(listener),
+)
 
 /**
  * Build a seat for one scalar the settings card reads.
@@ -344,27 +278,10 @@ function pendingSeat<T>(
   fallback: T,
   seat: (live: ProjectModel) => HostObservable<T>,
 ): HostObservable<T> {
-  const early = new Set<() => void>()
-  // The listener set is registered against the live model on install; until
-  // then a subscriber waits here, which is what keeps a card that mounted
-  // before the baseline from reading a stale snapshot forever.
-  installHooks.push((live) => {
-    const waiting = [...early]
-    early.clear()
-    for (const notify of waiting) seat(live).subscribe(notify)
-    for (const notify of waiting) notify()
-  })
-  return {
-    getSnapshot: () => model === undefined ? fallback : read(model),
-    subscribe: (listener) => {
-      const live = model
-      if (live === undefined) {
-        early.add(listener)
-        return () => { early.delete(listener) }
-      }
-      return seat(live).subscribe(listener)
-    },
-  }
+  return deferredSeat(
+    live => live === undefined ? fallback : read(live),
+    (live, listener) => seat(live).subscribe(listener),
+  )
 }
 
 /**
@@ -436,6 +353,11 @@ interface LocaleServiceLike {
  */
 let localeService: LocaleServiceLike | undefined
 
+/** Listeners parked before the locale service arrived. */
+const pendingLocale = new Set<() => void>()
+/** The live locale subscription for each re-seated listener, so disposal reaches it. */
+const localeLiveOff = new Map<() => void, () => void>()
+
 /**
  * Normalize an active locale id to the two languages this plugin renders user-facing text for.
  *
@@ -453,20 +375,54 @@ function injectionLocaleOf(active: string): InjectionLocale {
 
 /**
  * Adopt the locale service, once the client's `apply` has it.
+ *
+ * Early subscribers are re-seated here, matching the contract every other seat in
+ * this module follows. Without it a card that mounted before `apply` — which is the
+ * normal case, since the service is only captured then — registered its listener
+ * nowhere: `getSnapshot` would later read the right value, but nothing would ever
+ * notify the component, so it could sit on the `'zh'` fallback indefinitely while the
+ * Host had already resolved `'en'`.
  * @param service - the live service, or undefined when the locale plugin is absent.
  */
 export function installLocaleService(service: LocaleServiceLike | undefined): void {
   localeService = service
+  const waiting = [...pendingLocale]
+  pendingLocale.clear()
+  if (service === undefined) {
+    // No service: the fallback snapshot is all there is, so the waiters are done
+    // waiting. Notifying is the honest signal — they read `'zh'` before and after,
+    // and leaving them parked would misreport a service that will never come.
+    for (const notify of waiting) notify()
+    return
+  }
+  for (const notify of waiting) localeLiveOff.set(notify, service.subscribe(notify))
+  for (const notify of waiting) notify()
 }
 
 /**
  * The active locale, for the settings card's injection preview.
  *
- * Not a {@link pendingSeat}: locale is not a project-model value, so there is nothing to re-seat
- * when the model's baseline lands. `'zh'` before the service exists, matching the Host's own
- * fallback when it cannot read the setting.
+ * Not a {@link pendingSeat}: locale is not a project-model value, so the model's
+ * baseline is not what it waits for — it waits for the locale service, which
+ * `installLocaleService` supplies. It still parks early subscribers rather than
+ * dropping them, and its disposer reaches the live subscription after the re-seat,
+ * for the same reason every other seat here does.
+ * `'zh'` before the service exists, matching the Host's own fallback when it cannot
+ * read the setting.
  */
 export const clientInjectionLocale: HostObservable<InjectionLocale> = {
   getSnapshot: () => injectionLocaleOf(localeService?.getSnapshot().active ?? 'zh'),
-  subscribe: listener => localeService?.subscribe(listener) ?? (() => {}),
+  subscribe: (listener) => {
+    const service = localeService
+    if (service !== undefined) return service.subscribe(listener)
+    pendingLocale.add(listener)
+    return () => {
+      pendingLocale.delete(listener)
+      const off = localeLiveOff.get(listener)
+      if (off !== undefined) {
+        localeLiveOff.delete(listener)
+        off()
+      }
+    }
+  },
 }

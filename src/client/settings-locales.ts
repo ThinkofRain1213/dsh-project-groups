@@ -73,6 +73,7 @@ export const zh = {
   specDeleteConfirm: '永久删除',
   specExists: '已存在同名规范，请换一个文件名。',
   specNotMarkdown: '只接受 .md 文件。',
+  specUploadFailed: '上传失败，请重试。',
   // The inline notice shown while nothing is selected. Two wordings because the
   // cause differs and the user can act on it: an empty list can be filled by
   // uploading, whereas a list with no row picked just needs a click. They share
@@ -203,6 +204,7 @@ export const en: Record<ProjectGroupsSettingsKey, string> = {
   specNoticeNone: 'No spec is selected; a custom spec resolves to no spec',
   specNoticeEmpty: 'The list is empty; a custom spec resolves to no spec',
   specNotMarkdown: 'Only .md files are accepted.',
+  specUploadFailed: 'Upload failed. Try again.',
   perProjectSpecTitle: 'Adjust the document spec per project',
   perProjectSpecDesc: 'Adds a spec row to the create and edit project dialogs',
   perProjectSpecGated: 'Controlled by "Inject project document"; currently off',

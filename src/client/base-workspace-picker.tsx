@@ -66,13 +66,24 @@ export function BaseWorkspacePicker({
 
   /**
    * Move the highlight with the arrow keys / Home / End.
+   *
+   * ## Why the anchor is computed rather than inferred from the sign
+   *
+   * With no row staged, the direction of `delta` alone cannot say where the move
+   * starts: `Home` passes `-length` and `End` passes `+length`, which have the same
+   * signs as `ArrowUp`/`ArrowDown` but opposite destinations. Reading only the sign
+   * sent Home to the **last** row and End to the **first** — inverted in exactly the
+   * case the tab-stop comment above says must work (a staged path that matches no row).
+   *
+   * So the unstaged anchor is the position *before* the first row (`-1`) when moving
+   * forward and *after* the last (`length`) when moving backward, and the clamp turns
+   * that into the first/last row. A move from a real row stays relative to it.
    * @param delta - how many rows to move; clamped to the list.
    */
   const move = (delta: number): void => {
     if (workspaces.length === 0) return
-    const next = stagedIndex < 0
-      ? (delta > 0 ? 0 : workspaces.length - 1)
-      : Math.min(workspaces.length - 1, Math.max(0, stagedIndex + delta))
+    const base = stagedIndex >= 0 ? stagedIndex : (delta > 0 ? -1 : workspaces.length)
+    const next = Math.min(workspaces.length - 1, Math.max(0, base + delta))
     const row = workspaces[next]
     if (row === undefined) return
     setStaged(row.path)
