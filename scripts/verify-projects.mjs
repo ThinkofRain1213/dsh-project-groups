@@ -1170,6 +1170,48 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 5))
   }
 }
 
+// 26. `pinOrderSource`: the Ungrouped account uses the same visibility rule as the flat one.
+//
+//     It used to be `list.ids.filter(id => byId[id] !== undefined && !accounted.has(id))` —
+//     weaker than the flat account's `sessionMemberIds` (`visibleSessionIds(..., 'show')`).
+//     Subagent sessions and non-current blank placeholders that no Workspace claims pass the
+//     first test and fail the second, so they leaked into Ungrouped; `pinSessionOrder` would
+//     then reconcile a pin against an account holding rows the tree never renders.
+{
+  const { pinOrderSource } = await import('../src/vendored/client/pin-order.ts')
+  const { UNGROUPED_KEY } = await import('../src/vendored/client/tree.ts')
+  const session = (id, extra = {}) => ({
+    id, title: id, displayTitle: id, blank: false, origin: 'user', updatedAt: 1000, retainedBy: {}, ...extra,
+  })
+  const fixture = {
+    phase: 'ready',
+    ids: ['filed', 'loose', 'subagent-child', 'stale-blank'],
+    byId: {
+      filed: session('filed'),
+      loose: session('loose'),
+      'subagent-child': session('subagent-child', { origin: 'subagent' }),
+      'stale-blank': session('stale-blank', { blank: true }),
+    },
+  }
+  const workspaces = [{ workspaceId: 'w1', path: '/w1', title: 'w1', sessionIds: ['filed'] }]
+  const source = pinOrderSource(workspaces, fixture, { pinnedSessionIds: [], archivedSessionIds: [] })
+
+  check('pinOrderSource: a filed Session stays out of Ungrouped',
+    !source.members[UNGROUPED_KEY].includes('filed'), JSON.stringify(source.members[UNGROUPED_KEY]))
+  check('pinOrderSource: an ordinary loose Session is in Ungrouped',
+    source.members[UNGROUPED_KEY].includes('loose'), JSON.stringify(source.members[UNGROUPED_KEY]))
+  check('pinOrderSource: a subagent Session does not leak into Ungrouped',
+    !source.members[UNGROUPED_KEY].includes('subagent-child'), JSON.stringify(source.members[UNGROUPED_KEY]))
+  check('pinOrderSource: a stale blank does not leak into Ungrouped',
+    !source.members[UNGROUPED_KEY].includes('stale-blank'), JSON.stringify(source.members[UNGROUPED_KEY]))
+  check('pinOrderSource: Ungrouped and the flat account agree on visibility',
+    source.members[UNGROUPED_KEY].join(',') === 'loose',
+    `${source.members[UNGROUPED_KEY].join(',')} vs ${source.members['__flat_session_order__']?.join(',')}`)
+  check('pinOrderSource: the members array is a copy, not the registry\u2019s own',
+    source.members.w1 !== workspaces[0].sessionIds,
+    String(source.members.w1 === workspaces[0].sessionIds))
+}
+
 await tick()
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)
 process.exit(failures.length === 0 ? 0 : 1)

@@ -325,6 +325,30 @@ export function reconcileManualOrder(
    * where a pinned ancestor sits relative to `ordinary`, and correcting it means deciding
    * whether a fork should follow its pin at all. That is a behaviour decision, not a
    * cleanup, so it is left as the upstream code has it and recorded here instead.
+   *
+   * ## The quadratic reading, corrected by measurement
+   *
+   * The review also called this O(n²), from the `includes`/`indexOf`/`splice` scans inside a
+   * loop over every ordinary member. The loop is over all of them, but the scans are not: the
+   * `parentId === undefined` short-circuit returns before `result.includes(parentId)`, so only
+   * members that actually have a parent pay for a scan.
+   *
+   * Measured rather than argued — instrumenting a copy of this function and counting the
+   * `includes` calls: n=200 with 0 forks is **0** calls, with 5 forks is 5, with 200 forks is
+   * 200. The count tracks the fork count, not the list length, so the cost is **O(forks × n)**
+   * and a sidebar with a handful of forks is linear in practice.
+   *
+   * (The first version of this note credited `pending.delete(id)` for that. It does not: the
+   * set starts as every ordinary member, so the first call on each one deletes successfully and
+   * proceeds. The short-circuit above is what does the work — the measurement is what settled
+   * it.)
+   *
+   * That also decides what a fix would buy. `splice` is O(n) because it shifts the tail, so
+   * replacing the two `indexOf` scans with a maintained position map removes a constant factor,
+   * not the asymptotic — the map would need repairing after every splice, which is the same
+   * O(n). A genuine improvement needs a linked structure, and the ordering here is subtle
+   * enough that I got it wrong once already (above); rewriting it for a constant factor is a
+   * poor trade against that risk.
    */
   const placeFork = (id: SessionId): void => {
     if (!pending.delete(id)) return
@@ -462,6 +486,69 @@ function orderedUngrouped(
  * Workspace trail in the browser-local Ungrouped order, which falls back to
  * recency before that order is initialized.
  */
+/**
+ * Collect one account's visible members, recording every id it claims.
+ *
+ * Shared by both grouping models, which differ only in where an account comes from and how its
+ * group is labelled — the member rule is the same: an id whose summary has not arrived is
+ * skipped (the account may lead the list pull), and a claimed id is recorded as accounted for
+ * **whether or not it is visible**, so an archived-out Session is not also counted as a stray.
+ *
+ * Extracted because the two copies were identical apart from the field names, and any future
+ * fix to visibility or to the accounted rule would have had to be made in both — with the
+ * failure mode being a sidebar that groups differently depending on which model is active.
+ * @param list - sessions list snapshot.
+ * @param sessionIds - the account's claimed ids, in its own order.
+ * @param current - the current Session, for the blank rule.
+ * @param archived - registry-global archive set.
+ * @param archivedFilter - archived-row visibility choice.
+ * @param accounted - written to: every id this account claims.
+ * @returns the visible members, in the account's order.
+ */
+function collectMembers(
+  list: SessionListState,
+  sessionIds: readonly SessionId[],
+  current: SessionId | undefined,
+  archived: ReadonlySet<SessionId>,
+  archivedFilter: ArchivedFilter,
+  accounted: Set<SessionId>,
+): SessionSummary[] {
+  const members: SessionSummary[] = []
+  for (const id of sessionIds) {
+    const summary = list.byId[id]
+    if (summary === undefined) continue // account may lead the list pull; the row appears when the summary lands
+    accounted.add(id)
+    if (!sessionVisible(summary, current, archived, archivedFilter)) continue
+    members.push(summary)
+  }
+  return members
+}
+
+/**
+ * The visible Sessions no account claimed, in list order.
+ *
+ * The other shared pass. `accounted` holds ids rather than summaries deliberately: an id claimed
+ * by an account but hidden by the archive filter must not reappear here as a stray.
+ * @param list - sessions list snapshot.
+ * @param accounted - every id the accounts claimed.
+ * @param current - the current Session, for the blank rule.
+ * @param archived - registry-global archive set.
+ * @param archivedFilter - archived-row visibility choice.
+ * @returns the unclaimed visible summaries.
+ */
+function collectStray(
+  list: SessionListState,
+  accounted: ReadonlySet<SessionId>,
+  current: SessionId | undefined,
+  archived: ReadonlySet<SessionId>,
+  archivedFilter: ArchivedFilter,
+): SessionSummary[] {
+  return list.ids
+    .map(id => list.byId[id])
+    .filter((s): s is SessionSummary =>
+      s !== undefined && !accounted.has(s.id) && sessionVisible(s, current, archived, archivedFilter))
+}
+
 function groupByWorkspace(
   list: SessionListState,
   workspaces: readonly WorkspaceView[],
@@ -473,14 +560,9 @@ function groupByWorkspace(
   const groups: Group[] = []
   const accounted = new Set<SessionId>()
   for (const workspace of workspaces) {
-    const members: SessionSummary[] = []
-    for (const id of workspace.sessionIds) {
-      const summary = list.byId[id]
-      if (summary === undefined) continue // account may lead the list pull; the row appears when the summary lands
-      accounted.add(id)
-      if (!sessionVisible(summary, current, archived, archivedFilter)) continue
-      members.push(summary)
-    }
+    const members = collectMembers(
+      list, workspace.sessionIds, current, archived, archivedFilter, accounted,
+    )
     // The archived-only view lists archives, not the Workspace inventory, so
     // a Workspace without archived Sessions contributes no group.
     if (archivedFilter === 'only' && members.length === 0) continue
@@ -495,10 +577,7 @@ function groupByWorkspace(
       Number.isFinite(created) ? created : undefined, workspace.title, members,
     ))
   }
-  const stray = list.ids
-    .map(id => list.byId[id])
-    .filter((s): s is SessionSummary =>
-      s !== undefined && !accounted.has(s.id) && sessionVisible(s, current, archived, archivedFilter))
+  const stray = collectStray(list, accounted, current, archived, archivedFilter)
   if (stray.length > 0) {
     groups.push(buildGroup(
       UNGROUPED_KEY,
@@ -538,14 +617,9 @@ function groupBySource(
   const groups: Group[] = []
   const accounted = new Set<SessionId>()
   for (const source of sources) {
-    const members: SessionSummary[] = []
-    for (const id of source.sessionIds) {
-      const summary = list.byId[id]
-      if (summary === undefined) continue // account may lead the list pull; the row appears when the summary lands
-      accounted.add(id)
-      if (!sessionVisible(summary, current, archived, archivedFilter)) continue
-      members.push(summary)
-    }
+    const members = collectMembers(
+      list, source.sessionIds, current, archived, archivedFilter, accounted,
+    )
     // The archived-only view lists archives, not the group inventory, so a
     // group without archived Sessions contributes no group.
     if (archivedFilter === 'only' && members.length === 0) continue
@@ -557,10 +631,7 @@ function groupBySource(
       source.key, undefined, source.path, source.createdAt, source.label, members, source.kind,
     ))
   }
-  const stray = list.ids
-    .map(id => list.byId[id])
-    .filter((s): s is SessionSummary =>
-      s !== undefined && !accounted.has(s.id) && sessionVisible(s, current, archived, archivedFilter))
+  const stray = collectStray(list, accounted, current, archived, archivedFilter)
   // Under an override the Ungrouped bucket always renders, empty included.
   //
   // It is not only a container: it is the drop target that takes a Session out of
@@ -660,11 +731,13 @@ export function deriveGroups(
   const derived = sources === undefined
     ? groupByWorkspace(list, workspaces, archived, rowState.archivedFilter, view.ungroupedOrder)
     : groupBySource(list, sources, archived, rowState.archivedFilter, view.ungroupedOrder)
-  const currentGroup = current === undefined
-    ? undefined
-    : sources === undefined
-      ? owningGroupKey(workspaces, current)
-      : owningSourceKey(sources, current)
+  // Which group holds the current Session, per the active grouping model. An if-chain rather
+  // than the nested ternary this used to be: two levels of `?:` nesting is the shape the
+  // project's style rule forbids, and the flattened form says the same thing.
+  let currentGroup: string | undefined
+  if (current === undefined) currentGroup = undefined
+  else if (sources === undefined) currentGroup = owningGroupKey(workspaces, current)
+  else currentGroup = owningSourceKey(sources, current)
   const groups: GroupNode[] = []
   for (const g of derived) {
     const expanded = expandedGroups.has(g.key)
