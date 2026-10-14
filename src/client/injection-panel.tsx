@@ -33,7 +33,7 @@
  *
  * @module dsh-project-groups/src/client/injection-panel
  */
-import { useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { IconChevronDownOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { InjectionLocale } from '../injection.ts'
@@ -59,9 +59,17 @@ export interface InjectionPanelProps {
  * @returns the panel.
  */
 export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPanelProps) {
+  // Memoized on their actual inputs. Both run the full injection renderer and split its output
+  // into lines, and their only inputs are the two switches and the locale — so without this
+  // every unrelated render re-ran the renderer, including every disclosure toggle, which is
+  // exactly the state this panel changes most.
+  //
   // The largest injection the switches currently allow, or `null` when there is none.
-  const main = mainInjectionSample(injectInfo, injectDoc)
-  const groups = injectionDiffGroups(injectInfo, injectDoc, locale)
+  const main = useMemo(() => mainInjectionSample(injectInfo, injectDoc), [injectInfo, injectDoc])
+  const groups = useMemo(
+    () => injectionDiffGroups(injectInfo, injectDoc, locale),
+    [injectInfo, injectDoc, locale],
+  )
   /** The expanded groups. Empty is every group collapsed, which is the default asked for. */
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set<string>())
   const toggle = (key: string): void => {
@@ -72,6 +80,30 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
       return next
     })
   }
+  // Openness is **derived**, so a key can never outlive the group it names.
+  //
+  // The stored set is never reconciled on its own, which had two consequences: a segment
+  // expanded and then switched off kept its key, so switching back on re-showed it already
+  // expanded — contradicting the documented "all collapsed by default" — and stale keys
+  // accumulated across switch changes. Intersecting with the current keys makes the effective
+  // state always a subset of what is rendered, and keeps the store harmless.
+  const groupKeys = useMemo(() => new Set(groups.map(group => group.key)), [groups])
+  const isOpen = (key: string): boolean => open.has(key) && groupKeys.has(key)
+
+  // `useId` rather than the group key alone: keys are derived from segment names, which are
+  // stable but not guaranteed unique across two panels, and an id has to be unique in the
+  // document. The key is appended so the id is stable per group across renders.
+  const panelId = useId()
+  const bodyId = (key: string): string => `${panelId}-${key}`
+
+  // One place that renders the previewed block, used by the main sample and by every variant.
+  // The two copies were identical, so a change to the block's tag or class had to be made
+  // twice — and the diff body is the third place the same shape appears.
+  // A plain render function rather than a nested component: a component declared in a render
+  // body is a new type on every render, which remounts its subtree.
+  const renderBlock = (text: string, key?: string) => (
+    <pre key={key} className={css.injectionText}>{text}</pre>
+  )
   /*
    * Two groups, separated by a rule — a fragment so both are `.stack`'s own children and the
    * caller controls the rules around them.
@@ -92,7 +124,7 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
         <div className={css.groupTitle}>{t('injectionTitle')}</div>
         {main === null
           ? <div className={css.injectionOff}>{t('injectionOff')}</div>
-          : <pre className={css.injectionText}>{main}</pre>}
+          : renderBlock(main)}
         {/*
          * Below the block, not between the heading and it as `groupHeading` does elsewhere: this
          * sentence explains how to read the brackets *inside* the block, so it can only be read
@@ -141,20 +173,28 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
                 <button
                   type="button"
                   className={css.injectionDiffToggle}
-                  aria-expanded={open.has(group.key)}
+                  aria-expanded={isOpen(group.key)}
+                  // `aria-controls` names the region this button opens. Without it the
+                  // `aria-expanded` state has nothing to point at, so assistive tech could
+                  // report that *something* expanded but not what — the association between
+                  // the toggle and its body existed only visually.
+                  aria-controls={bodyId(group.key)}
                   onClick={() => { toggle(group.key) }}
                 >
                   <IconChevronDownOutlineRegular
-                    className={open.has(group.key) ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
+                    // Decorative: the button's own label already says what is expanded, so the
+                    // chevron would otherwise be announced as an unnamed graphic.
+                    aria-hidden="true"
+                    className={isOpen(group.key) ? `${css.chevron} ${css.chevronOpen}` : css.chevron}
                   />
                   {t(group.titleKey)}
                 </button>
-                {open.has(group.key) && (
-                  <div className={css.injectionDiffBody}>
+                {isOpen(group.key) && (
+                  <div className={css.injectionDiffBody} id={bodyId(group.key)}>
                     {group.variants.map(variant => (
                       <div key={variant.key} className={css.injectionVariant}>
                         <div className={css.injectionVariantLabel}>{t(variant.labelKey)}</div>
-                        <pre className={css.injectionText}>{variant.text}</pre>
+                        {renderBlock(variant.text, variant.key)}
                       </div>
                     ))}
                   </div>

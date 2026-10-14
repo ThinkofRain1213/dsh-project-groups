@@ -11,16 +11,24 @@
  * Most verbs call the Remote method and let the resulting `follow` frame update
  * the state, so the sidebar can never show a project the Host did not accept.
  *
- * Five are optimistic instead, because the interaction they serve is a **direct
+ * Eleven are optimistic instead, because the interaction they serve is a **direct
  * manipulation the user is watching**: a state that only lands after a round trip
  * reads as lag — or, for an assignment, as the row rendering under the project it
  * is leaving before gliding to the one it is joining.
  *
- *   - `assign` / `unassign` — a drag, a drop, and a New Session's filing;
+ *   - `place` (`assign` / `unassign`) — a drag, a drop, and a New Session's filing;
  *   - `setExpanded` — folding a row;
  *   - `setOrders` — a sort gesture;
- *   - `setNewSessionTarget` — the settings card;
- *   - `setBaseWorkspace` — the settings card's base-workspace choice.
+ *   - `setNewSessionTarget`, `setBaseWorkspace` — the settings card's choices;
+ *   - `setCreateOpensSession`, `setInjectProjectInfo`, `setInjectProjectDoc` — the
+ *     settings card's switches;
+ *   - `setDocSpecMode`, `setPerProjectDocSpec`, `setValidateLinks` — the settings
+ *     card's spec and link controls.
+ *
+ * (This list said "Five" long after the settings card had grown past it. The count
+ * is worth keeping honest because it is the only place the policy is stated: a
+ * reader who trusts a stale number stops checking whether a new verb should be
+ * optimistic.)
  *
  * Each writes locally first, notifies, then calls the Host, and reverts **only
  * when no newer local value has superseded it**, which keeps a slow refusal from
@@ -249,8 +257,26 @@ export class ProjectModel {
    * this harmless are that the owner is written only through this class and that
    * one client is connected. If either stops holding, the fix is a generation
    * number on the baseline — not a timeout.
+   *
+   * ## Why an entry records `confirmed` as well as its target
+   *
+   * The rollback target has to be the last owner the **Host** agreed to, not whatever
+   * the map happens to show. Consider two placements on one Session: A → Y (optimistic
+   * map says Y), then B → Z before A settles (map says Z, and B captures its `before`
+   * from the map). A fails first — correctly skipped, since its token is stale — and then
+   * B fails and rolls back to `Y`, a value the Host had already rejected in A's failure.
+   * The row stays pinned under Y until an unrelated baseline arrives.
+   *
+   * So each entry carries the confirmed owner it was built from, and a placement that
+   * starts while another is in flight inherits that value instead of reading the
+   * optimistic map. Rolling back then always restores something the Host accepted.
    */
-  private readonly pendingPlacements = new Map<SessionId, { readonly projectId: string | undefined; readonly token: number }>()
+  private readonly pendingPlacements = new Map<SessionId, {
+    readonly projectId: string | undefined
+    readonly token: number
+    /** The last owner the Host confirmed, which a rollback restores. */
+    readonly confirmed: string | undefined
+  }>()
   /** Monotonic write id; see {@link pendingPlacements}. */
   private placementSeq = 0
 
@@ -437,8 +463,14 @@ export class ProjectModel {
   /**
    * Every uploaded spec's file name, sorted.
    *
-   * A new frozen array per snapshot rather than the stored one, so a React
-   * selector comparing by identity can memoize on it safely.
+   * Returns the **stored** array, and the comment here used to claim the opposite ("a new
+   * frozen array per snapshot"). The stored array is the right contract, not a bug: it is
+   * frozen on installation and its identity changes only when a new copy is installed, so a
+   * React selector comparing by identity can memoize on it safely — which is exactly what a
+   * fresh-array-per-read would have broken. The doc now says what the code does.
+   *
+   * `adoptSpecs` is what preserves that: it installs a new frozen array only when the list
+   * actually changed, so an unchanged spec list does not force consumers to re-render.
    */
   readonly specs$: HostObservable<readonly string[]> = {
     getSnapshot: () => this.state.specs,
@@ -700,14 +732,26 @@ export class ProjectModel {
   private async place(sessionId: SessionId, projectId: string | undefined): Promise<void> {
     // `Record<string, string>` types an absent key as `string`, but absence is a
     // real state here — it is what Ungrouped means.
-    const before = this.state.assignments[sessionId] as string | undefined
+    const displayed = this.state.assignments[sessionId] as string | undefined
     // Already there. Returning early is what keeps "the same project's ＋" a fade:
     // no state change, no notification, so the row's key is new in the next commit
     // and `AnimatedRows` fades it instead of gliding it.
-    if (before === projectId) return
+    // Compared against what is *displayed*, not against the confirmed value: a second
+    // request for the place the row already appears to be is a no-op whatever the Host
+    // has confirmed yet.
+    if (displayed === projectId) return
+
+    // The rollback target: the last owner the **Host** agreed to.
+    //
+    // Reading the current map would be wrong when a placement is already in flight — the
+    // map then holds that write's optimistic value, which the Host may be about to reject.
+    // Inheriting the in-flight entry's `confirmed` keeps this write's rollback anchored to
+    // something the Host actually accepted; see `pendingPlacements`.
+    const inFlight = this.pendingPlacements.get(sessionId)
+    const confirmed = inFlight === undefined ? displayed : inFlight.confirmed
 
     const token = ++this.placementSeq
-    this.pendingPlacements.set(sessionId, { projectId, token })
+    this.pendingPlacements.set(sessionId, { projectId, token, confirmed })
     this.applyAssignments(this.withPlacement(this.state.assignments, sessionId, projectId))
     try {
       const outcome = projectId === undefined
@@ -723,7 +767,7 @@ export class ProjectModel {
       // concurrent placement of a different one.
       if (this.pendingPlacements.get(sessionId)?.token !== token) throw error
       this.pendingPlacements.delete(sessionId)
-      this.applyAssignments(this.withPlacement(this.state.assignments, sessionId, before))
+      this.applyAssignments(this.withPlacement(this.state.assignments, sessionId, confirmed))
       throw error
     }
   }
@@ -1049,9 +1093,16 @@ export class ProjectModel {
    * dropdown refresh from the same round trip rather than each issuing their own
    * read afterwards. The Host's `follow` frame would deliver the same change a
    * moment later; adopting here only removes the flicker.
+   *
+   * Value-equality guarded, like every other write in this file. The reply always carries
+   * a list, including when nothing changed — a delete that removed nothing, say — and
+   * installing a fresh array and notifying regardless would re-render every consumer of
+   * `specs$` for a value that is equal. It also keeps the array's **identity** stable across
+   * an unchanged round trip, which is the property the `specs$` doc relies on.
    * @param specs - the names the Host reports.
    */
   private adoptSpecs(specs: readonly string[]): void {
+    if (sameStringList(this.state.specs, specs)) return
     this.state = Object.freeze({ ...this.state, specs: Object.freeze([...specs]) })
     for (const listener of [...this.listeners]) listener()
   }
