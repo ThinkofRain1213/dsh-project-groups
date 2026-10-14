@@ -195,6 +195,27 @@ Two invariants keep these patches honest:
 2. **Grouping is a derivation, never data.** Nothing here writes Workspace
    membership, `cwd`, or archive state; the Host is untouched by construction.
 
+### Upstream bug fixes carried in this tree
+
+These are **not** seams and **not** behaviour changes of our choosing: they are
+defects in the upstream revision this tree was copied from, fixed here so the
+plugin does not ship them. They are listed apart from the seam table because a
+re-sync must **check whether upstream has already fixed each one** — if it has,
+take upstream's version and drop the row; if not, re-apply it.
+
+Each fix is marked in the source with a comment naming the defect, so a
+`git merge-file` conflict on one of these is recognizable rather than mysterious.
+
+| File | Fix | Re-sync action |
+|---|---|---|
+| `client/index.ts` | `activeSessionRefusal` narrowed by `reason.name` and then dereferenced `rpcError.code` unguarded. An error carrying that name without an `rpcError` threw a `TypeError` from inside `catch`, turning a recoverable archive refusal into an unhandled rejection and losing the notice. Checks the shape before reading it | re-apply the `rpcError === undefined \|\| rpcError === null` guard and the `details?.activity` optional read |
+| `client/shortcuts.ts` | the fork handler did the same: a missing `rpcError` threw inside the catch and skipped `forkFailed`, so the user's notice never appeared. Now reads the code through `?.` and treats a missing `rpcError` as the generic failure | re-apply the `rpcError?.code` read |
+| `client/session-actions/derived.ts` | `undefined` was the memo cache-miss sentinel, but `undefined` is a legitimate projection result (upstream's own `HostObservable<readonly GroupSource[] \| undefined>` is that shape), so whenever `project` returned `undefined` the memoization was defeated and the projection re-ran per read. An explicit `computed` flag replaces it | re-apply the flag; do **not** restore `value === undefined` as the test |
+| `client/rows/WorkspaceBrowser.tsx` | a failed remote search rendered `search.noMatches`: on `status === 'error'` items are empty and `pending` is false, so a failed Host search was indistinguishable from one that found nothing. A distinct `search.failed` state is rendered, with `role="alert"` | re-apply the `searchFailed` branch and keep the `!searchFailed` guard on the empty state |
+| `client/rows/WorkspaceBrowser.tsx` | the create-project dialog's Enter handler lacked the IME guard the rename dialog has, so pressing Enter to commit a Chinese/Japanese composition also fired `confirmCreate()`. Adds `createComposingRef` — its own ref, not the rename dialog's, since the two share no state | re-add the ref and the `onCompositionStart` / `onCompositionEnd` / `!createComposingRef.current` trio |
+| `client/locales.ts` | `search.failed` in both dictionaries (`搜索失败，请重试。` / `Search failed. Try again.`) | add the key to both |
+| `rows/Rows.module.css` | row actions were revealed only on `:hover` / `.menuOpen`, so a keyboard user tabbing into a row never triggered hover and every action stayed `display: none` — unreachable without a pointer. Adds `:focus-within` to the reveal list | re-add the three `:focus-within` selectors |
+
 ### Deliberate behaviour deviations
 
 These are **not** structural seams: they change what the shipped code does.
