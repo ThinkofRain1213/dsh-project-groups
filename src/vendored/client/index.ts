@@ -43,7 +43,7 @@ import {
   type RenameSessionInjected, type RowToast, type RowToastInjected, type RowToastState, type SessionRenameDialogInjected,
   type WorkspaceBrowserInjected, type WorkspacePickerInjected,
 } from './contract/slots.ts'
-import { createWorkspaceShortcutControls, installWorkspaceShortcuts } from './shortcuts.ts'
+import { createWorkspaceShortcutControls, installWorkspaceShortcuts, reportForkFailure } from './shortcuts.ts'
 import { UiWorkspaceService } from './navigation.ts'
 import { createWorkspaceViewStore } from './stores.ts'
 import type { GroupSource } from './tree.ts'
@@ -584,12 +584,22 @@ export function apply(
     chooseBaseWorkspace: projectActions?.chooseBaseWorkspace,
   })
   const forkInjected = (): ForkSessionInjected => ({
-    forkSession: (sessionId) => {
-      uiWorkspace.forkSession(sessionId, (childId) => {
-        ctx.get('productAnalytics')?.track('branch_session_click', { session_id: childId, parent_session_id: sessionId, click_position: 'sidebar' })
-      }).catch(() => {
-        // Fork or child-title failure leaves the list as it was.
-      })
+    forkSession: async (sessionId) => {
+      try {
+        await uiWorkspace.forkSession(sessionId, (childId) => {
+          ctx.get('productAnalytics')?.track('branch_session_click', { session_id: childId, parent_session_id: sessionId, click_position: 'sidebar' })
+        })
+      } catch (error: unknown) {
+        // Reported here rather than swallowed, and here rather than in each caller.
+        //
+        // The previous shape ended in `.catch(() => {})` with the comment "fork or child-title
+        // failure leaves the list as it was" — which is true of the list and says nothing about
+        // the user. With the keyboard command reporting refusals and this share not, the sidebar
+        // menu row was the one entry that failed silently: the menu closed and nothing happened.
+        // Reporting once, in the implementation, is what keeps the two entry points consistent.
+        reportForkFailure(error, shortcutControls)
+        throw error
+      }
     },
   })
   const renameInjected = (): RenameSessionInjected => ({ requestSessionRename })

@@ -8,11 +8,10 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { UiWorkspace } from './navigation.ts'
 
 /** Transient requests consumed by the existing workspace browser. */
-export interface WorkspaceShortcutState {
-  readonly searchRequest: number
+export interface WorkspaceShortcutState {  readonly searchRequest: number
   readonly addRequested: boolean
   readonly directoryBusy: boolean
-  readonly renameTarget: { readonly sessionId: SessionId; readonly currentTitle: string } | null
+  readonly renameTarget: { readonly sessionId: SessionId; readonly currentTitle: string; readonly seq: number } | null
   readonly forkError: { readonly reason: 'unavailable' | 'failed'; readonly seq: number } | null
 }
 
@@ -41,6 +40,35 @@ type OwnShortcutId =
   | 'session.rename' | 'session.fork' | 'session.archive'
 
 /**
+ * Raise the fork-failure notice, mapping the rejection to which wording applies.
+ *
+ * Shared by both entry points for the command — the keyboard binding here and the sidebar's
+ * menu row — because they are two ways to press the same button and only one of them used to
+ * report anything: the menu row swallowed every rejection, so a Host refusal such as
+ * `session/fork-unavailable` closed the menu and changed nothing, with no notice. One rule
+ * keeps the two from drifting apart again.
+ * @param error - the rejection from the fork request.
+ * @param controls - the browser-owned request source that carries the notice.
+ */
+export function reportForkFailure(
+  error: unknown,
+  controls: Pick<WorkspaceShortcutControls, 'forkFailed'>,
+): void {
+  // Client plugin bundles do not share error-class identity, so the check is on `name` — but a
+  // name alone proves nothing about the shape. An error carrying `name === 'SessionForkError'`
+  // without an `rpcError` (a re-thrown plain error, or one crossing another bundle boundary)
+  // would make a bare dereference throw *inside* the catch handler, masking the real failure
+  // and skipping `forkFailed` entirely. Optional chaining treats a missing `rpcError` as the
+  // generic failure, which is what it is.
+  const rpcCode = error instanceof Error && error.name === 'SessionForkError'
+    ? (error as Partial<SessionForkError>).rpcError?.code
+    : undefined
+  const unavailable = rpcCode === 'session/fork-unavailable'
+  controls.forkFailed(unavailable ? 'unavailable' : 'failed')
+  if (!unavailable) console.warn('session fork rejected:', error)
+}
+
+/**
  * Create the private browser request source shared by commands and controls.
  * @returns observable state and its complete mutation callbacks.
  */
@@ -49,6 +77,8 @@ export function createWorkspaceShortcutControls(): WorkspaceShortcutControls {
     searchRequest: 0, addRequested: false, directoryBusy: false, renameTarget: null, forkError: null,
   })
   let forkErrorSeq = 0
+  /** Monotonic rename-request id; see {@link SessionRenameTarget.seq}. */
+  let renameSeq = 0
   return {
     state,
     search: () => {
@@ -78,8 +108,12 @@ export function createWorkspaceShortcutControls(): WorkspaceShortcutControls {
       state.set({ ...before, directoryBusy: busy })
     },
     rename: (sessionId: SessionId, currentTitle: string) => {
+      // A per-request sequence, so the dialog's key changes even when the target does not.
+      // See `SessionRenameTarget.seq`: keyed on the Session alone, a second request for the same
+      // row reused the form and kept the stale draft.
+      renameSeq += 1
       const before = state.getSnapshot()
-      state.set({ ...before, renameTarget: { sessionId, currentTitle } })
+      state.set({ ...before, renameTarget: { sessionId, currentTitle, seq: renameSeq } })
     },
     closeRename: () => {
       const before = state.getSnapshot()
@@ -174,20 +208,7 @@ export function installWorkspaceShortcuts(
     if (target.blank) return { status: 'blocked', reason: t('shortcut.noCompletedTurn') }
     return { status: 'handled', run: () => {
       void navigation.forkSession(target.id).catch((error: unknown) => {
-        // Client plugin bundles do not share error-class identity, so the check is on
-        // `name` — but a name alone proves nothing about the shape. An error carrying
-        // `name === 'SessionForkError'` without an `rpcError` (a re-thrown plain error, or
-        // one crossing another bundle boundary) would make the dereference below throw
-        // *inside* the catch handler, masking the real fork failure and skipping
-        // `forkFailed` entirely — so the notice the user needs would never appear.
-        // Optional chaining treats a missing `rpcError` as the generic failure, which is
-        // what it is.
-        const rpcCode = error instanceof Error && error.name === 'SessionForkError'
-          ? (error as Partial<SessionForkError>).rpcError?.code
-          : undefined
-        const unavailable = rpcCode === 'session/fork-unavailable'
-        controls.forkFailed(unavailable ? 'unavailable' : 'failed')
-        if (!unavailable) console.warn('session fork rejected:', error)
+        reportForkFailure(error, controls)
       })
     } }
   })

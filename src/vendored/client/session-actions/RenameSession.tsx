@@ -49,7 +49,7 @@ export function SessionRenameDialog({ useRenameRequest, settleSessionRename, ren
   if (request === null) return null
   return (
     <RenameForm
-      key={request.sessionId}
+      key={`${request.sessionId}-${String(request.seq)}`}
       request={request}
       renameSession={renameSession}
       onSettle={settleSessionRename}
@@ -112,7 +112,12 @@ function RenameForm({ request, renameSession, onSettle, t }: {
         onCompositionStart={() => { composingRef.current = true }}
         onCompositionEnd={() => { composingRef.current = false }}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !composingRef.current) {
+          // `isComposing` reads the fact off the event being handled; the ref mirrors it from
+          // `compositionstart`/`compositionend` and can drift — an aborted composition, or one
+          // that began after an earlier keydown — after which this handler would submit a
+          // half-composed name. Both are consulted: the event flag is authoritative where the
+          // browser sets it, and the ref still covers a runtime that does not.
+          if (e.key === 'Enter' && !e.nativeEvent.isComposing && !composingRef.current) {
             e.preventDefault()
             confirm()
           }

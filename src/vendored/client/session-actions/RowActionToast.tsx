@@ -26,41 +26,64 @@ export function RowActionToast({ useToast, useStore, dismissToast, undoArchive, 
   const toast = useToast(current => current)
   const archivedRowsVisible = useStore(state => (state.archivedFilter ?? 'default') !== 'default')
   if (toast === null) return null
+
+  // The notice lifecycle, in one place.
+  //
+  // Every branch renders a `<Toast>` and every one needs the same two things: the per-show
+  // sequence key (a new notice must restart the hold/fade cycle rather than continue the
+  // previous one) and the dismissal callback. Written out per branch, a change to either had to
+  // be made three times — and the keying is exactly the part that silently misbehaves when one
+  // copy is missed, since a stale key means the timer never restarts.
+  //
+  // `onDone` is spread but `key` is not: React reads `key` off a props object, and recent
+  // versions warn when one is spread into JSX. The value still comes from a single place, and
+  // only the attribute name repeats.
+  const seqKey = `toast-${String(toast.seq)}`
+  const lifecycle = { onDone: dismissToast }
+
   if (toast.kind === 'archived' || toast.kind === 'stoppedAndArchived') {
     const { sessionId } = toast
+    // The filter action only makes sense while archived rows are hidden; with them already
+    // shown there would be nothing for it to reveal.
+    //
+    // Hoisted into a named list rather than spread from an inline ternary — `...cond ? [] : [x]`
+    // reads as though the spread bound to the flag, and any later edit (a third element, a
+    // reorder) has to re-derive that it does not.
+    const filterAction = { prefix: t('toast.archivedOr'), label: t('toast.archivedFilter'), onClick: () => { dismissToast(); showArchived() } }
+    const actions = archivedRowsVisible
+      ? [{ label: t('toast.archivedUndo'), onClick: () => { dismissToast(); undoArchive(sessionId) } }]
+      : [
+          { label: t('toast.archivedUndo'), onClick: () => { dismissToast(); undoArchive(sessionId) } },
+          filterAction,
+        ]
     return (
       <Toast
-        key={`toast-${String(toast.seq)}`}
+        key={seqKey}
+        {...lifecycle}
         text={t(toast.kind === 'archived' ? 'toast.archived' : 'toast.stoppedAndArchived')}
         tone="success"
         holdMs={LONG_TOAST_HOLD_MS}
-        actions={[
-          { label: t('toast.archivedUndo'), onClick: () => { dismissToast(); undoArchive(sessionId) } },
-          ...archivedRowsVisible ? [] : [
-            { prefix: t('toast.archivedOr'), label: t('toast.archivedFilter'), onClick: () => { dismissToast(); showArchived() } },
-          ],
-        ]}
-        onDone={dismissToast}
+        actions={actions}
       />
     )
   }
   if (toast.kind === 'createFailed') {
     return (
       <Toast
-        key={`toast-${String(toast.seq)}`}
+        key={seqKey}
+        {...lifecycle}
         text={t('toast.createFailed', { message: toast.message })}
         icon={<IconWarningOutlineRegular />}
         holdMs={LONG_TOAST_HOLD_MS}
-        onDone={dismissToast}
       />
     )
   }
   return (
     <Toast
-      key={`toast-${String(toast.seq)}`}
+      key={seqKey}
+      {...lifecycle}
       text={plainNoticeText(toast, t)}
       icon={<IconWarningOutlineRegular />}
-      onDone={dismissToast}
     />
   )
 }
