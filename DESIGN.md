@@ -6226,3 +6226,102 @@ projectRecord.docSpec:         'none' | 'default' | <文件名> | absent   optio
 
 
 
+
+
+## 27. 自动化代码审查（ocr）的处置记录（2026-10-14）
+
+外部工具 `@alibaba-group/open-code-review` 对 **0.3.0** 的树跑出 **641 条**发现。
+本章记录处置方式与**哪些结论被实测推翻**——后者比"修了多少条"更重要，因为审查是模型产出的，
+不是人核对过的。
+
+### 27.1 分批与规模
+
+| 阶段 | 范围 | 条数 | 状态 |
+|---|---|---|---|
+| 0 | 安全（最优先） | 11 | ✅ |
+| 1 | 两条 CRITICAL | 2 | ✅ |
+| 2 | `src/` 产品代码 | 143 | ✅ |
+| 3 | CI 与打包配置 | 33 | ✅ |
+| 4 | `scripts/lib/` | 17 | ✅ |
+| 5 | `scripts/verify-*.mjs` | 52 | ✅ |
+| 6 | `scripts/probe-*.mjs` | 386 | ✅ |
+| 7 | `scripts/` 其它 | 5 | ✅ |
+
+看板与逐条勾选在会话临时清单里（`.agent/temp/`），不进仓库——它是过程产物，不是产品文档。
+
+### 27.2 被实测推翻的审查结论
+
+这些**没有**按审查的说法改，因为所述机制在当前代码里不成立。每条都做了测量：
+
+| 位置 | 审查的说法 | 实测 |
+|---|---|---|
+| `src/spec.ts:82/95/361` | 共享的可变 zod 默认值，跨解析累积 | zod 4.6.5 对数组/非空数组/对象字面量**每次解析返回新引用**；版本**精确锁定**无范围 |
+| `src/client/tree.ts:307` | 遍历是 O(n²) | `includes` 调用次数**跟随 fork 数**而非节点数：n=200 且 0 fork → 0 次；5 fork → 5 次；200 fork → 200 次。代价是 O(forks × n)，`splice` 那部分是不可避免的 O(n) |
+| `.gitattributes` | 索引里存有 CRLF，需 renormalize | 按**字节**扫描 143 个已跟踪文本 blob：**0 个含 CRLF**；`git add --renormalize .` 不暂存任何东西 |
+| `scripts/compare-bundle.mjs:68` | 可选链不全，正则失配会抛 TypeError | 可选链**短路整条链**：`exec()?.[1].replace()` 得到 `undefined` 而不抛错。**但真问题更严重**：两侧产物都把 `inject` 写成变量引用，于是两侧都是 `undefined`，`undefined === undefined` ⇒ **恒真通过**。见 27.3 |
+| `scripts/probe-base-workspace-routing.mjs:155` | `child.kill()` 收不到进程树，应改用 `taskkill /T /F` | 子进程以 `ELECTRON_RUN_AS_NODE=1` 直接跑 `bin.js`（服务本体），全仓清理约定就是 `child.kill()` |
+
+### 27.3 按「形态」修类，而不是按审查的逐条清单
+
+审查对同类缺陷只点了几处，实际分布广得多。**扫描形态**（而非读清单）发现的：
+
+| 类 | 审查报的 | 实际 | 说明 |
+|---|---|---|---|
+| 凭证泄漏 | 3 处（其中 2 处早已修好） | **14 处未脱敏**，遍及 12 个 probe | 每个 probe 都从子进程 stdout 抓 `?token=<uuid>`——那是**活凭证**。启动失败时会把 token 打进 CI 日志 |
+| `spawn` 无 `error` 监听 | 少数几处 | **59 个里只有 3 个有** | 失败的 spawn 发 `'error'` 且不写 stdout ⇒ 要么直接崩进程，要么 120 秒后误报 `boot timeout` |
+| `chromium.launch` 在 `try` 外 | 少数几处 | **45 个** | 启动失败会抛出脚本，留下存活的 Host 和打开的浏览器 |
+| 未读的 RPC 响应 | 2 处 | **4 处** | 丢弃响应 ⇒ setup 静默失败，后续断言测的是错的状态 |
+| 硬编码机器路径 | 1 处 | **5 处 / 4 文件** | 在别的机器上会注册**错误的目录**，而输出里没有任何提示 |
+| `let running = child` 别名 | 1 处 | **29 个**（去除 28 个） | 纯别名，在读者和真正被杀掉的进程之间加了一层 |
+
+### 27.4 自己引入的回归，以及校准过的扫描
+
+修类会引入新缺陷。本轮的三个都是**会让探针完全跑不起来**的：
+
+1. **`page.on(...)` / `installRowKeyHelpers(page)` 留在模块顶层**，而 `page` 已改为在 `try` 内赋值
+   ⇒ 对 `undefined` 调 `.on`，`TypeError`。涉及 **10 个文件**。
+2. **`join(repoRoot, ...)` 被放进 `page.evaluate` 的页面侧函数体** ⇒ 浏览器里没有 `join`/`repoRoot`，
+   `ReferenceError`，种子请求从未执行。
+3. **`probe-upstream-upgrade.mjs` 的 boot promise 引用了该文件里不存在的 `child`**（阶段 1 引入）
+   ⇒ 每次运行都 `ReferenceError`。
+
+**教训（写下来是因为我犯过两次）**：扫描结果的**假阳性会误导大范围改动**。
+第一版「顶层用了 `page`」扫描报了约 250 处，因为它把
+`const isMasked = () => page.evaluate(...)` 这类**助手定义**当成顶层执行；校准（拿审查明确说"已正确"的
+文件作反例）后真值是 **2 处**。同类地，第一版「浏览器侧引用 Node 常量」扫描把
+`Array.prototype.join` 当成 `node:path` 的 `join`，报了 7 处假阳性。
+**先校准再动手**，否则会白改两百多行本来正确的代码。
+
+### 27.5 机械不变量（替代逐文件肉眼核对）
+
+`scripts/` 下全部 59 个 probe，按形态检查六类；本阶段开始时六类都非零，现在全为 0：
+
+    redaction          0 未脱敏的启动回显
+    machinePath        0 硬编码 C:\Users\Think 路径
+    errorListener      0（46 个 spawn DSH 的 probe 都有 error/exit 处理）
+    launchOutsideTry   0 顶层 launch
+    unguardedClose     0 未守卫的 browser.close()
+    literalTrueCheck   0 恒真的 check(..., true, ...)
+
+### 27.6 无法执行的部分（必须明说）
+
+**52 / 59 个 probe 需要 live DSH 实例，本环境未能执行。** 根因已查明，且**不是代码问题**：
+
+> 用户侧 DSH 正在运行（Electron 单例）。用隔离 `DSH_HOME` 启动的实例被既有实例接管，
+> 于是进程存活、**既不监听端口也不产出任何 stdout/stderr**，探针因此 120 秒超时。
+
+实际**执行**过的：`probe-approach-b`、`probe-slots`、`probe-service`、`probe-grouping-seam`、
+`probe-inject-wait`、`probe-contribution`、`probe-retention`、`probe-service-timing`、
+`probe-host-import`（含坏路径反向对照）、`compare-bundle.mjs`，以及 `redactToken` 的纯函数行为验证。
+`service-timing` 还做了**负向对照**（用 `--import` 覆盖 `Context.prototype.get`）确认断言与退出码是真的。
+
+每个提交都明写了未执行的部分。阶段 8.2/8.3（抽跑 6 个探针、真实 UI 实测）因此**待环境可用后补做**。
+
+### 27.7 反向对照（证明"修好了"不是空话）
+
+- `compare-bundle.mjs` 在门禁内（`verify:bundle`），所以能做完整反向对照：
+  破坏 loader id → 2 个 FAIL；6 种构建机路径 → 各自 FAIL 且**每种恰好 1 处完整路径**；
+  改动 `inject` 列表 → FAIL + exit 1；无法解析 → SKIP 而非通过；产物缺失 → 2 行诊断 + exit 2。
+- `grouping.ts` 13 个座位在旧代码上 FAIL；`tree.ts` 6 个；`isValidLink` 3 个（大写 scheme）；
+  purity gate 拒绝 `TYPE_ONLY` 值导入；`verify-projects` 的 pin 顺序 3 个；
+  `verify-locales` 的死键检查能抓出伪造的未使用键；asar 6 个构造损坏输入各自给出具名错误。

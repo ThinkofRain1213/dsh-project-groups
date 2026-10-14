@@ -168,7 +168,7 @@ official bundle, read out of the installed `app.asar`.
 pnpm install
 pnpm typecheck        # tsc --noEmit over src (including the vendored tree)
 pnpm build            # tsdown -> lib/index.js + lib/client.js
-pnpm check            # typecheck + build + 11 verification scripts + probes (718 assertions)
+pnpm check            # typecheck + build + 13 verification steps + probes (861 assertions)
 ```
 
 > **⚠️ When developing locally (`dsh plugin add .` / a `link:` install), a change under `src/`
@@ -192,12 +192,12 @@ Source layout:
 | `src/spec.ts` | Domain schema: the project record, global settings, the three state values |
 | `src/client/index.ts` | Browser entry: the grouping injection, the settings card, the dialogs |
 | `src/client/spec-picker.tsx` | The spec choose / upload / delete dialog |
-| `src/vendored/` | Copy of the official client source + **60 registered patches** (see its [README](src/vendored/README.md)) |
+| `src/vendored/` | Copy of the official client source + **75 registered patches** (see its [README](src/vendored/README.md)) |
 | `scripts/` | Probes and verification; `DESIGN.md` explains what each proves |
 | `CHANGELOG.md` | What changed in each release, as users see it |
 | `DESIGN.md` | Architecture, verified harness facts, the layer plan and the decision record (Chinese) |
 
-**`pnpm check` runs all 11 verification scripts and the probes (718 assertions).**
+**`pnpm check` runs all 13 verification steps and the probes (861 assertions).**
 `pnpm probe:doc-spec` (131 browser end-to-end assertions) additionally needs a **real DSH and a free
 port**, so it is not on the default chain — run it by hand when touching the injection or the settings
 surface.

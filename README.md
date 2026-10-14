@@ -146,7 +146,7 @@ bundle 的构建满足与上游相同的模块边界规则：
 pnpm install
 pnpm typecheck        # tsc --noEmit，覆盖 src（含 vendored 树）
 pnpm build            # tsdown -> lib/index.js + lib/client.js
-pnpm check            # typecheck + build + 11 个校验脚本 + 探针（718 条断言）
+pnpm check            # typecheck + build + 13 项校验 + 探针（861 条断言）
 ```
 
 > **⚠️ 本地开发（`dsh plugin add .` / `link:` 安装）时，改完 `src/` 必须
@@ -168,12 +168,12 @@ pnpm check            # typecheck + build + 11 个校验脚本 + 探针（718 �
 | `src/spec.ts` | 领域 schema：项目记录、全局设置、三个状态值 |
 | `src/client/index.ts` | 浏览器入口：注入分组、设置卡片、选择弹窗 |
 | `src/client/spec-picker.tsx` | 规范选择 / 上传 / 删除对话框 |
-| `src/vendored/` | 官方 client 源码副本 + **60 条登记的 patch**（见其 [README](src/vendored/README.md)） |
+| `src/vendored/` | 官方 client 源码副本 + **75 条登记的 patch**（见其 [README](src/vendored/README.md)） |
 | `scripts/` | 探针与校验；`DESIGN.md` 说明每个脚本证明了什么 |
 | `CHANGELOG.md` | 每个版本对使用者可见的变化 |
 | `DESIGN.md` | 架构、已核实的 harness 事实、分层计划与决策记录 |
 
-**`pnpm check` 会跑全部 11 个校验脚本与探针（718 条断言）。**
+**`pnpm check` 会跑全部 13 项校验与探针（861 条断言）。**
 另有 `pnpm probe:doc-spec`（131 条浏览器端到端断言）需要**真实 DSH 与可用端口**，
 故不在默认链上——改动注入或设置界面时应手动跑一次。
 
