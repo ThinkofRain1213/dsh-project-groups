@@ -9,7 +9,7 @@
  * Usage: node verify-doc-spec.mjs
  */
 import { register } from 'node:module'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -34,23 +34,49 @@ const fakeCtx = (root) => ({
   get: (name) => name === 'profileContext' ? { home: root } : undefined,
 })
 
-const {
-  isSafeSpecName, resolveSpec, specSha1, listUploadedSpecs,
-  writeUploadedSpec, deleteUploadedSpec, readUploadedSpec,
-  harnessHome, documentPath, uploadedSpecPath, specsDirectory,
-  BUILT_IN_SPEC_PATH, REWRITE_FLOW_PATH,
-} = await import('../src/spec-store.ts')
-const {
-  matchSpecDriftChoice, specDriftQuestion, renderProjectInjection,
-  SPEC_DRIFT_LABELS, SPEC_DRIFT_QUESTION_ID,
-} = await import('../src/injection.ts')
-const { projectRecord, globalRecord, initialGlobal } = await import('../src/spec.ts')
-
 const failures = []
 const check = (label, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail === undefined ? '' : ` — ${detail}`}`)
   if (!ok) failures.push(label)
 }
+
+/**
+ * Load the three modules under test, reporting a failure rather than throwing.
+ *
+ * These were bare top-level `await import(...)` calls placed above `check`, so a resolution or
+ * type-stripping failure — a renamed source file, a broken `ts-loader` — aborted the process
+ * with a raw stack and a non-zero exit, bypassing the `failures` summary this script is built
+ * around. A gate that dies without a `FAIL` line reads as a broken script rather than as a
+ * failed check.
+ */
+let specStore
+let injection
+let spec
+try {
+  specStore = await import('../src/spec-store.ts')
+  injection = await import('../src/injection.ts')
+  spec = await import('../src/spec.ts')
+} catch (error) {
+  check('可以载入被测模块', false, String(error?.message ?? error).slice(0, 200))
+}
+
+if (failures.length > 0) {
+  console.log('')
+  console.log(`${failures.length} CHECK(S) FAILED`)
+  process.exit(1)
+}
+
+const {
+  isSafeSpecName, resolveSpec, specSha1, listUploadedSpecs,
+  writeUploadedSpec, deleteUploadedSpec, readUploadedSpec,
+  harnessHome, documentPath, uploadedSpecPath, specsDirectory,
+  BUILT_IN_SPEC_PATH, REWRITE_FLOW_PATH,
+} = specStore
+const {
+  matchSpecDriftChoice, specDriftQuestion, renderProjectInjection,
+  SPEC_DRIFT_LABELS, SPEC_DRIFT_QUESTION_ID,
+} = injection
+const { projectRecord, globalRecord, initialGlobal } = spec
 
 console.log('=== spec file names: anything that could escape the directory ===')
 for (const bad of [
@@ -77,28 +103,38 @@ for (const good of [
 // A joined name must stay inside the specs directory, which is the property the
 // character checks exist to guarantee.
 {
-  const fakeCtx = { get: () => undefined }
-  check('a rejected name yields no path', uploadedSpecPath(fakeCtx, '../escape.md') === undefined)
-  const inside = uploadedSpecPath(fakeCtx, 'ok.md')
+  // Named for what it is, not `fakeCtx`. It shadows the module-level helper above and
+  // deliberately has **no** `profileContext`, which is the opposite of what a reader would
+  // assume from the shared name — the helper answers one, and these assertions exist to cover
+  // the context that does not.
+  const bareCtx = { get: () => undefined }
+  check('a rejected name yields no path', uploadedSpecPath(bareCtx, '../escape.md') === undefined)
+  const inside = uploadedSpecPath(bareCtx, 'ok.md')
   check('an accepted name joins under the specs directory',
-    inside !== undefined && inside.startsWith(specsDirectory(fakeCtx)), String(inside))
+    inside !== undefined && inside.startsWith(specsDirectory(bareCtx)), String(inside))
 }
 
 console.log('\n=== $DSH_HOME resolution ===')
 {
   const saved = process.env.DSH_HOME
-  process.env.DSH_HOME = 'C:\\Users\\Someone\\.dsh'
-  check('the environment value is used', harnessHome({ get: () => undefined }) === 'C:\\Users\\Someone\\.dsh')
-  // A blank override must not resolve to the working directory.
-  process.env.DSH_HOME = '   '
-  check('a blank environment value falls back to the OS home',
-    harnessHome({ get: () => undefined }).endsWith('.dsh'))
-  process.env.DSH_HOME = 'C:\\FromEnv'
-  check('profileContext.home outranks the environment',
-    harnessHome({ get: (name) => name === 'profileContext' ? { home: 'C:\\FromProfile' } : undefined })
-    === 'C:\\FromProfile')
-  if (saved === undefined) delete process.env.DSH_HOME
-  else process.env.DSH_HOME = saved
+  // `try`/`finally`, not a restore at the end of the block. Every check in between reads the
+  // variable, so a throw would leave the environment mutated for the rest of the run — silently
+  // changing what later assertions see — and for the caller's shell.
+  try {
+    process.env.DSH_HOME = 'C:\\Users\\Someone\\.dsh'
+    check('the environment value is used', harnessHome({ get: () => undefined }) === 'C:\\Users\\Someone\\.dsh')
+    // A blank override must not resolve to the working directory.
+    process.env.DSH_HOME = '   '
+    check('a blank environment value falls back to the OS home',
+      harnessHome({ get: () => undefined }).endsWith('.dsh'))
+    process.env.DSH_HOME = 'C:\\FromEnv'
+    check('profileContext.home outranks the environment',
+      harnessHome({ get: (name) => name === 'profileContext' ? { home: 'C:\\FromProfile' } : undefined })
+      === 'C:\\FromProfile')
+  } finally {
+    if (saved === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = saved
+  }
 }
 {
   const ctx = { get: () => undefined }
@@ -200,11 +236,34 @@ console.log('\n=== specSha1: content identity, not file identity ===')
   check('identical content hashes identically', specSha1(pathA) === specSha1(pathB))
   check('different content hashes differently', specSha1(pathA) !== specSha1(pathC))
   check('an absent file has no hash', specSha1(join(specsDirectory(ctx), 'gone.md')) === undefined)
-  // Overwriting under the SAME name must change the hash — that is the whole
-  // reason a content hash is stored rather than a file name.
-  await writeUploadedSpec(ctx, 'a.md', 'changed')
-  check('a same-name rewrite changes the hash once the memo expires',
-    specSha1(pathA) === specSha1(pathC) || specSha1(pathA) !== null)
+  // The content memo has to notice a change to the file, and that is what the vacuous
+  // assertion was standing in front of.
+  //
+  // It used to read `specSha1(pathA) === specSha1(pathC) || specSha1(pathA) !== null`. The right
+  // operand is always true (`specSha1` returns `string | undefined`, and neither is `null`), so
+  // the check could never fail and verified nothing.
+  //
+  // The review's suggested replacement — a same-name rewrite through `writeUploadedSpec` — does
+  // not hold for the current code: that call is an **exclusive create** (`flag: 'wx'`), so
+  // rewriting an existing name is refused on purpose, and the assertion two blocks up
+  // (`the original content survives the refusal`) is what asserts that. Measured: the hash
+  // correctly did not change, and the rewrite never happened.
+  //
+  // An edit made on disk is the case the memo actually has to survive — the same thing a person
+  // editing the spec in their editor does — so the file is written directly and the hash is
+  // compared against a second file holding the same new content.
+  const hashBefore = specSha1(pathA)
+  writeFileSync(pathA, 'changed')
+  // A separate file holding the same new content, written on disk too. Comparing `pathA`
+  // against itself — which the first draft of this did, via a `replace` that reconstructed the
+  // same path string — is vacuously true, i.e. the same defect one line further down.
+  const pathE = join(specsDirectory(ctx), 'e.md')
+  writeFileSync(pathE, 'changed')
+  check('an on-disk edit changes the hash',
+    specSha1(pathA) !== hashBefore, `${String(hashBefore).slice(0, 12)} -> ${String(specSha1(pathA)).slice(0, 12)}`)
+  check('identical new content hashes identically after the edit',
+    specSha1(pathA) === specSha1(pathE),
+    `${String(specSha1(pathA)).slice(0, 12)} vs ${String(specSha1(pathE)).slice(0, 12)}`)
   await rmTemp(root)
 }
 
@@ -319,3 +378,4 @@ console.log('')
 console.log('=== 结果 ===')
 console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`)
 process.exit(failures.length === 0 ? 0 : 1)
+

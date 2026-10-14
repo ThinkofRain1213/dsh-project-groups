@@ -44,6 +44,62 @@ function sources(dir, out = []) {
 /** `{slot}` names inside one message. */
 const slotsOf = (text) => new Set([...text.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)].map(m => m[1]))
 
+/** The two dictionaries themselves, which must not be part of their own reference corpus. */
+const DICTIONARIES = [
+  join('src', 'client', 'settings-locales.ts'),
+  join('src', 'vendored', 'client', 'locales.ts'),
+]
+
+/**
+ * The corpus every dead-key lookup searches: every `.ts`/`.tsx` under `src` **except the
+ * dictionaries themselves**.
+ *
+ * Leaving them in is what made the check vacuous. A key is "dead" when no file references its
+ * literal — but the dictionary that *defines* every key contains all of those literals, so
+ * `corpus.includes("'key'")` was true for every key and the check could never fail. It reported
+ * 0 dead keys for 154 of them, which is not the same as there being none.
+ *
+ * Read once here rather than re-joined per `compare` call (there are two of them).
+ */
+const CORPUS = sources('src')
+  .filter(file => !DICTIONARIES.includes(file))
+  .map(file => readFileSync(file, 'utf8'))
+  .join('\n')
+
+/**
+ * Key prefixes that the corpus builds at runtime, e.g. ``t(`archive.confirm.jobs.${plural}`)``.
+ *
+ * A literal-substring search cannot see those, so every member of such a family would be
+ * reported dead — ten keys in the browser dictionary are built this way, plus `time.${unit}`.
+ *
+ * Scoped to a `t(` call on purpose. Matching any template literal collected `remote.`` too,
+ * which is a service name rather than a locale prefix, and an excused prefix is a key the check
+ * can no longer report.
+ */
+const DYNAMIC_PREFIXES = [...new Set(
+  [...CORPUS.matchAll(/\bt\(`([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)\.\$\{/g)].map(m => `${m[1]}.`),
+)]
+
+/**
+ * Keys that are unreferenced in this repository for a reason, with the reason.
+ *
+ * The check is only useful if a failure means "delete this key", so every exception is listed
+ * rather than the rule being weakened. Two of these were established by reading the **official
+ * bundle** out of the installed DSH's `app.asar` — the same source `compare-bundle.mjs` uses —
+ * because "unused here" and "unused" are different claims: this tree vendors a subset of
+ * upstream, and a key whose only consumer was not vendored would otherwise be deleted and break
+ * upstream.
+ */
+const LICENSED_UNREFERENCED = new Map([
+  // Measured: 2 occurrences in the official client bundle. Its consumer is not in this tree.
+  ['empty.noMatches', '官方 bundle 引用 2 次；其消费组件未 vendored'],
+  // Measured: 2 occurrences each. Same reason.
+  ['sessions.count.one', '官方 bundle 引用 2 次；其消费组件未 vendored'],
+  ['sessions.count.other', '官方 bundle 引用 2 次；其消费组件未 vendored'],
+  // Measured: 0 occurrences upstream either — this one really is unused, and is kept on purpose.
+  ['rename.project.title', '有意保留：见 locales.ts 中「for the Workspace-side dictionary symmetry」'],
+])
+
 /**
  * Compare one locale pair.
  *
@@ -51,12 +107,26 @@ const slotsOf = (text) => new Set([...text.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}
  * end of the file. Keys are matched on `  name:` at two-space indent, which is how
  * both files are written.
  */
-function compare({ label, file, zhMarker, enMarker, flat, sourceFiles }) {
+function compare({ label, file, zhMarker, enMarker, flat }) {
   console.log('')
   console.log(`=== ${label} ===`)
-  const text = readFileSync(file, 'utf8')
-  const zhStart = text.indexOf(zhMarker)
-  const enStart = text.indexOf(enMarker, zhStart)
+  let text
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch (error) {
+    // Named rather than thrown. A renamed or moved dictionary used to abort the whole script
+    // with a raw ENOENT stack and no indication that this was the file being checked.
+    check(`${label}: 可以读取 ${file}`, false, String(error.message ?? error).slice(0, 160))
+    return
+  }
+  // Anchored to the start of a line. The markers used to be plain `indexOf` substrings, so a
+  // marker mentioned in a comment above the declaration would split the file at the wrong
+  // place and the two bodies would then be nonsense — reported as a parity failure rather than
+  // as the parse problem it is.
+  const zhMatch = new RegExp(`^${zhMarker}`, 'm').exec(text)
+  const enMatch = zhMatch === null ? null : new RegExp(`^${enMarker}`, 'm').exec(text.slice(zhMatch.index))
+  const zhStart = zhMatch?.index ?? -1
+  const enStart = enMatch === null || zhMatch === null ? -1 : zhMatch.index + enMatch.index
   if (zhStart < 0 || enStart < 0) {
     check(`${label}: 找到两个语言块`, false, `zh=${zhStart} en=${enStart}`)
     return
@@ -84,6 +154,17 @@ function compare({ label, file, zhMarker, enMarker, flat, sourceFiles }) {
   const en = grab(enBody)
   console.log(`  ${label}: zh=${zh.size} en=${en.size}`)
 
+  // The extractor above understands single/double-quoted single-line values and nothing else.
+  // Rather than silently skipping any other form — which would make the key look absent from
+  // the language it is present in, i.e. a false parity failure — assert that no other form
+  // exists. Measured: none does today (the only backticks in either dictionary are inside
+  // comments).
+  const unsupported = [...`${zhBody}\n${enBody}`.matchAll(
+    /^\s{2}(?:'[^']+'|[A-Za-z][A-Za-z0-9_]*)\s*:\s*[`[]/gm,
+  )].map(m => m[0].trim())
+  check(`${label}: 没有解析器不支持的取值形式`, unsupported.length === 0,
+    JSON.stringify(unsupported.slice(0, 4)))
+
   // 1. Parity.
   const onlyZh = [...zh.keys()].filter(k => !en.has(k))
   const onlyEn = [...en.keys()].filter(k => !zh.has(k))
@@ -102,27 +183,37 @@ function compare({ label, file, zhMarker, enMarker, flat, sourceFiles }) {
   check(`${label}: 占位符两侧一致`, slotMismatch.length === 0, slotMismatch.join(' | '))
 
   // 2. Dead keys: defined in zh, never referenced by any source file.
-  const all = sourceFiles.map(f => readFileSync(f, 'utf8')).join('\n')
-  const dead = [...zh.keys()].filter(k => !all.includes(`'${k}'`) && !all.includes(`"${k}"`))
+  //
+  // Three things count as referenced: the literal appears in the corpus, the key belongs to a
+  // family the corpus builds at runtime (`t(\`a.b.${plural}\`)`), or it is listed in
+  // `LICENSED_UNREFERENCED` with a reason. `CORPUS` excludes the dictionaries — see its own
+  // note on why leaving them in made this check incapable of failing.
+  const referenced = (key) => CORPUS.includes(`'${key}'`) || CORPUS.includes(`"${key}"`)
+  const dynamic = (key) => DYNAMIC_PREFIXES.some(prefix => key.startsWith(prefix))
+  const dead = [...zh.keys()].filter(key => !referenced(key) && !dynamic(key) && !LICENSED_UNREFERENCED.has(key))
   check(`${label}: 无死键`, dead.length === 0, JSON.stringify(dead))
 }
 
 const srcFiles = sources('src')
+console.log('')
+console.log(`  引用语料：${srcFiles.length - DICTIONARIES.length} 个源文件（已排除字典自身）`)
+console.log(`  运行时构造的键前缀：${DYNAMIC_PREFIXES.length} 个${DYNAMIC_PREFIXES.length === 0 ? '' : ` — ${DYNAMIC_PREFIXES.join(', ')}`}`)
 compare({
   label: '设置卡',
   file: join('src', 'client', 'settings-locales.ts'),
-  zhMarker: 'const zh = {',
-  enMarker: 'const en',
+  // Anchored declaration regexes, not substrings: the declarations are `export const zh = {`
+  // and `export const en: Record<…> = {`, so a bare `const zh = {` substring only matched by
+  // accident and would have stopped matching the moment `export` moved.
+  zhMarker: 'export const zh = \\{',
+  enMarker: 'export const en',
   flat: false,
-  sourceFiles: srcFiles,
 })
 compare({
   label: '浏览器',
   file: join('src', 'vendored', 'client', 'locales.ts'),
-  zhMarker: 'const zh',
-  enMarker: 'const en',
+  zhMarker: 'export const zh',
+  enMarker: 'export const en',
   flat: true,
-  sourceFiles: srcFiles,
 })
 
 // The archived notice is assembled from four locale fragments at render time.
@@ -164,6 +255,21 @@ compare({
   for (const [label, sentence] of [['zh', assemble(browserZh, 'toast.archived')], ['en', assemble(browserEn, 'toast.archived')]]) {
     check(`浏览器: ${label} 片段拼接后无双空格`, !sentence.includes('  '), JSON.stringify(sentence))
   }
+}
+
+// A licence for a key that no longer exists is itself a defect: it silently widens the
+// exemption for whatever key is added next, and it hides the fact that a key was deleted
+// without deleting its justification. Checked once across both dictionaries, not per
+// dictionary — `empty.noMatches` lives in the browser map only.
+{
+  const defined = new Set()
+  for (const file of DICTIONARIES) {
+    const text = readFileSync(file, 'utf8')
+    for (const m of text.matchAll(/^\s{2}'([^']+)'\s*:/gm)) defined.add(m[1])
+  }
+  const stale = [...LICENSED_UNREFERENCED.keys()].filter(key => !defined.has(key))
+  console.log('')
+  check('豁免表中的键仍然存在', stale.length === 0, JSON.stringify(stale))
 }
 
 console.log('')

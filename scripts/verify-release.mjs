@@ -27,13 +27,43 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(label)
 }
 
-const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
-const version = pkg.version
-const changelog = readFileSync('CHANGELOG.md', 'utf8')
-const zhLocale = JSON.parse(readFileSync('locale/zh.json', 'utf8'))
-const enLocale = JSON.parse(readFileSync('locale/en.json', 'utf8'))
-const zh = readFileSync('README.md', 'utf8')
-const en = readFileSync('README.en.md', 'utf8')
+/**
+ * Read and parse every release input, reporting a failed check rather than throwing.
+ *
+ * These reads used to run bare at the top of the file, so a missing `CHANGELOG.md` or a
+ * malformed `locale/zh.json` — both of which this script exists to catch — produced a raw
+ * `ENOENT`/`SyntaxError` stack trace and no `PASS`/`FAIL` line at all. A gate that crashes
+ * without saying what it was checking reads as a broken script, not as a failed release.
+ * @returns whether every input loaded.
+ */
+function loadInputs() {
+  try {
+    pkg = JSON.parse(readFileSync('package.json', 'utf8'))
+    version = pkg.version
+    changelog = readFileSync('CHANGELOG.md', 'utf8')
+    zhLocale = JSON.parse(readFileSync('locale/zh.json', 'utf8'))
+    enLocale = JSON.parse(readFileSync('locale/en.json', 'utf8'))
+    zh = readFileSync('README.md', 'utf8')
+    en = readFileSync('README.en.md', 'utf8')
+    return true
+  } catch (error) {
+    check('可以读取并解析全部发布输入', false, String(error.message ?? error).slice(0, 200))
+    return false
+  }
+}
+
+let pkg
+let version
+let changelog
+let zhLocale
+let enLocale
+let zh
+let en
+if (!loadInputs()) {
+  console.log('')
+  console.log('1 CHECK(S) FAILED')
+  process.exit(1)
+}
 
 console.log('=== 1. 版本号一致 ===')
 console.log(`  package.json: ${version}`)
@@ -45,18 +75,29 @@ check('CHANGELOG 定义了该版本的链接', changelog.includes(`[${version}]:
   const first = /^## \[([^\]]+)\]/m.exec(changelog)?.[1]
   check('CHANGELOG 最新一段就是当前版本', first === version, `最新=${first} 版本=${version}`)
 }
-check('没有未发布的占位段', !/\[(未发布|Unreleased)\]/i.test(changelog))
+// Anchored to a heading, not any bracketed occurrence. The unanchored form also matched a link
+// definition or a sentence that merely mentioned `[Unreleased]`, so it could fail on a
+// changelog that had no such section.
+check('没有未发布的占位段', !/^##\s*\[(未发布|Unreleased)\]/im.test(changelog))
 
 console.log('')
 console.log('=== 2. locale 描述（插件列表显示的文案）===')
 for (const [name, meta] of [['zh', zhLocale.meta], ['en', enLocale.meta]]) {
-  console.log(`  ${name}: ${meta.title} — ${meta.description.slice(0, 48)}…`)
-  check(`${name} 有 title 与 description`, meta.title !== '' && meta.description !== '')
-  check(`${name} 描述提到文档能力`, /文档|document/.test(meta.description))
+  // Every read below is optional-chained and type-checked. The block used to dereference
+  // `meta.title` in the log line and `meta.description` in four assertions, so a locale file
+  // that had lost its `meta` object — exactly what a rename or a bad merge produces — threw a
+  // `TypeError` out of the script instead of reporting which locale was malformed.
+  const title = typeof meta?.title === 'string' ? meta.title : undefined
+  const description = typeof meta?.description === 'string' ? meta.description : undefined
+  console.log(`  ${name}: ${title ?? '(缺少 meta.title)'} — ${(description ?? '(缺少 meta.description)').slice(0, 48)}…`)
+  check(`${name} 有 meta.title`, title !== undefined && title !== '')
+  check(`${name} 有 meta.description`, description !== undefined && description !== '')
+  check(`${name} 描述提到文档能力`, /文档|document/.test(description ?? ''))
   check(`${name} 描述说明可逆（关掉恢复官方）`,
-    /恢复官方|restores the official/.test(meta.description))
+    /恢复官方|restores the official/.test(description ?? ''))
 }
-check('两版 title 各自本地化', zhLocale.meta.title !== enLocale.meta.title)
+check('两版 title 各自本地化',
+  typeof zhLocale.meta?.title === 'string' && zhLocale.meta.title !== enLocale.meta?.title)
 // No length cap is asserted on purpose: measurement showed the surfaces that
 // render these (`detailDesc` 960px, `rowModule` 777px) do not clamp, and the
 // natural height equalled the content height at the shipped length. A cap would
@@ -77,9 +118,14 @@ console.log('=== 3. 两版 README 结构对等 ===')
 
 console.log('')
 console.log('=== 4. files 字段 ===')
+// `pkg.files` was dereferenced with `.includes` directly, so a manifest whose `files` was
+// missing or had become a string threw a TypeError instead of reporting that the field is
+// wrong — the one thing this block is for.
+const shipped = Array.isArray(pkg.files) ? pkg.files : []
+check('files 是数组', Array.isArray(pkg.files), typeof pkg.files)
 for (const entry of ['lib', 'src', 'spec', 'locale/*.json', 'cordis.patch.yml',
   'README.md', 'README.en.md', 'CHANGELOG.md', 'LICENSE']) {
-  check(`files 含 ${entry}`, pkg.files.includes(entry))
+  check(`files 含 ${entry}`, shipped.includes(entry))
 }
 check('description 提到文档能力', /document/.test(pkg.description))
 check('keywords 是数组且非空', Array.isArray(pkg.keywords) && pkg.keywords.length > 0)
@@ -90,10 +136,22 @@ check('repository / homepage / bugs / license 齐备',
 console.log('')
 console.log('=== 5. 打包清单（pnpm pack --dry-run）===')
 try {
-  const out = execFileSync('pnpm', ['pack', '--dry-run'], {
+  // One command string, no args array, and that is deliberate.
+  //
+  // Measured on Windows: `execFileSync('pnpm', [...])` without a shell fails with ENOENT
+  // (there is no `pnpm.exe`, only `pnpm.cmd`) and `execFileSync('pnpm.cmd', [...])` fails with
+  // EINVAL, because Node cannot exec a `.cmd` itself — so the shell is not optional here. But
+  // `shell: true` **with** an args array is what Node now deprecates (DEP0190: the arguments
+  // are concatenated, not escaped), and it emitted that warning on every run. Passing the whole
+  // command as one string is the form Node still supports; it is safe because the command is a
+  // fixed literal with no interpolation, so there is nothing for a shell to re-interpret.
+  const out = execFileSync('pnpm pack --dry-run', {
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], shell: true,
   })
-  const named = /dsh-project-groups-([0-9.]+)\.tgz/.exec(out)
+  // Built from `pkg.name` rather than a literal, so renaming the package cannot leave this
+  // regex matching the old name and reporting a mystery failure.
+  const escaped = pkg.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const named = new RegExp(`${escaped}-([0-9.]+)\\.tgz`).exec(out)
   check('产物名带当前版本号', named?.[1] === version, String(named?.[1]))
   for (const want of ['CHANGELOG.md', 'README.md', 'README.en.md', 'spec/PROJECT-SPEC.md',
     'spec/REWRITE-FLOW.md', 'locale/zh.json', 'locale/en.json', 'lib/index.js', 'lib/client.js',

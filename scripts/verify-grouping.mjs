@@ -18,24 +18,41 @@
  *   5. Caller groups carry no `workspaceId`, so the Workspace-only row
  *      affordances (rename/delete menu, workspace drag, startSession) stay off.
  */
-const loaded = new Map()
-globalThis.window = {
-  __ModuleLoader__: {
-    load: ({ id, factory }) => {
-      // The controller client bundles export nothing this derivation uses.
-      loaded.set(id, typeof factory === 'function' ? undefined : undefined)
-    },
-  },
-}
-
-const { deriveGroups, deriveSearchResults, UNGROUPED_KEY, owningSourceKey, owningParentFolder } =
-  await import('../src/vendored/client/tree.ts')
-
 const failures = []
 const check = (label, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? ` — ${detail}` : ''}`)
   if (!ok) failures.push(label)
 }
+
+globalThis.window = {
+  // The controller client bundles this derivation imports export nothing it uses, so the loader
+  // only has to exist for the module graph to resolve. An earlier version also recorded every
+  // load into a `loaded` Map that nothing ever read, via a ternary whose two branches were
+  // identical (`typeof factory === 'function' ? undefined : undefined`) — state that implied it
+  // was tracking something and tracked nothing.
+  __ModuleLoader__: { load: () => {} },
+}
+
+/**
+ * Load the derivation under test, reporting a failure rather than throwing.
+ *
+ * The bare top-level `await import` below this used to abort the whole script with a raw stack
+ * on any resolution or type-stripping failure — a renamed source file, a broken `ts-loader` —
+ * bypassing the `failures` summary entirely, which contradicts the point of a harness that
+ * reports every result.
+ */
+let tree
+try {
+  tree = await import('../src/vendored/client/tree.ts')
+} catch (error) {
+  check('可以载入 tree.ts', false, String(error?.message ?? error).slice(0, 200))
+}
+if (failures.length > 0) {
+  console.log('')
+  console.log(`${failures.length} CHECK(S) FAILED`)
+  process.exit(1)
+}
+const { deriveGroups, deriveSearchResults, UNGROUPED_KEY, owningSourceKey, owningParentFolder } = tree
 
 /**
  * One session summary with the fields the derivation reads.
@@ -76,8 +93,11 @@ const workspaces = [workspace('w1', ['s1']), workspace('w2', ['s2'])]
 //    unaccounted for by any Workspace, so upstream already trails them under
 //    its own Ungrouped bucket — the same bucket the override reuses.
 const upstream = deriveGroups(list, workspaces, rowState, statuses, view)
+// Built from `UNGROUPED_KEY` rather than the literal `'w1,w2,'`. The constant is imported
+// precisely so this test does not depend on its value — which is the empty string today, making
+// the literal form read as correct while silently breaking the moment upstream changes it.
 check('no override groups by Workspace, strays last',
-  upstream.map(g => g.key).join(',') === 'w1,w2,',
+  upstream.map(g => g.key).join(',') === ['w1', 'w2', UNGROUPED_KEY].join(','),
   upstream.map(g => `${g.key}:${g.sessionCount}`).join(' '))
 check('no override: workspace groups carry their Workspace id',
   upstream[0]?.workspaceId === 'w1' && upstream[1]?.workspaceId === 'w2')
@@ -169,11 +189,14 @@ check('owningSourceKey on an empty source is Ungrouped', owningSourceKey([], 's1
 //    Workspace the user never sees anywhere else (`默认工作区`, and a real `重要`) — and because the
 //    same `labelOf` feeds the match test, searching for a project's name could not find its
 //    Sessions at all.
-const search = (sources_) => deriveSearchResults(
-  list, workspaces, '', [], 'default', statuses, { items: [], hasMore: false }, 20, sources_,
-)
+// One call, with the repeated literal arguments named. `search` and `searchFor` were the same
+// `deriveSearchResults` call differing only in the query, so the magic `20` and the empty
+// pagination object appeared twice; a signature change would have had to be made in both.
+const SEARCH_LIMIT = 20
+const NO_PAGINATION = { items: [], hasMore: false }
+const NO_ARCHIVED = []
 const searchFor = (query, sources_) => deriveSearchResults(
-  list, workspaces, query, [], 'default', statuses, { items: [], hasMore: false }, 20, sources_,
+  list, workspaces, query, NO_ARCHIVED, 'default', statuses, NO_PAGINATION, SEARCH_LIMIT, sources_,
 )
 const labelOfId = (set, id) => set.items.find(item => item.id === id)?.workspace
 
@@ -222,7 +245,7 @@ check('omitting sources keeps the Workspace label',
 check('omitting sources still finds a Session by Workspace name',
   searchFor('w1', undefined).items.some(item => item.id === 's1'))
 check('no query returns an empty set with either model',
-  search(undefined).items.length === 0 && search(sources).items.length === 0)
+  searchFor('', undefined).items.length === 0 && searchFor('', sources).items.length === 0)
 
 // First declaration wins when two sources claim one Session, matching the Workspace map's rule.
 const overlapping = [

@@ -65,6 +65,31 @@ function memoryBackend() {
 }
 
 /**
+ * Run one call expected to reject and return the rejection's message.
+ *
+ * Extracted from eight identical copies of
+ *
+ *     let message = ''
+ *     try { await call(); message = '(no throw)' }
+ *     catch (error) { message = error instanceof Error ? error.message : String(error) }
+ *
+ * — the `error instanceof Error ? … : String(…)` shape the review counted across this file. One
+ * helper means the extraction rule cannot drift between assertions, and `'(no throw)'` is
+ * spelled once: a call that stops rejecting must keep reading as a failed expectation, and a
+ * copy that lost that string would silently compare against an empty message instead.
+ * @param run - the call to make; it is expected to reject.
+ * @returns the rejection's message, or `'(no throw)'` when it resolved.
+ */
+async function rejectionOf(run) {
+  try {
+    await run()
+    return '(no throw)'
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
+}
+
+/**
  * Build a Host context whose `storageDomain` is a real facility over the given
  * backend. One context per controller: the service key is per-Context, so a
  * second controller in the same one is refused.
@@ -78,10 +103,17 @@ function benchContext(backend) {
 
 /**
  * Build a Host context over a fresh backend, plus the controller under test.
+ *
+ * One context, not two. This used to call `benchContext(backend)` twice — once for a returned
+ * `ctx` that **no** call site destructures (all 24 use `controller` and/or `backend`), and again
+ * for the controller — so every bench constructed a second `Context` and `DomainFacility` over
+ * the same backend and never exercised them. Both now share the one context, which is also what
+ * makes the returned `ctx` meaningful if a future test needs it.
  */
 function bench() {
   const backend = memoryBackend()
-  return { ctx: benchContext(backend), controller: new ProjectController(benchContext(backend)), backend }
+  const ctx = benchContext(backend)
+  return { ctx, controller: new ProjectController(ctx), backend }
 }
 
 // 1. A fresh registry is empty and reports itself so.
@@ -144,13 +176,7 @@ function bench() {
   const { controller } = bench()
   const created = await controller.create({ title: '  spaced  ' })
   check('create trims the title', created.project.title === 'spaced', created.project.title)
-  let message = ''
-  try {
-    await controller.create({ title: '   ' })
-    message = '(no throw)'
-  } catch (error) {
-    message = error instanceof Error ? error.message : String(error)
-  }
+  let message = await rejectionOf(() => controller.create({ title: '   ' }))
   check('create refuses a blank title', message.includes('title is required'), message)
 }
 
@@ -179,13 +205,7 @@ function bench() {
   check('and the old directory is gone from it',
     !afterUpdate.projects[0].directories.includes('C:\\old'))
 
-  let message = ''
-  try {
-    await controller.update({ projectId: 'nope', title: 'x', directories: [], links: [] })
-    message = '(no throw)'
-  } catch (error) {
-    message = error instanceof Error ? error.message : String(error)
-  }
+  let message = await rejectionOf(() => controller.update({ projectId: 'nope', title: 'x', directories: [], links: [] }))
   check('update refuses an unknown project', message.includes('unknown project'), message)
 }
 
@@ -198,26 +218,14 @@ function bench() {
   const { controller } = bench()
   const { project: first } = await controller.create({ title: 'shared' })
 
-  let message = ''
-  try {
-    await controller.create({ title: 'shared' })
-    message = '(no throw)'
-  } catch (error) {
-    message = error instanceof Error ? error.message : String(error)
-  }
+  let message = await rejectionOf(() => controller.create({ title: 'shared' }))
   check('create refuses a duplicate title', message.includes('already exists'), message)
   check('the refused create stored nothing',
     (await controller.baseline()).projects.length === 1,
     String((await controller.baseline()).projects.length))
 
   const { project: other } = await controller.create({ title: 'other' })
-  message = ''
-  try {
-    await controller.update({ projectId: other.projectId, title: 'shared', directories: [], links: [] })
-    message = '(no throw)'
-  } catch (error) {
-    message = error instanceof Error ? error.message : String(error)
-  }
+  message = await rejectionOf(() => controller.update({ projectId: other.projectId, title: 'shared', directories: [], links: [] }))
   check('update refuses a title another project holds', message.includes('already exists'), message)
   check('the refused update kept the old title',
     (await controller.baseline()).projects.find(p => p.projectId === other.projectId).title === 'other')
@@ -233,13 +241,7 @@ function bench() {
   check('update to its own current title is allowed', kept.project.title === 'shared')
 
   // Whitespace is trimmed before storage, so these two are the same name.
-  message = ''
-  try {
-    await controller.create({ title: '  shared  ' })
-    message = '(no throw)'
-  } catch (error) {
-    message = error instanceof Error ? error.message : String(error)
-  }
+  message = await rejectionOf(() => controller.create({ title: '  shared  ' }))
   check('a padded duplicate is still a duplicate', message.includes('already exists'), message)
 
   // Case-sensitive, exactly like the dialog's `===`: being stricter here would refuse a name its
@@ -267,13 +269,7 @@ function bench() {
     baseline.assignments['session-1'] === b && Object.keys(baseline.assignments).length === 1,
     JSON.stringify(baseline.assignments))
 
-  let message = ''
-  try {
-    await controller.assign({ sessionId: 'session-1', projectId: 'nope' })
-    message = '(no throw)'
-  } catch (error) {
-    message = error instanceof Error ? error.message : String(error)
-  }
+  let message = await rejectionOf(() => controller.assign({ sessionId: 'session-1', projectId: 'nope' }))
   check('assign refuses an unknown project', message.includes('unknown project'), message)
 }
 
@@ -309,13 +305,7 @@ function bench() {
   check('an absent anchor appends',
     appended.projectIds.join(',') === `${a},${b},${c}`, appended.projectIds.join(','))
 
-  let message = ''
-  try {
-    await controller.reorder({ projectId: 'nope' })
-    message = '(no throw)'
-  } catch (error) {
-    message = error instanceof Error ? error.message : String(error)
-  }
+  let message = await rejectionOf(() => controller.reorder({ projectId: 'nope' }))
   check('reorder refuses an unknown project', message.includes('unknown project'), message)
 }
 
@@ -465,13 +455,7 @@ function bench() {
     Object.keys(backend.units.get(PROJECT_DOMAIN_NAME).tables.expansions ?? {}).length === 1,
     JSON.stringify(backend.units.get(PROJECT_DOMAIN_NAME).tables.expansions))
 
-  let message = ''
-  try {
-    await controller.setExpanded({ projectId: 'nope', expanded: true })
-    message = '(no throw)'
-  } catch (error) {
-    message = error instanceof Error ? error.message : String(error)
-  }
+  let message = await rejectionOf(() => controller.setExpanded({ projectId: 'nope', expanded: true }))
   check('setExpanded refuses an unknown project', message.includes('unknown project'), message)
 }
 
@@ -715,7 +699,7 @@ function bench() {
     controller.setDocSpecMode({ mode: 'custom' }),
   ])
   const after = await controller.baseline()
-  check('six concurrent settings writes all land', [
+  check('seven concurrent settings writes all land', [
     after.newSessionTarget !== before.newSessionTarget,
     after.createOpensSession !== before.createOpensSession,
     after.injectProjectInfo === true,
@@ -838,8 +822,18 @@ function bench() {
   const value = await controller.officialDefaultWorkspace()
   check('the probe answers a known status without a registry',
     value.status === 'unknown', JSON.stringify(value))
-  check('the probe never throws',
-    typeof controller.officialDefaultWorkspace === 'function')
+  // Re-invoked inside a try/catch, because the assertion that stood here —
+  // `typeof controller.officialDefaultWorkspace === 'function'` — is true for *any* method, so it
+  // could never fail even if the call rejected. The `await` above would fail the run on a
+  // rejection, but that is a different statement from the one the label makes.
+  let threw = null
+  try {
+    await controller.officialDefaultWorkspace()
+  } catch (error) {
+    threw = error
+  }
+  check('the probe never throws', threw === null,
+    threw === null ? undefined : String(threw?.message ?? threw).slice(0, 120))
 }
 
 // The probe's refusal must leave the registry's mutation queue usable.
