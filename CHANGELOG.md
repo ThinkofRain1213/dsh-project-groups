@@ -46,8 +46,13 @@
 - 新增 `DESIGN.md` 第 27 章：641 条发现的处置记录，**含 5 条被实测推翻的审查结论**
   （zod 默认值共享、`tree.ts` 的 O(n²)、`.gitattributes` 的 CRLF、`compare-bundle.mjs` 的可选链、
   `child.kill()` 的进程树），以及按“形态”修类时发现的真实分布。
-- **诚实记录**：52 / 59 个浏览器探针需要真实 DSH 实例，本机因 DSH 守护进程的 Electron 单例行为
-  无法并行启动隔离实例，**未能执行**；已执行的部分（含反向对照）在 `DESIGN.md` 27.6/27.7 列出。
+- **诚实记录**：52 / 59 个浏览器探针需要真实 DSH 实例，本轮**未能执行**。原因是**探针的环境
+  缺口**：`dsh plugin --profile pg add` 建的 profile 只有 `cordis.patch.yml`（用户覆盖层），
+  缺 `cordis.yml`，启动后进程存活但不监听、不输出，于是探针 120 秒超时。对照实验证明，
+  先 `dsh --profile pg --from-default-profile web` 派生 profile 再按原样命令启动，**端口 3 秒内
+  即监听**——探针命令本身没问题，缺的是建 profile 的步骤（59 个探针里 0 个做过）。
+  （初稿把原因写成"Electron 单例接管"，那是未经验证的推断，已被实验推翻，更正见 `DESIGN.md` 27.6。）
+  已执行的部分（含反向对照）在 `DESIGN.md` 27.6/27.7 列出。
 
 ## [0.3.0] — 2026-10-13
 

@@ -6305,10 +6305,29 @@ projectRecord.docSpec:         'none' | 'default' | <文件名> | absent   optio
 
 ### 27.6 无法执行的部分（必须明说）
 
-**52 / 59 个 probe 需要 live DSH 实例，本环境未能执行。** 根因已查明，且**不是代码问题**：
+**52 / 59 个 probe 需要 live DSH 实例，本环境未能执行。** 根因是**探针自己的环境缺口**，
+不是代码问题，也不是"别的 DSH 在拦"——下面这条我一开始写错了，实验推翻了它。
 
-> 用户侧 DSH 正在运行（Electron 单例）。用隔离 `DSH_HOME` 启动的实例被既有实例接管，
-> 于是进程存活、**既不监听端口也不产出任何 stdout/stderr**，探针因此 120 秒超时。
+> **更正（同日）**：本节初稿写的是「用户侧 DSH 在运行、Electron 单例把隔离实例接管了」。
+> 那是我**推断**的，没有验证，而且**是错的**。实验证据：
+>
+> 1. `ELECTRON_RUN_AS_NODE=1` 下 `bin.js --version` 正常输出 `0.2.0-rc.2`，`web --help` 正常——
+>    启动方式本身没问题；
+> 2. 单例假设还自相矛盾：真有单例接管，进程会**转发给既有实例并退出**，不会存活 24 秒；
+> 3. 真正的原因是 **profile 缺 `cordis.yml`**：`dsh plugin --profile pg add <pkg>` 建的 profile
+>    只是个**用户覆盖层**（只有 `cordis.patch.yml` + `package.json`），没有基础 profile 可挂载。
+>    实测该 profile 启动后：进程存活、**不监听端口、stdout/stderr 全空** ⇒ 探针 120 秒超时。
+> 4. 对照实验：在干净 `DSH_HOME` 上先 **`dsh --profile pg --from-default-profile web`** 派生
+>    profile（这一步会生成 `cordis.yml`），再 `plugin add`，然后按探针的**原样**命令启动——
+>    **端口 3 秒内就监听**。
+>
+> 所以探针的启动命令是对的，缺的是**建 profile 的方式**：59 个探针里 **0 个**做过
+> `--from-default-profile`。DESIGN.md 第 15 章（L1559）早就记过这个陷阱
+> （`probe-plugin-toggle.mjs` 需要预建 `official` profile，否则"official exited early with 1"
+> 是**探针环境缺口，不是产品回归**）——但那个结论没有被推广到其余探针。
+>
+> **待修**：探针需要预建 profile 的步骤应写进使用说明（或由探针自己在启动前派生）。
+> 这是阶段 8.2/8.3 的前置条件，不是产品缺陷。
 
 实际**执行**过的：`probe-approach-b`、`probe-slots`、`probe-service`、`probe-grouping-seam`、
 `probe-inject-wait`、`probe-contribution`、`probe-retention`、`probe-service-timing`、
