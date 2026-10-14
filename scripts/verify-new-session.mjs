@@ -29,16 +29,12 @@ globalThis.window = { __ModuleLoader__: { load: () => {} } }
 
 const { UiWorkspaceService } = await import('../src/vendored/client/navigation.ts')
 const { Context } = await import('@deepseek-ai/cordis')
-const { createSnapshotStore } = await import('@deepseek-ai/dsh-client-store')
 
 const failures = []
 const check = (label, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? ` — ${detail}` : ''}`)
   if (!ok) failures.push(label)
 }
-
-const wid = value => value
-const sid = value => value
 
 /** One Workspace row. */
 const workspace = (workspaceId, sessionIds = []) => ({
@@ -52,8 +48,8 @@ const session = (id, extra = {}) => ({
   id, title: id, displayTitle: id, blank: false, origin: 'user', updatedAt: 1000, retainedBy: {}, ...extra,
 })
 
-const snapshot = (items, extra = {}) => ({
-  items, archivedSessionIds: [], pinnedSessionIds: [], state: 'idle', phase: 'ready', error: null, ...extra,
+const snapshot = (items) => ({
+  items, archivedSessionIds: [], pinnedSessionIds: [], state: 'idle', phase: 'ready', error: null,
 })
 
 const listState = (byId, ids = Object.keys(byId)) => ({
@@ -91,11 +87,11 @@ function bench({ items = [], sessions = {}, initializeDefault } = {}) {
     create: async opts => {
       // Record both the request and the id handed back, so an assertion can check
       // that the id the caller saw is the one creation produced.
-      const created = sid(opts.sessionId ?? `new-${recording.created.length + 1}`)
+      const created = opts.sessionId ?? `new-${recording.created.length + 1}`
       recording.created.push({ ...opts, sessionId: created })
       return created
     },
-    fork: async () => sid('fork'),
+    fork: async () => 'fork',
     using: async () => ({ ok: true, value: undefined }),
     search: async () => ({ ok: true, value: { items: [], hasMore: false } }),
   }
@@ -124,10 +120,26 @@ function bench({ items = [], sessions = {}, initializeDefault } = {}) {
     recording.notify.length = 0
     recording.selectPanel.length = 0
   }
-  return { uiWorkspace, workspaces, recording, layout, settle }
+  return { uiWorkspace, recording, settle }
 }
 
-const tick = () => new Promise(resolve => setTimeout(resolve, 20))
+/**
+ * Let the service's fire-and-forget chains run to completion.
+ *
+ * This was `setTimeout(resolve, 20)` — a fixed guess that those chains finish inside 20 ms.
+ * They are awaited nowhere: `startSession` is `void this.startSessionInDefaultWorkspace(...)`,
+ * and the constructor's `watchNavigation` -> `restoreSelection` starts more. On a loaded CI
+ * machine either can still be in flight when `settle()` clears the recording, and its entries
+ * (the restore's `current-ws`, a second `defaultWorkspaceFailed`) then leak into the following
+ * assertion — a flake that looks like a product bug.
+ *
+ * Draining the event loop a fixed number of turns is deterministic where a sleep is not: each
+ * `setImmediate` is one full loop iteration, so pending timers and microtasks have run by the
+ * time the last one resolves.
+ */
+const tick = async () => {
+  for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve))
+}
 
 // 1. Unscoped with a default Workspace -> resolves it and creates there.
 {
@@ -182,7 +194,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 20))
     initializeDefault: async () => { askedForDefault += 1; return workspace('default', []) },
   })
   await b.settle()
-  b.uiWorkspace.startSession(wid('explicit'))
+  b.uiWorkspace.startSession('explicit')
   await tick()
   check('explicit startSession targets that Workspace',
     b.recording.connect.join(',') === 'explicit', b.recording.connect.join(',') || '(none)')
@@ -250,8 +262,12 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 20))
   b.uiWorkspace.startSession(undefined, (sessionId) => { seen.push(sessionId) })
   await tick()
   check('beforeOpen receives the created Session id', seen.length === 1, JSON.stringify(seen))
+  // Length first. Comparing `seen[0] === created[0]?.sessionId` alone is satisfied by
+  // `undefined === undefined` when nothing was created, which is the regression the label
+  // claims to catch.
   check('and it is exactly the id creation returned',
-    seen[0] === b.recording.created[0]?.sessionId,
+    seen.length === 1 && b.recording.created.length === 1
+    && seen[0] === b.recording.created[0].sessionId,
     JSON.stringify({ seen, created: b.recording.created }))
 }
 
@@ -263,7 +279,7 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 20))
   })
   await b.settle()
   const seen = []
-  b.uiWorkspace.startSession(wid('explicit'), (sessionId) => { seen.push(sessionId) })
+  b.uiWorkspace.startSession('explicit', (sessionId) => { seen.push(sessionId) })
   await tick()
   check('an explicit target reports its Session too', seen.length === 1, JSON.stringify(seen))
 }

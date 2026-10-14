@@ -49,10 +49,25 @@ function memoryBackend() {
         }
         return {
           async loadAll() {
+            // Records are **cloned** when served. `{ ...rows }` copies only the row *map*, so
+            // every record the controller received was the very object held in `state.tables`,
+            // and a mutation to it reached the store. A real JSON backend serializes and parses,
+            // so what it returns is detached from durable state; without the clone this harness
+            // would both fabricate and mask the aliasing behaviour it exists to pin.
+            //
+            // Read-side only, deliberately. Cloning on write as well would detach the stored
+            // record from the caller's array inside `putRecord`, and block 6 — "a mutated caller
+            // array does not reach the record" — would then pass whether or not the controller
+            // copies. The write path stays by-reference so that assertion keeps its teeth.
             return {
-              global: state.global,
+              global: state.global === null ? null : structuredClone(state.global),
               tables: Object.fromEntries(
-                Object.entries(state.tables).map(([table, rows]) => [table, { ...rows }]),
+                Object.entries(state.tables).map(([table, rows]) => [
+                  table,
+                  Object.fromEntries(
+                    Object.entries(rows).map(([key, rec]) => [key, structuredClone(rec)]),
+                  ),
+                ]),
               ),
             }
           },
@@ -77,20 +92,74 @@ function benchContext(backend) {
   return ctx
 }
 
+/**
+ * Build a Host context over a fresh backend, plus the controller under test.
+ *
+ * One context, not two. `benchContext(backend)` used to be called twice — once for a returned
+ * `ctx` that no call site destructures, and again for the controller — so every bench built a
+ * second `Context`/`DomainFacility` over the same backend for nothing. It also meant the
+ * controller was bound to a **different** context than the exposed `ctx`, and since each
+ * facility keeps its own cached state, a future check reading through `ctx` would have observed
+ * stale data with no error.
+ */
 function bench() {
   const backend = memoryBackend()
-  return { ctx: benchContext(backend), controller: new ProjectController(benchContext(backend)), backend }
+  const ctx = benchContext(backend)
+  return { ctx, controller: new ProjectController(ctx), backend }
+}
+
+/** One stored record, or `undefined` when any hop is missing. */
+function storedRecord(backend, projectId) {
+  return backend.units.get(PROJECT_DOMAIN_NAME)?.tables?.projects?.[projectId]
+}
+
+/** The stored global singleton, or `undefined`. */
+function storedGlobalOf(backend) {
+  return backend.units.get(PROJECT_DOMAIN_NAME)?.global
+}
+
+/**
+ * A durable record written before one of the later fields existed.
+ *
+ * Both legacy fixtures used to spell the same literal out, differing only in `directories` and
+ * `title`, so a field added to `projectRecord` had to be added in two places — and the
+ * compatibility contract these blocks assert ("an old record reads back with defaults rather
+ * than rejecting the domain open") is exactly what that drift would break.
+ * @param overrides - the fields this fixture varies by.
+ * @returns the stored shape.
+ */
+function legacyProjectRecord(overrides) {
+  // No `directories` default here on purpose: the first fixture's whole point is that the field
+  // is **absent** from a record written before it existed. Giving this factory a default of `[]`
+  // made the counter-example below parse successfully, so the assertion that `.default()` is
+  // load-bearing failed — the fixture had quietly supplied the very field whose absence was
+  // under test. Each caller names the fields its own era had.
+  return {
+    title: 'legacy',
+    docPath: '',
+    createdAt: '2026-09-30T03:45:15.911Z',
+    updatedAt: '2026-09-30T03:45:15.911Z',
+    ...overrides,
+  }
+}
+
+/**
+ * The "one write must not clobber the rest of the global singleton" contract.
+ *
+ * Stated once rather than twice. Block 10 and block 14 asserted the same shape with only the
+ * trailing field differing, so two copies could disagree about what "nothing else" covers.
+ * @param stored - the stored global.
+ * @param extraField - the one field this write was expected to change.
+ * @returns whether the singleton survived intact.
+ */
+function globalPreservedExcept(stored, extraField) {
+  return Array.isArray(stored?.projectIds) && stored.projectIds.length === 1 && extraField === true
 }
 
 // 1. Schema-level: a record written before `directories` existed reads back as [].
 //    This is the domain-open-reject guard, asserted against the shipped schema.
 {
-  const legacy = {
-    title: 'legacy',
-    docPath: '',
-    createdAt: '2026-09-30T03:45:15.911Z',
-    updatedAt: '2026-09-30T03:45:15.911Z',
-  }
+  const legacy = legacyProjectRecord({ title: 'legacy' })
   const parsed = projectRecord.parse(legacy)
   check('a pre-directories record parses', parsed.title === 'legacy')
   check('and reads back directories as []',
@@ -100,10 +169,7 @@ function bench() {
   // The counter-example: without the default, the same stored record would reject,
   // which is what makes the whole domain unreadable rather than one row.
   const { z } = await import('zod')
-  const strict = z.object({
-    title: z.string(), directories: z.array(z.string()), docPath: z.string(),
-    createdAt: z.string(), updatedAt: z.string(),
-  })
+  const strict = projectRecord.extend({ directories: z.array(z.string()) })
   check('without .default() it would reject (so the default is load-bearing)',
     strict.safeParse(legacy).success === false)
 }
@@ -144,7 +210,7 @@ function bench() {
   check('create returns the directories it stored',
     created.project.directories.join('|') === 'C:\\work\\a|D:\\work\\b',
     created.project.directories.join('|'))
-  const stored = backend.units.get(PROJECT_DOMAIN_NAME).tables.projects[created.project.projectId]
+  const stored = storedRecord(backend, created.project.projectId)
   check('and they are durable on the record',
     stored.directories.join('|') === 'C:\\work\\a|D:\\work\\b', JSON.stringify(stored.directories))
   const baseline = await controller.baseline()
@@ -168,7 +234,7 @@ function bench() {
   const mine = ['C:\\one']
   const created = await controller.create({ title: 'aliasing', directories: mine })
   mine.push('C:\\injected')
-  const stored = backend.units.get(PROJECT_DOMAIN_NAME).tables.projects[created.project.projectId]
+  const stored = storedRecord(backend, created.project.projectId)
   check('a mutated caller array does not reach the record',
     stored.directories.join('|') === 'C:\\one', stored.directories.join('|'))
 }
@@ -181,7 +247,7 @@ function bench() {
   const value = await controller.setDirectories({ projectId: id, directories: ['D:\\new', 'E:\\also'] })
   check('setDirectories answers with the stored list',
     value.directories.join('|') === 'D:\\new|E:\\also', value.directories.join('|'))
-  const stored = backend.units.get(PROJECT_DOMAIN_NAME).tables.projects[id]
+  const stored = storedRecord(backend, id)
   check('the title survives the replace', stored.title === 'keep me', stored.title)
   check('docPath survives the replace', stored.docPath === '', JSON.stringify(stored.docPath))
   // `>=`, not `>`: ISO-8601 stamps have millisecond resolution, so two writes in
@@ -197,7 +263,7 @@ function bench() {
   const { controller, backend } = bench()
   const created = await controller.create({ title: 'clear', directories: ['C:\\x'] })
   await controller.setDirectories({ projectId: created.project.projectId, directories: [] })
-  const stored = backend.units.get(PROJECT_DOMAIN_NAME).tables.projects[created.project.projectId]
+  const stored = storedRecord(backend, created.project.projectId)
   check('an empty list is stored as []',
     Array.isArray(stored.directories) && stored.directories.length === 0,
     JSON.stringify(stored.directories))
@@ -228,11 +294,9 @@ function bench() {
   check('the project order survived both writes',
     baseline.projectIds.join(',') === created.project.projectId,
     baseline.projectIds.join(','))
-  const storedGlobal = backend.units.get(PROJECT_DOMAIN_NAME).global
+  const storedGlobal = storedGlobalOf(backend)
   check('nothing else in the global was dropped',
-    Array.isArray(storedGlobal.projectIds) && storedGlobal.projectIds.length === 1
-    && storedGlobal.createOpensSession === true,
-    JSON.stringify(storedGlobal))
+    globalPreservedExcept(storedGlobal, storedGlobal?.createOpensSession), JSON.stringify(storedGlobal))
 }
 
 // 11. Toggling back is a real second write, not a no-op.
@@ -249,13 +313,7 @@ function bench() {
 //     before the field existed must read back as `[]` rather than failing the domain open,
 //     which would take every project with it.
 {
-  const legacy = {
-    title: 'pre-links',
-    directories: [],
-    docPath: '',
-    createdAt: '2026-09-30T03:45:15.911Z',
-    updatedAt: '2026-09-30T03:45:15.911Z',
-  }
+  const legacy = legacyProjectRecord({ title: 'pre-links', directories: [] })
   const parsed = projectRecord.parse(legacy)
   check('a pre-links record parses', parsed.title === 'pre-links')
   check('and reads back links as []',
@@ -361,11 +419,9 @@ function bench() {
   check('the switch stuck', baseline.validateLinks === false)
   check('the project order survived the write',
     baseline.projectIds.join(',') === created.project.projectId)
-  const storedGlobal = backend.units.get(PROJECT_DOMAIN_NAME).global
+  const storedGlobal = storedGlobalOf(backend)
   check('nothing else in the global was dropped',
-    Array.isArray(storedGlobal.projectIds) && storedGlobal.projectIds.length === 1
-    && storedGlobal.injectProjectInfo === true,
-    JSON.stringify(storedGlobal))
+    globalPreservedExcept(storedGlobal, storedGlobal?.injectProjectInfo), JSON.stringify(storedGlobal))
 }
 
 // 15. `isValidLink`: the rule `validateLinks` marks with.
