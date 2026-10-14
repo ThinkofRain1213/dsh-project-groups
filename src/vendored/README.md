@@ -260,6 +260,9 @@ Each fix is marked in the source with a comment naming the defect, so a
 | `tree.ts` | `currentGroup` was a two-level nested ternary, the shape the style rule forbids; flattened to an if-chain | re-apply |
 | `tree.ts` | `groupBySource` duplicated `groupByWorkspace`'s member-collection and stray passes almost verbatim, differing only in the account source, the `buildGroup` arguments and the Ungrouped policy — so a visibility or accounted-rule fix would have had to be made twice, with the failure mode being a sidebar that groups differently depending on the active model. Both now call one `collectMembers` and one `collectStray` | re-apply the two helpers and their four call sites |
 | `tree.ts` | `placeFork`'s "O(n²)" reading is **not** what the code does, and the note records the measurement: instrumenting a copy showed the `includes` count tracks the **fork** count (n=200: 0 forks → 0 calls, 5 → 5, 200 → 200), not the list length, because `parentId === undefined` short-circuits first. Cost is O(forks × n); a position map would only remove a constant factor since `splice` is the O(n) part. Left as upstream, with the ordering imprecision below it | keep the analysis; do not "optimize" without the linked-structure rewrite |
+| `rows/WorkspaceBrowser.tsx` | the link row's `settled` check state was a two-level nested ternary, the shape the style rule forbids; flattened to a chain | re-apply |
+| `session-actions/ArchiveSession.tsx` | the confirm handler used `.then`/`.catch` and repeated `setArchiving(false)` in both callbacks; now one `async` function with a single `try`/`catch`, which is both the project's async convention and the place the loading/error/reset transitions belong | re-apply |
+| `WorkspacePicker.tsx` | `adoptDirectory` used a `.then`/`.catch` chain; now `async`/`await` with one `try`/`catch` | re-apply |
 
 ### Deliberate behaviour deviations
 

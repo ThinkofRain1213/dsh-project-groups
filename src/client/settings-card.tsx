@@ -12,7 +12,7 @@
  * written through its own Remote, exactly as the official voice-input bundle
  * ignores `form` in favour of its `configure` Remote.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Button, IconChevronDownOutlineRegular, Menu, Modal, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { WorkspaceSource } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { HostObservable, InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
@@ -174,6 +174,47 @@ function useNoWorkspaces(_select: (source: WorkspaceSource) => WorkspaceSource):
 }
 
 /**
+ * One in-card action, rendered as a `<span role="button">`.
+ *
+ * A span rather than a real `<button>` because these sit **inside** the card, which is itself a
+ * button — a nested button is invalid markup, and the card's click has to be isolated from
+ * theirs. Both consequences are handled here: `stopPropagation` on both channels so activating
+ * the action does not also re-select the card, and Enter/Space handled by hand because a span
+ * has no built-in activation.
+ *
+ * Written out three times before this, which is the reason it is a function: a change to the
+ * activation contract — `event.repeat` handling, `aria-disabled`, a different key set — would
+ * otherwise have had to be applied to all three, and missing one would be invisible until
+ * someone used that particular action from the keyboard.
+ *
+ * A plain function rather than a nested component: a component declared in a render body is a
+ * new type on every render, which remounts its subtree.
+ * @param label - the accessible name, which is also the visible text.
+ * @param onActivate - what both the click and the keyboard activation do.
+ * @returns the action span.
+ */
+function cubeAction(label: string, onActivate: () => void): ReactNode {
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      className={css.cubeAction}
+      aria-label={label}
+      onClick={(event) => { event.stopPropagation(); onActivate() }}
+      onKeyDown={(event) => {
+        // A span has no built-in activation, so Enter and Space are handled here.
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        event.stopPropagation()
+        onActivate()
+      }}
+    >
+      {label}
+    </span>
+  )
+}
+
+/**
  * Render the New Session destination selector and the base-workspace choice.
  * @param props - composed slot props.
  * @returns the settings rows.
@@ -285,11 +326,14 @@ export function ProjectGroupsCard({
   // `{ mode: 'default' }` render 「未选择」 before flipping back.
   const neverChosen = base.path === undefined || base.path === ''
   const gone = !neverChosen && chosen === null
-  const specifiedLabel = neverChosen
-    ? t('baseNotChosen')
-    : gone
-      ? t('baseGone', { name: base.name ?? base.path })
-      : (base.name ?? base.path)
+  // Three states, written as a chain rather than a nested ternary: no path was ever chosen, one
+  // was and the Workspace is gone, or there is a usable name/path to show. The last arm can be
+  // `undefined` — `gone` is a boolean and TypeScript cannot see that it implies a non-null path,
+  // which the `const` it replaced inferred for the same reason.
+  let specifiedLabel: string | undefined
+  if (neverChosen) specifiedLabel = t('baseNotChosen')
+  else if (gone) specifiedLabel = t('baseGone', { name: base.name ?? base.path })
+  else specifiedLabel = base.name ?? base.path
 
   // Whether the **default** Workspace is missing, which is what raises the warning and the 重建
   // action on that card.
@@ -520,12 +564,13 @@ export function ProjectGroupsCard({
               keep leaking it on hover after the visible text stopped showing it.
             */}
             <span
+              // One condition, not a nested ternary: both outer branches fell back to
+              // `css.cubePath`, so the only case that differs is "custom is selected but no
+              // usable file", which adds the warning class.
               className={
-                hasUsableSpec
-                  ? css.cubePath
-                  : docSpecMode === 'custom'
-                    ? `${css.cubePath} ${css.cubeNotice}`
-                    : css.cubePath
+                !hasUsableSpec && docSpecMode === 'custom'
+                  ? `${css.cubePath} ${css.cubeNotice}`
+                  : css.cubePath
               }
               {...hasUsableSpec ? { title: docSpecFileName } : {}}
             >
@@ -537,28 +582,12 @@ export function ProjectGroupsCard({
               * log validateDOMNesting, and the browser probes fail on console
               * errors. `stopPropagation` keeps this click from also re-selecting
               * the mode. */}
-            <span
-              role="button"
-              tabIndex={0}
-              className={css.cubeAction}
-              aria-label={t('specChoose')}
-              onClick={(event) => {
-                event.stopPropagation()
-                // Opened from 更换…: replace the remembered file only. The mode
-                // is whatever the cards say it is.
-                setSpecPickerSwitchesMode(false)
-                setPickingSpec(true)
-              }}
-              onKeyDown={(event) => {
-                if (event.key !== 'Enter' && event.key !== ' ') return
-                event.preventDefault()
-                event.stopPropagation()
-                setSpecPickerSwitchesMode(false)
-                setPickingSpec(true)
-              }}
-            >
-              {t('specChoose')}
-            </span>
+            {cubeAction(t('specChoose'), () => {
+              // Opened from 更换…: replace the remembered file only. The mode
+              // is whatever the cards say it is.
+              setSpecPickerSwitchesMode(false)
+              setPickingSpec(true)
+            })}
           </button>
         </div>
 
@@ -704,26 +733,10 @@ export function ProjectGroupsCard({
             </span>
             {defaultGone && (
               /*
-                The 重建 affordance. Same shape as the 更换… span below, and for the same
-                two measured reasons: a real <button> nested in this card's <button> makes
-                React log validateDOMNesting (several probes fail on console errors), and
-                without `stopPropagation` this click also re-selects the mode.
+                The 重建 affordance. Same shape as the 更换… action below — see `cubeAction`,
+                which is that shape in one place.
               */
-              <span
-                role="button"
-                tabIndex={0}
-                className={css.cubeAction}
-                aria-label={t('baseRebuild')}
-                onClick={(event) => { event.stopPropagation(); setRebuilding(true) }}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter' && event.key !== ' ') return
-                  event.preventDefault()
-                  event.stopPropagation()
-                  setRebuilding(true)
-                }}
-              >
-                {t('baseRebuild')}
-              </span>
+              cubeAction(t('baseRebuild'), () => { setRebuilding(true) })
             )}
           </button>
 
@@ -756,27 +769,10 @@ export function ProjectGroupsCard({
               {specifiedLabel}
             </span>
             {/*
-              A span, not a button: a <button> inside a <button> makes React log a
-              validateDOMNesting error on every mount, and several probes fail on
-              console errors. `stopPropagation` is required — without it this click
-              also switches the mode (measured).
+              The 更换… action. `cubeAction` carries the two measured reasons a span rather
+              than a button is used here and `stopPropagation` is required — see its own doc.
             */}
-            <span
-              role="button"
-              tabIndex={0}
-              className={css.cubeAction}
-              aria-label={t('baseChoose')}
-              onClick={(event) => { event.stopPropagation(); setPicking(true) }}
-              onKeyDown={(event) => {
-                // A span has no built-in activation, so Enter and Space are handled here.
-                if (event.key !== 'Enter' && event.key !== ' ') return
-                event.preventDefault()
-                event.stopPropagation()
-                setPicking(true)
-              }}
-            >
-              {t('baseChoose')}
-            </span>
+            {cubeAction(t('baseChoose'), () => { setPicking(true) })}
           </button>
         </div>
       </div>
@@ -830,16 +826,28 @@ export function ProjectGroupsCard({
                 variant="primary"
                 disabled={rebuildBusy}
                 onClick={() => {
-                  setRebuildBusy(true)
-                  setRebuildError(null)
-                  rebuildBaseWorkspace()
-                    // Only a completed repair closes the dialog. Closing on a failure
-                    // would leave the user where they started with no explanation.
-                    .then(() => { setRebuilding(false) })
-                    .catch((reason: unknown) => {
-                      setRebuildError(reason instanceof Error ? reason.message : String(reason))
-                    })
-                    .finally(() => { setRebuildBusy(false) })
+                  // One `try`/`catch`/`finally` rather than a `.then`/`.catch`/`.finally`
+                  // chain: the three transitions (busy on, close-or-report, busy off) live in
+                  // one place instead of being spread across callbacks, which is the project's
+                  // async convention.
+                  void (async () => {
+                    setRebuildBusy(true)
+                    setRebuildError(null)
+                    try {
+                      await rebuildBaseWorkspace()
+                      // Only a completed repair closes the dialog. Closing on a failure
+                      // would leave the user where they started with no explanation.
+                      setRebuilding(false)
+                    } catch (reason: unknown) {
+                      // A localized message, with the detail logged. A Host/RPC rejection's own
+                      // `message` is internal diagnostics, and a non-`Error` reason would have
+                      // rendered as `[object Object]` in the alert.
+                      console.warn('dsh-project-groups: base-workspace rebuild failed', reason)
+                      setRebuildError(t('baseRebuildError'))
+                    } finally {
+                      setRebuildBusy(false)
+                    }
+                  })()
                 }}
               >
                 {rebuildBusy ? t('baseRebuildBusy') : t('confirm')}

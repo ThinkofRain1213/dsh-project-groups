@@ -130,22 +130,28 @@ function ArchiveConfirmForm({ request, stopAndArchiveSession, onSettle, t }: {
     onSettle()
   }
   const confirm = () => {
-    setArchiving(true)
-    setError(null)
-    stopAndArchiveSession(request.sessionId).then(() => {
-      setArchiving(false)
-      onSettle()
-    }).catch((reason: unknown) => {
-      setArchiving(false)
-      // A localized message, with the raw detail logged rather than shown.
-      //
-      // The rejection's own `message` used to go straight into the alert. For a Host/RPC
-      // failure that text is internal diagnostics — a code, a transport phrase, sometimes a
-      // path — which tells the user nothing they can act on and can leak internals into the UI.
-      // The detail is still needed, so it goes to the console where a bug report can reach it.
-      console.warn('dsh-project-groups: stop-and-archive failed', reason)
-      setError(t('archive.confirm.error'))
-    })
+    // One `try`/`catch`/`finally` rather than a `.then`/`.catch` chain. The old shape repeated
+    // `setArchiving(false)` in both callbacks — the loading/error/reset transitions belong in
+    // one place, which is the project's async convention.
+    void (async () => {
+      setArchiving(true)
+      setError(null)
+      try {
+        await stopAndArchiveSession(request.sessionId)
+        setArchiving(false)
+        onSettle()
+      } catch (reason: unknown) {
+        setArchiving(false)
+        // A localized message, with the raw detail logged rather than shown.
+        //
+        // The rejection's own `message` used to go straight into the alert. For a Host/RPC
+        // failure that text is internal diagnostics — a code, a transport phrase, sometimes a
+        // path — which tells the user nothing they can act on and can leak internals into the UI.
+        // The detail is still needed, so it goes to the console where a bug report can reach it.
+        console.warn('dsh-project-groups: stop-and-archive failed', reason)
+        setError(t('archive.confirm.error'))
+      }
+    })()
   }
   return (
     <Modal

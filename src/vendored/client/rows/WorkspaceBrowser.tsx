@@ -809,11 +809,14 @@ function useLinkCheck(value: string, enabled: boolean): {
    * to `checking` — a spinner that never lands, because nothing is going to conclude. Caught by
    * `8) 关掉后不出标记` when this derivation was first written without it.
    */
-  const settled: LinkCheck = !enabled || isBlankLink(value)
-    ? 'idle'
-    : verdict !== null && verdict.url === value
-      ? verdict.mark
-      : 'checking'
+  // The row's check state, as a chain rather than the nested ternary this used to be: idle when
+  // the feature is off or the field is blank; otherwise the verdict's own mark, but only while
+  // that verdict belongs to the **current** text — a verdict for something the user has since
+  // edited is stale, and `checking` is what says so.
+  let settled: LinkCheck
+  if (!enabled || isBlankLink(value)) settled = 'idle'
+  else if (verdict !== null && verdict.url === value) settled = verdict.mark
+  else settled = 'checking'
   return {
     // A green check is shown only while the row has focus; the other two show regardless.
     mark: settled === 'valid' && !focused ? 'idle' : settled,

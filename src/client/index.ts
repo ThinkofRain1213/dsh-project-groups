@@ -164,6 +164,21 @@ const projectActions: ProjectActions = {
     // A separate write rather than part of `update`: the override is `optional`
     // in the schema, and clearing it means removing the key — a distinction the
     // whole-record `update` (which spreads the stored record) cannot express.
+    //
+    // ## The partial commit this allows
+    //
+    // Two writes, so the pair is not atomic: if this one rejects, `update` above is already
+    // durable and the project keeps its new title, directories and links alongside its
+    // **previous** override. The rejection reaches the dialog's error row, so the user is told
+    // something failed — but what they see afterwards is a half-applied edit, and nothing here
+    // rolls the first write back.
+    //
+    // Left as it is because the fix is a wire change, not a local one: `update` would have to
+    // accept the override *and* a way to say "remove the key" (`docSpec: string | null`), which
+    // means a new field on `ProjectUpdateRequest`, the validation `setProjectDocSpec` does
+    // today, and the Host-side null handling. That is the right shape for it and is recorded
+    // here rather than half-done; the window is one failed Remote inside a dialog the user is
+    // watching, and re-opening the edit reflects what was actually stored.
     await live.setProjectDocSpec(id, docSpec)
   },
   uploadSpec: async (name, content) => {
@@ -228,9 +243,14 @@ const projectActions: ProjectActions = {
         // never heard of are loose by this definition, which is correct: this
         // plugin files nothing anywhere else.
         //
-        // The cast follows `projects.ts`: `Object.keys` widens to `string`, while
-        // the map is keyed by the branded id it was built from.
-        Object.keys(updatedAt).filter(id => model.projectOf(id as SessionId) === undefined),
+        // One cast for the whole list rather than one per element. `Object.keys` widens to
+        // `string` while the map is upstream's session-id-keyed activity record, so this is the
+        // single boundary where the two meet. `SessionId` is a brand with no runtime
+        // representation, so the conversion rests on the caller's contract rather than on a
+        // check — and what it could hide is bounded: a key that is not a session id is simply
+        // unknown to the model and counted loose, which is this plugin's rule for anything it
+        // has not filed.
+        (Object.keys(updatedAt) as SessionId[]).filter(id => model.projectOf(id) === undefined),
         // The Session being placed is excluded explicitly, rather than relying on the caller
         // having filtered it out of `updatedAt`. A Session that could count as its own most
         // recent activity would select its own destination, and the result would still look
@@ -332,6 +352,31 @@ function requireModel(): ProjectModel {
 }
 
 /**
+ * Run one optimistic settings write from a React event handler.
+ *
+ * Nine setters on the settings card repeated the same three steps verbatim: read the model,
+ * return when it has not started, and swallow the rejection into a `console.warn`. The guard
+ * and the catch are the whole point — the card can render before the Remote baseline lands, so
+ * a click then must be a no-op rather than a thrown error out of a handler, and the optimistic
+ * write inside the model is what makes a switch follow the click immediately.
+ *
+ * Written out nine times, a change to either step — or a dropped guard in one copy — would have
+ * gone unnoticed until that one switch threw. They are one function here.
+ *
+ * Unlike {@link requireModel}, a missing model is not an error: this runs from a click, and a
+ * card that rendered early is a normal state rather than a fault.
+ * @param write - the model call to make, given the started model.
+ * @param label - what to call the failure in the console.
+ */
+function optimistic(write: (model: ProjectModel) => Promise<void>, label: string): void {
+  const live = projectModel()
+  if (live === undefined) return
+  void write(live).catch((reason: unknown) => {
+    console.warn(`${label} rejected:`, reason)
+  })
+}
+
+/**
  * Register the vendored browser with this plugin's grouping model.
  * @param ctx - client root context.
  */
@@ -345,6 +390,21 @@ export function apply(ctx: Context): void {
   // the only place the browser can learn it.
   installLocaleService(ctx.get('locale') as Parameters<typeof installLocaleService>[0])
   clientContext = ctx
+  // Both captures are released when this apply is torn down.
+  //
+  // They are module-level because the browser's inject face is registered here while the verbs
+  // that read them run later, so nothing else would clear them: in a re-apply (HMR, or a second
+  // composition) the previous references stayed, and `resolveBaseWorkspace`, `pickDirectory` and
+  // `chooseBaseWorkspace` could consult a disposed context or a stale Workspace registry.
+  //
+  // Each check compares against the value *this* apply installed rather than clearing
+  // unconditionally. Cordis runs a fibre's disposers when it is replaced, and if that happens
+  // after the replacement's `apply`, an unconditional clear would tear down the live capture
+  // instead of the dead one.
+  ctx.effect(() => () => {
+    if (workspacesRegistry === workspacesService?.list) workspacesRegistry = undefined
+    if (clientContext === ctx) clientContext = undefined
+  }, 'project-groups: module-level service captures')
   // Mount before registering the browser so the model's baseline can land while
   // the sidebar is still being assembled. A failure here is contained: the
   // sidebar then renders one Ungrouped bucket and the project verbs refuse
@@ -437,84 +497,38 @@ function registerSettingsCard(ctx: Context): void {
       rebuildBaseWorkspace: async () => {
         await requireModel().rebuildBaseWorkspace()
       },
+      // Nine setters, one shape — see `optimistic` below for why the guard and the catch are
+      // not written out nine times.
+      //
+      // Not `requireModel`: the card can render before the Remote baseline lands, and a click
+      // then must be a no-op rather than a thrown error out of a React event handler. The
+      // optimistic write inside the model is what makes the card follow the choice immediately.
       setTarget: (target: NewSessionTarget) => {
-        // Not `requireModel`: the card can render before the Remote baseline
-        // lands, and a click then must be a no-op rather than a thrown error out
-        // of a React event handler. The optimistic write inside the model is
-        // what makes the card follow the choice immediately.
-        const live = projectModel()
-        if (live === undefined) return
-        void live.setNewSessionTarget(target).catch((reason: unknown) => {
-          console.warn('set new session target rejected:', reason)
-        })
+        optimistic(live => live.setNewSessionTarget(target), 'set new session target')
       },
       setBaseWorkspace: (setting: BaseWorkspaceSetting) => {
-        // Same reasoning as `setTarget`, and the same optimistic write behind it.
-        const live = projectModel()
-        if (live === undefined) return
-        void live.setBaseWorkspace(setting).catch((reason: unknown) => {
-          console.warn('set base workspace rejected:', reason)
-        })
+        optimistic(live => live.setBaseWorkspace(setting), 'set base workspace')
       },
       setCreateOpensSession: (value: boolean) => {
-        // Same reasoning again: the card can render before the baseline lands, and a
-        // click then must be a no-op rather than a thrown error out of a React event
-        // handler. The optimistic write inside the model is what makes the switch
-        // follow the click immediately.
-        const live = projectModel()
-        if (live === undefined) return
-        void live.setCreateOpensSession(value).catch((reason: unknown) => {
-          console.warn('set create-opens-session rejected:', reason)
-        })
+        optimistic(live => live.setCreateOpensSession(value), 'set create-opens-session')
       },
       setInjectProjectInfo: (value: boolean) => {
-        // Same reasoning again: a click before the baseline lands must be a no-op
-        // rather than a thrown error out of a React event handler, and the
-        // optimistic write inside the model is what follows the click at once.
-        const live = projectModel()
-        if (live === undefined) return
-        void live.setInjectProjectInfo(value).catch((reason: unknown) => {
-          console.warn('set inject-project-info rejected:', reason)
-        })
+        optimistic(live => live.setInjectProjectInfo(value), 'set inject-project-info')
       },
       setInjectProjectDoc: (value: boolean) => {
-        const live = projectModel()
-        if (live === undefined) return
-        void live.setInjectProjectDoc(value).catch((reason: unknown) => {
-          console.warn('set inject-project-doc rejected:', reason)
-        })
+        optimistic(live => live.setInjectProjectDoc(value), 'set inject-project-doc')
       },
       setDocSpecMode: (mode: DocSpecMode) => {
-        // Same reasoning again: a click before the baseline lands must be a no-op
-        // rather than a thrown error out of a React event handler.
-        const live = projectModel()
-        if (live === undefined) return
-        void live.setDocSpecMode(mode).catch((reason: unknown) => {
-          console.warn('set doc-spec-mode rejected:', reason)
-        })
+        optimistic(live => live.setDocSpecMode(mode), 'set doc-spec-mode')
       },
       setDocSpecFileName: (name: string) => {
-        const live = projectModel()
-        if (live === undefined) return
-        void live.setDocSpecFileName(name).catch((reason: unknown) => {
-          console.warn('set doc-spec-file-name rejected:', reason)
-        })
+        optimistic(live => live.setDocSpecFileName(name), 'set doc-spec-file-name')
       },
       setPerProjectDocSpec: (value: boolean) => {
-        const live = projectModel()
-        if (live === undefined) return
-        void live.setPerProjectDocSpec(value).catch((reason: unknown) => {
-          console.warn('set per-project-doc-spec rejected:', reason)
-        })
+        optimistic(live => live.setPerProjectDocSpec(value), 'set per-project-doc-spec')
       },
       setValidateLinks: (value: boolean) => {
-        // Same reasoning as the other switches: a click before the baseline lands must be
-        // a no-op rather than a thrown error out of a React event handler.
-        const live = projectModel()
-        if (live === undefined) return
-        void live.setValidateLinks(value).catch((reason: unknown) => {
-          console.warn('set validate-links rejected:', reason)
-        })
+        optimistic(live => live.setValidateLinks(value), 'set validate-links')
       },
       // The three spec-file actions surface as values rather than exceptions: a
       // taken name and an absent file are ordinary answers the dialog renders,

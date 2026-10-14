@@ -157,16 +157,25 @@ export function WorkspacePickFlow({
     setModalError(null)
   }
 
-  /** Adopt a picked directory; failures land in the folder-error dialog (Choose again reopens the flow). */
-  const adoptDirectory = (path: string): Promise<void> =>
-    createWorkspace({ path }).then((workspace) => {
+  /**
+   * Adopt a picked directory; failures land in the folder-error dialog (Choose again reopens
+   * the flow).
+   *
+   * `async`/`await` with one `try`/`catch` rather than a `.then`/`.catch` chain: the project's
+   * async convention, and it keeps the success and failure transitions side by side instead of
+   * in two callbacks.
+   */
+  const adoptDirectory = async (path: string): Promise<void> => {
+    try {
+      const workspace = await createWorkspace({ path })
       setFlowOpen(false)
       onPick(workspace.workspaceId)
-    }).catch((reason: unknown) => {
+    } catch (reason: unknown) {
       setModalError(reason instanceof Error ? reason.message : String(reason))
       setFlowOpen(false)
       setErrorOpen(true)
-    })
+    }
+  }
 
   const openDirectoryFlow = useCallback((): void => {
     onClose()
