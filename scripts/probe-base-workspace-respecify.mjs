@@ -127,15 +127,40 @@ const chooserDialog = () => page.locator('[role="dialog"], [aria-modal="true"]')
 const card = () => page.locator('[data-plugin-config]').first()
 const newSession = () => page.locator('button[aria-label="新建会话"], button[aria-label="新会话"]').first()
 
+/**
+ * Wait until `predicate` holds, or the budget runs out.
+ *
+ * These replaced fixed `waitForTimeout(...)` sleeps. A fixed sleep has to be long enough for the
+ * slowest machine, which makes it wrong in both directions: under CI load the probe produced false
+ * failures, and on a fast machine it merely slowed the run down. This polls and returns **as soon
+ * as** the condition holds.
+ *
+ * It deliberately does **not** throw on timeout. Every call site is followed by the assertion that
+ * judges the same state, so a timeout falls through to that assertion and reports exactly the
+ * failure it reported before. That is also what makes this conversion safe to make without a live
+ * instance to test against: it can only make a run finish sooner, never turn a pass into a fail.
+ * The timeout is printed so a condition that never holds is visible as such rather than being
+ * blamed on the assertion downstream.
+ */
+const settle = async (label, predicate, timeoutMs = 6000, step = 200) => {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await predicate().catch(() => false)) return true
+    await page.waitForTimeout(step)
+  }
+  console.log(`  [等待超时] ${label}：${String(timeoutMs)}ms 内未达成，交由随后的断言判定`)
+  return false
+}
+
 /** Drive the missing-workspace dialog into view and press 重新指定. */
 const pressRespecify = async () => {
   await newSession().click({ force: true })
-  await page.waitForTimeout(5000)
+  await settle('缺失弹窗出现', async () => await missingDialog().count() > 0, 12_000)
   await dismiss()
   const appeared = await missingDialog().count()
   if (appeared === 0) return { appeared: false }
   await missingDialog().getByRole('button', { name: '重新指定底层工作区' }).first().click({ force: true })
-  await page.waitForTimeout(4500)
+  await settle('选择弹窗出现', async () => await chooserDialog().count() > 0, 10_000)
   await dismiss()
   return { appeared: true }
 }
@@ -145,6 +170,9 @@ try {
   page = await browser.newPage()
   page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
+  // A fixed settle, kept deliberately: this waits for the plugin bundle to mount, and there is no
+  // published signal for that — the probe exists precisely to catch a mount that fails, so waiting
+  // on "the card is there" would assume the thing under test.
   await page.waitForTimeout(8000)
   await dismiss()
 
@@ -219,7 +247,7 @@ try {
   check('选择弹窗已打开（取消的前提）', cancelCount > 0, `${String(cancelCount)} 个`)
   if (cancelCount > 0) {
     await cancel.click({ force: true })
-    await page.waitForTimeout(1200)
+    await settle('选择弹窗关闭', async () => await chooserDialog().count() === 0, 5000)
   }
   check('取消后选择弹窗关闭', await chooserDialog().count() === 0)
   // The card must genuinely unmount for this to mean anything: re-clicking the panel we are already
@@ -236,9 +264,11 @@ try {
     request: { mode: 'specified', path: scratch, name: 'second' },
   })
   console.log(`  已指向第二个工作区: ${JSON.stringify(pointed)}`)
+  // The RPC has been acknowledged, but propagation to the page is not observable from here: the
+  // Host does not publish a "setting applied" event the probe could await. Kept as a settle.
   await page.waitForTimeout(1200)
   await newSession().click({ force: true })
-  await page.waitForTimeout(5000)
+  await settle('缺失弹窗出现', async () => await missingDialog().count() > 0, 12_000)
   await dismiss()
   const missingCount = await missingDialog().count()
   // Asserted where it happens. As a bare `if` this was a silent skip: had the dialog failed to
@@ -247,14 +277,14 @@ try {
   check('打开新会话后出现缺失弹窗（本节的起点）', missingCount > 0, `${String(missingCount)} 个`)
   if (missingCount > 0) {
     await missingDialog().getByRole('button', { name: '取消' }).first().click({ force: true })
-    await page.waitForTimeout(1200)
+    await settle('缺失弹窗关闭', async () => await missingDialog().count() === 0, 5000)
   }
   const cardAway = await card().count()
   console.log(`  打开会话后卡片数: ${String(cardAway)}`)
   check('卡片确实卸载了（否则消费测不到）', cardAway === 0, `${String(cardAway)} 个`)
   // Remount it: back to the Plugins panel, then activate our bundle's row.
   await page.locator('button[aria-label="插件"], [data-panel-id="plugins"]').first().click({ force: true })
-  await page.waitForTimeout(3000)
+  await settle('插件行出现', async () => await page.locator('text=dsh-project-groups').count() > 0, 10_000)
   await dismiss()
   const entry = page.locator('text=dsh-project-groups').first()
   const entryCount = await entry.count()
@@ -264,7 +294,7 @@ try {
   check('插件面板里能找到 dsh-project-groups 行（重新挂载的前提）', entryCount > 0, `${String(entryCount)} 个`)
   if (entryCount > 0) {
     await entry.click({ force: true })
-    await page.waitForTimeout(3000)
+    await settle('卡片重新挂载', async () => await card().count() > 0, 10_000)
     await dismiss()
   }
   const cardRemounted = await card().count()
@@ -278,6 +308,9 @@ try {
   // The missing report needs a broken setting again: step 5 pointed it at a live Workspace so that
   // the New Session would actually navigate. Put it back on the deleted one to raise the report.
   await rpc('projectGroups/setBaseWorkspace', { request: { mode: 'specified', path: workspace.path, name: 'gone' } })
+  // Same reason as the earlier settle: the RPC is acknowledged, but nothing observable from the
+  // page says the Host has applied it. `pressRespecify` polls for the report it raises, so this only
+  // needs to cover the write itself.
   await page.waitForTimeout(1500)
   const second = await pressRespecify()
   const chooserSecond = await chooserDialog().count()
