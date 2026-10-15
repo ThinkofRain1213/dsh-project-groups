@@ -6292,7 +6292,49 @@ projectRecord.docSpec:         'none' | 'default' | <文件名> | absent   optio
 `Array.prototype.join` 当成 `node:path` 的 `join`，报了 7 处假阳性。
 **先校准再动手**，否则会白改两百多行本来正确的代码。
 
-### 27.5 机械不变量（替代逐文件肉眼核对）
+### 27.5 `src/vendored/` 回到「上游 + 我们必需的补丁」
+
+**审查曾在 vendored 里替上游修 bug。** 阶段 2 的 19 个 part 中有 15 个动过 `src/vendored`
+（22 个文件）。对 67 条 vendored 发现的分类结果是：**52 条改的是与上游逐字节相同的代码**
+（上游自己的缺陷），只有 **15 条**落在我们自己的代码上。前者还配了一张 58 行的台账
+（`### Upstream bug fixes carried in this tree`），要求**上游每次更新时逐条重施**——共 54 条
+这样的义务。
+
+**这不该由我们承担**，而且其中一条**本身就是错的**：
+
+> `client/shortcuts.ts` 增加了 `defaults['web:linux']`。审查的理由是"Linux 浏览器上该命令无绑定"。
+
+上游**刻意**不写这个键。快捷键服务的 `register` 会遍历每个 `runtime × platform`，
+对 `linux` 调 `isWebBindingAllowed`——它只接受 `primary+Slash`、`primary+shift+Comma`、
+`primary+shift+Period` 三个绑定，而我们的 id 是 `KeyN`/`KeyK`/`KeyO`/`KeyG`/`KeyF`/`KeyA`
+加 `primary`(+`alt`)，**一个都不合格**，于是抛：
+
+```
+Unsupported Web shortcut: session.new
+```
+
+`register` 在 `ctx.effect(...)` 内**同步**执行，因此这个抛错让**整个客户端插件加载失败**：
+`uiWorkspace` 无人提供、11 个官方条目卡在 `pending`、侧栏显示 "Failed to load plugins"——
+**加载即失败，无需按任何快捷键**。它只在审查期间存在，**从未随任何版本发布**。
+
+**处置**：以 `2589b5e`（动 vendored 前的最后一点，其 `src/vendored` tree 与总开始前 `561f67e`
+相同）为基线重做，`git checkout 2589b5e -- src/vendored`（**路径限定**——阶段 0/1/3–8
+从未碰过该目录，验证过 0 个非 vendored 改动）。保留 13 条**确实改到我们代码**的修复，
+其余连同台账一起移出主线，存于 `backup/upstream-bugfixes-20261014-2048` 与
+`.agent/backups/dsh-project-groups-upstream-bugfixes-20261014-2048/`。
+
+**10 项上游缺陷改为「记录」而非「修复」**（`verify-grouping.mjs` 6 条 + `verify-projects.mjs`
+4 条）：被测代码与上游逐字节相同时，缺陷归上游。它们打印为 `NOTE [上游原生缺陷]`
+并汇总在脚本尾部，**不计入失败**；若上游修好，对应行会翻回 `PASS` 并说明。
+
+**分类判据的教训**：我用了**四种**机械判据（坐标重叠、逐字搜上游、行匹配、三方合并），
+得到**四组不同答案**（A=18/B=115、23/16、10/51、13 冲突段），没有一种能自我证明正确——
+因为我们的补丁与上游代码在多处**交织**（`WorkspaceBrowser.tsx` 有 113 处补丁）。
+最后可靠的是**两种硬基准**：① 文件在基线是否与上游 blob 逐字节相同（10 个文件"零补丁"，
+其改动必然是 B）；② `git grep` 该符号在整个上游仓库是否存在（不存在即我们的）。
+**"按行号/按窗口"的判据在这类交织代码上不可用。**
+
+### 27.6 机械不变量（替代逐文件肉眼核对）
 
 `scripts/` 下全部 59 个 probe，按形态检查六类；本阶段开始时六类都非零，现在全为 0：
 
@@ -6303,7 +6345,7 @@ projectRecord.docSpec:         'none' | 'default' | <文件名> | absent   optio
     unguardedClose     0 未守卫的 browser.close()
     literalTrueCheck   0 恒真的 check(..., true, ...)
 
-### 27.6 无法执行的部分（必须明说）
+### 27.7 无法执行的部分（必须明说）
 
 **52 / 59 个 probe 需要 live DSH 实例，本环境未能执行。** 根因是**探针自己的环境缺口**，
 不是代码问题，也不是"别的 DSH 在拦"——下面这条我一开始写错了，实验推翻了它。
@@ -6336,7 +6378,7 @@ projectRecord.docSpec:         'none' | 'default' | <文件名> | absent   optio
 
 每个提交都明写了未执行的部分。阶段 8.2/8.3（抽跑 6 个探针、真实 UI 实测）因此**待环境可用后补做**。
 
-### 27.7 反向对照（证明"修好了"不是空话）
+### 27.8 反向对照（证明"修好了"不是空话）
 
 - `compare-bundle.mjs` 在门禁内（`verify:bundle`），所以能做完整反向对照：
   破坏 loader id → 2 个 FAIL；6 种构建机路径 → 各自 FAIL 且**每种恰好 1 处完整路径**；
