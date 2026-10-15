@@ -72,29 +72,16 @@ export class AnimatedRows extends Component<AnimatedRowsProps> {
   private readonly overlay = createRef<HTMLDivElement>()
   private readonly movements = new Map<HTMLElement, Animation>()
   private readonly exits = new Map<string, { element: HTMLElement; animation: Animation }>()
-  /** Retained so the media query is parsed once; see {@link reducedMotion}. */
-  private motionQuery: MediaQueryList | undefined
 
   override getSnapshotBeforeUpdate(previous: AnimatedRowsProps): RowSnapshot | null {
     const list = this.list.current
-    // A pending `enteringKeys` must not be short-circuited by `sameRows`.
-    //
-    // The documented `enteringKeys` case — a New Session that **reused** an existing blank
-    // Session — keeps the row set identical on purpose, since the key is the Session alone.
-    // Testing `sameRows` on its own therefore returned `null` for exactly that case, and the
-    // `componentDidUpdate` null branch drops the keys without ever drawing the entry fade:
-    // the arrival only animated when the row also changed position. `onEnteringKeysDrawn`'s
-    // doc lists the null reasons (not armed, reduced motion, resetKey, not ready) and omits
-    // `sameRows`, which is the sign this was overlooked rather than intended.
-    const entering = this.props.enteringKeys ?? []
-    const nothingToDraw = sameRows(previous, this.props) && entering.length === 0
-    if (!this.armed || nothingToDraw || previous.resetKey !== this.props.resetKey
+    if (!this.armed || sameRows(previous, this.props) || previous.resetKey !== this.props.resetKey
       || !previous.ready || !this.props.ready || list === null
       || typeof list.animate !== 'function'
-      || this.reducedMotion()) return null
+      || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null
 
     const viewport = list.getBoundingClientRect()
-    const positions = this.readPositions(true)
+    const positions = this.readPositions()
     const nextKeys = new Set(this.props.rowKeys)
     const removed = new Map<string, RowPosition>()
     for (const [key, row] of positions) {
@@ -126,17 +113,8 @@ export class AnimatedRows extends Component<AnimatedRowsProps> {
     }
 
     this.cancelMovements()
-    // Guarded rather than asserted. `getSnapshotBeforeUpdate` already treats the list ref as
-    // possibly null, so casting here was inconsistent with the rest of the component: a
-    // `Cannot read properties of null` during commit is a much worse failure than skipping an
-    // animation. The snapshot proves the list existed at the pre-update moment, not that it
-    // still does.
-    const list = this.list.current
-    const overlay = this.overlay.current
-    if (list === null || overlay === null) {
-      release()
-      return
-    }
+    const list = this.list.current as HTMLDivElement
+    const overlay = this.overlay.current as HTMLDivElement
     const viewport = list.getBoundingClientRect()
     const origin = overlay.getBoundingClientRect()
     const positions = this.readPositions()
@@ -187,57 +165,14 @@ export class AnimatedRows extends Component<AnimatedRowsProps> {
     this.clear()
   }
 
-  /**
-   * Read every keyed row's element and viewport rect.
-   *
-   * ## Why the key is validated rather than asserted
-   *
-   * `[data-row-key]` proves the attribute is **present**, not that its value is usable. The
-   * previous `element.dataset.rowKey as string` asserted a non-empty key that nothing checked:
-   * an empty attribute yielded `''`, and duplicate keys silently collapsed into one map entry —
-   * both corrupt the position diff and the computed `removed` set, producing wrong motion with
-   * no error. A row without a usable key is skipped, which is the honest reading: it cannot be
-   * tracked across commits, so it must not be treated as if it were.
-   *
-   * ## Why opacity is opt-in
-   *
-   * `getComputedStyle` forces a style recalculation, and the post-update pass never reads the
-   * value it produces: at that point `cancelMovements()` has already run, so `movements.has()`
-   * is always false, and the pre-update opacity it would compare against is carried in the
-   * snapshot instead. Reading it there was a forced layout per row for a value nothing used.
-   * @param withOpacity - read computed opacity for rows mid-animation (forces style recalc).
-   * @returns one entry per keyed row, keyed by its `data-row-key`.
-   */
-  private readPositions(withOpacity = false): Map<string, RowPosition> {
-    const positions = new Map<string, RowPosition>()
-    const list = this.list.current
-    if (list === null) return positions
+  private readPositions(): Map<string, RowPosition> {
+    const list = this.list.current as HTMLDivElement
     const rows = list.querySelectorAll<HTMLElement>('[data-row-key]')
-    for (const element of rows) {
-      const key = element.dataset.rowKey
-      if (key === undefined || key === '') continue
-      positions.set(key, {
-        element,
-        rect: element.getBoundingClientRect(),
-        opacity: withOpacity && this.movements.has(element)
-          ? Number(getComputedStyle(element).opacity)
-          : 1,
-      })
-    }
-    return positions
-  }
-
-  /**
-   * Whether the user has asked for reduced motion.
-   *
-   * The `MediaQueryList` is created once and only its `matches` is re-read: constructing a new
-   * one per `getSnapshotBeforeUpdate` re-parses the query on every animated commit, while
-   * caching the boolean would go stale if the OS setting changed mid-session. Reading
-   * `matches` off a retained list is what gives both.
-   */
-  private reducedMotion(): boolean {
-    this.motionQuery ??= window.matchMedia('(prefers-reduced-motion: reduce)')
-    return this.motionQuery.matches
+    return new Map(Array.from(rows, element => [element.dataset.rowKey as string, {
+      element,
+      rect: element.getBoundingClientRect(),
+      opacity: this.movements.has(element) ? Number(getComputedStyle(element).opacity) : 1,
+    }]))
   }
 
   private move(element: HTMLElement, keyframes: Keyframe[], duration: number): void {

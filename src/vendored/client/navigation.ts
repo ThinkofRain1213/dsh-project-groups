@@ -230,34 +230,12 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     try {
       return await this.sessions.create({ workspaceId, sessionId })
     } catch (error: unknown) {
-      // `sessionCreateErrorOf` matches on `name` alone — deliberately, since client plugin
-      // bundles do not share class identity — so the `SessionCreateError` shape is not
-      // actually guaranteed. An error carrying that name without an `rpcError` (a
-      // re-serialized payload, a partial failure object) made `rpcError.code` a TypeError
-      // on `undefined`, which masked the original failure with a far less informative one.
-      // Optional chaining treats a missing `rpcError` as "not the writer-held case", which
-      // rethrows the real error below.
-      if (sessionCreateErrorOf(error)?.rpcError?.code !== 'session/writer-held') throw error
+      if (sessionCreateErrorOf(error)?.rpcError.code !== 'session/writer-held') throw error
       return this.sessions.create({ workspaceId })
     }
   }
 
-  /**
-   * Reveal a Session in the main panel.
-   *
-   * ## Why a disposed service returns quietly
-   *
-   * This is declared `void` and is reached from click handlers and stale UI callbacks,
-   * but it forwards `this.lifetime.signal` into `replaceMain`, whose first statement is
-   * `signal.throwIfAborted()`. After the service is disposed — the effect cleanup aborts
-   * `lifetime` — any late call would throw a synchronously-propagating `AbortError` out of
-   * a fire-and-forget API: an unhandled exception from a handler that has nothing to do
-   * with disposal. An abort here means "this service is gone", which is not an error at
-   * the call site, so it returns instead of throwing.
-   * @param target - the Session to reveal.
-   */
   openSession(target: SessionTarget): void {
-    if (this.lifetime.signal.aborted) return
     this.replaceMain(target, this.lifetime.signal, 'reveal')
   }
 
@@ -427,12 +405,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
   async pickDirectory(): Promise<string | null> {
     const result = await this.directoryPicker.pick()
-    // Throws the structured `DirectoryBrowseError`, like `listDirectory` and
-    // `createDirectory` do. This previously threw a plain `Error` carrying only a formatted
-    // message, so a UI consumer could not handle picker failures uniformly: the other two
-    // directory verbs preserve `rpcError.code`, and the picker path alone discarded it —
-    // leaving callers unable to branch on the Host's failure code.
-    if (!result.ok) throw new DirectoryBrowseError(result.error)
+    if (!result.ok) throw new Error(`directory picker failed: ${result.error.message}`)
     return result.value
   }
 
@@ -505,11 +478,9 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     if (target === undefined && workspaces.items.length === 0 && sessions.ids.length === 0) {
       const prepared = await this.initializeDefaultWorkspace(navigation)
       if (navigation.aborted) return
-      // Only `ready` carries a Workspace. The other three arms leave `target` undefined,
-      // which is what this branch already does when there is nothing to connect to: the
-      // `sessionId === undefined && target !== undefined` test below simply does not fire.
-      // The notices and logging that belong to `failed` are raised inside the helper.
-      if (prepared.kind === 'ready') target = prepared.workspace.workspaceId
+      // Only the `ready` arm carries a Workspace; the other three leave `target` undefined,
+      // which this cold-start path already handles by doing nothing further.
+      target = prepared.kind === 'ready' ? prepared.workspace.workspaceId : undefined
     }
     if (sessionId === undefined && target !== undefined) sessionId = await this.connectWorkspace(target)
     if (sessionId !== undefined && !navigation.aborted) {
@@ -518,15 +489,23 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   }
 
   /**
-   * Resolve the Host's default Workspace, distinguishing the four outcomes.
+   * Resolve the Host's default Workspace.
    *
-   * `undefined` used to stand for all of them, and the caller reported every one as
-   * "the setting names a Workspace that is gone" — which is only true of `absent`. A
-   * lookup that **threw** had already raised its own `defaultWorkspaceFailed` notice, so
-   * the caller's report doubled up on it; an **aborted** lookup (the service disposed
-   * mid-flight) has no outcome to report at all, yet still produced that message.
-   * Naming the outcomes lets the caller act on the one that means something.
-   * @param signal - caller lifetime; an abort is reported as `aborted`, not as absent.
+   * The return is a **discriminated union** rather than `WorkspaceView | undefined`, because
+   * `undefined` conflated three different outcomes and its caller reported all three the same
+   * way — as "the setting names a Workspace that is gone":
+   *
+   * - `ready`   — resolved; start a Session in it.
+   * - `absent`  — there genuinely is no default to resolve. This is the one case the
+   *               missing-workspace report is about.
+   * - `failed`  — the lookup threw. `initializeDefault` failing already raised its own
+   *               `defaultWorkspaceFailed` notice, so reporting it again as "the setting names
+   *               a Workspace that is gone" doubled up and named the wrong problem.
+   * - `aborted` — the service was disposed mid-flight; there is no outcome to report at all,
+   *               and the shipped flow simply does nothing.
+   *
+   * Only `ready` carries a Workspace, so a caller cannot read one without having checked.
+   * @param signal - aborts with the service's lifetime.
    * @returns which of the four outcomes occurred.
    */
   private async initializeDefaultWorkspace(
@@ -539,14 +518,12 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   > {
     try {
       const workspace = await this.workspaces.initializeDefault(signal)
-      // The lookup can also answer `undefined` without throwing, which is the genuine
-      // "no default Workspace" arm.
+      // `initializeDefault` answering `undefined` is the genuine "no default" case.
       return workspace === undefined ? { kind: 'absent' } : { kind: 'ready', workspace }
-    } catch (error: unknown) {
-      // An abort is not a failure: nothing is wrong and nothing should be announced.
+    } catch (_error: unknown) {
+      // Disposal is not a failure: nothing is wrong, and nothing should be reported.
       if (signal.aborted) return { kind: 'aborted' }
       this.notify({ kind: 'defaultWorkspaceFailed' })
-      console.warn('dsh-project-groups: default Workspace lookup failed', error)
       return { kind: 'failed' }
     }
   }
@@ -612,37 +589,15 @@ function sessionCreateErrorOf(error: unknown): SessionCreateError | undefined {
 }
 
 /**
- * What a non-Host creation failure says instead of its own message.
- *
- * Deliberately short and language-neutral in substance: the toast renders it inside
- * `toast.createFailed` (`新建会话失败：{message}` / `New session failed: {message}`), so the
- * sentence around it is already localized by the renderer. This function has no locale
- * service — it is a module-level helper, and the class holds none — so producing a
- * localized sentence here would be guessing at the language and duplicating what the
- * renderer already does. The technical detail goes to the console instead.
- */
-const GENERIC_CREATE_FAILED = 'see the console for details'
-
-/**
- * The words a failed Session creation is reported in.
- *
- * A Host refusal keeps its stable `code: message` pair — that text is a contract the Host
- * owns and users may match on. **Anything else becomes a generic message**, because this
- * string is fed straight into a user-visible `createFailed` toast: a developer-facing
- * `uiWorkspace.connectWorkspace: unknown workspace <id>` would otherwise leak internal
- * identifiers into the UI. The detail still goes to the console, where it is useful.
+ * The words a failed Session creation is reported in: a Host refusal keeps its
+ * stable code and message; any other failure keeps its own message.
  */
 function creationFailureMessage(error: unknown): string {
   const refused = sessionCreateErrorOf(error)
-  // Shape-checked as well as name-checked: `sessionCreateErrorOf` matches on `name` alone,
-  // so `rpcError` may be absent, and reading `.code` off it would throw *inside* the
-  // failure-reporting path — turning a reportable failure into an unhandled one.
-  if (refused?.rpcError !== undefined && refused.rpcError !== null) {
-    return `${refused.rpcError.code}: ${refused.rpcError.message}`
-  }
-  console.warn('dsh-project-groups: session creation failed', error)
-  return GENERIC_CREATE_FAILED
+  if (refused !== undefined) return `${refused.rpcError.code}: ${refused.rpcError.message}`
+  return error instanceof Error ? error.message : String(error)
 }
+
 /** Stable tie-breaking follows Host Workspace order. */
 function recentWorkspace(
   workspaces: readonly WorkspaceView[],

@@ -8,10 +8,11 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { UiWorkspace } from './navigation.ts'
 
 /** Transient requests consumed by the existing workspace browser. */
-export interface WorkspaceShortcutState {  readonly searchRequest: number
+export interface WorkspaceShortcutState {
+  readonly searchRequest: number
   readonly addRequested: boolean
   readonly directoryBusy: boolean
-  readonly renameTarget: { readonly sessionId: SessionId; readonly currentTitle: string; readonly seq: number } | null
+  readonly renameTarget: { readonly sessionId: SessionId; readonly currentTitle: string } | null
   readonly forkError: { readonly reason: 'unavailable' | 'failed'; readonly seq: number } | null
 }
 
@@ -28,47 +29,6 @@ interface WorkspaceShortcutControls {
 }
 
 /**
- * The command ids this tree registers.
- *
- * Declared here so `register` can be typed against them instead of `string`. The parameter
- * was `string` and the value was cast to `ShortcutCommandId` on the way in, which meant the
- * cast asserted membership in a set nothing checked — any typo compiled. Listing them makes
- * a wrong id a compile error.
- */
-type OwnShortcutId =
-  | 'session.new' | 'session.search' | 'workspace.add'
-  | 'session.rename' | 'session.fork' | 'session.archive'
-
-/**
- * Raise the fork-failure notice, mapping the rejection to which wording applies.
- *
- * Shared by both entry points for the command — the keyboard binding here and the sidebar's
- * menu row — because they are two ways to press the same button and only one of them used to
- * report anything: the menu row swallowed every rejection, so a Host refusal such as
- * `session/fork-unavailable` closed the menu and changed nothing, with no notice. One rule
- * keeps the two from drifting apart again.
- * @param error - the rejection from the fork request.
- * @param controls - the browser-owned request source that carries the notice.
- */
-export function reportForkFailure(
-  error: unknown,
-  controls: Pick<WorkspaceShortcutControls, 'forkFailed'>,
-): void {
-  // Client plugin bundles do not share error-class identity, so the check is on `name` — but a
-  // name alone proves nothing about the shape. An error carrying `name === 'SessionForkError'`
-  // without an `rpcError` (a re-thrown plain error, or one crossing another bundle boundary)
-  // would make a bare dereference throw *inside* the catch handler, masking the real failure
-  // and skipping `forkFailed` entirely. Optional chaining treats a missing `rpcError` as the
-  // generic failure, which is what it is.
-  const rpcCode = error instanceof Error && error.name === 'SessionForkError'
-    ? (error as Partial<SessionForkError>).rpcError?.code
-    : undefined
-  const unavailable = rpcCode === 'session/fork-unavailable'
-  controls.forkFailed(unavailable ? 'unavailable' : 'failed')
-  if (!unavailable) console.warn('session fork rejected:', error)
-}
-
-/**
  * Create the private browser request source shared by commands and controls.
  * @returns observable state and its complete mutation callbacks.
  */
@@ -77,57 +37,21 @@ export function createWorkspaceShortcutControls(): WorkspaceShortcutControls {
     searchRequest: 0, addRequested: false, directoryBusy: false, renameTarget: null, forkError: null,
   })
   let forkErrorSeq = 0
-  /** Monotonic rename-request id; see {@link SessionRenameTarget.seq}. */
-  let renameSeq = 0
   return {
     state,
-    search: () => {
-      // One snapshot per mutation. Calling `getSnapshot()` twice — once to read
-      // `searchRequest` and once to spread — reads two different objects if the store is
-      // not strictly synchronous, and the second read can already carry another writer's
-      // change, so the increment would be computed from a stale base and then applied over
-      // a newer one. Reading once and deriving everything from it makes the mutation a
-      // function of one observation.
-      const before = state.getSnapshot()
-      state.set({ ...before, searchRequest: before.searchRequest + 1 })
-    },
-    add: () => {
-      // Three reads collapsed to one, for the same reason. This was also the worst of the
-      // three: the condition and the value spread were separate observations, so a store
-      // that answered differently between them could test `directoryBusy` on one snapshot
-      // and write based on another.
-      const before = state.getSnapshot()
-      state.set(before.directoryBusy ? before : { ...before, addRequested: true })
-    },
-    closeAdd: () => {
-      const before = state.getSnapshot()
-      state.set({ ...before, addRequested: false })
-    },
-    directoryBusy: (busy: boolean) => {
-      const before = state.getSnapshot()
-      state.set({ ...before, directoryBusy: busy })
-    },
+    search: () => { state.set({ ...state.getSnapshot(), searchRequest: state.getSnapshot().searchRequest + 1 }) },
+    add: () => { state.set(state.getSnapshot().directoryBusy ? state.getSnapshot() : { ...state.getSnapshot(), addRequested: true }) },
+    closeAdd: () => { state.set({ ...state.getSnapshot(), addRequested: false }) },
+    directoryBusy: (busy: boolean) => { state.set({ ...state.getSnapshot(), directoryBusy: busy }) },
     rename: (sessionId: SessionId, currentTitle: string) => {
-      // A per-request sequence, so the dialog's key changes even when the target does not.
-      // See `SessionRenameTarget.seq`: keyed on the Session alone, a second request for the same
-      // row reused the form and kept the stale draft.
-      renameSeq += 1
-      const before = state.getSnapshot()
-      state.set({ ...before, renameTarget: { sessionId, currentTitle, seq: renameSeq } })
+      state.set({ ...state.getSnapshot(), renameTarget: { sessionId, currentTitle } })
     },
-    closeRename: () => {
-      const before = state.getSnapshot()
-      state.set({ ...before, renameTarget: null })
-    },
+    closeRename: () => { state.set({ ...state.getSnapshot(), renameTarget: null }) },
     forkFailed: (reason) => {
       forkErrorSeq += 1
-      const before = state.getSnapshot()
-      state.set({ ...before, forkError: { reason, seq: forkErrorSeq } })
+      state.set({ ...state.getSnapshot(), forkError: { reason, seq: forkErrorSeq } })
     },
-    dismissForkError: () => {
-      const before = state.getSnapshot()
-      state.set({ ...before, forkError: null })
-    },
+    dismissForkError: () => { state.set({ ...state.getSnapshot(), forkError: null }) },
   }
 }
 
@@ -151,48 +75,15 @@ export function installWorkspaceShortcuts(
   const t = ctx.locale.bind('workspace')
   const current = () => Object.values(ctx.sessions.list.getSnapshot().byId)
     .find(row => (row.retainedBy.mainView ?? 0) > 0)
-  const addReason = (): string | null => {
-    if (ctx.slots.entries('sidebar.workspaces.directoryFlow').length === 0) return t('shortcut.noPicker')
-    if (controls.state.getSnapshot().directoryBusy) return t('shortcut.directoryBusy')
-    return null
-  }
-  // The ids this tree registers. `ShortcutCommandId` upstream is `Branded<'ShortcutCommandId'>`
-  // — a purely nominal type with no constructor — so a string literal cannot be assigned to
-  // it directly and a cast is unavoidable at the boundary. Narrowing the parameter to this
-  // union is what makes the cast safe: it was previously typed `string`, which accepted any
-  // value at all and then *asserted* it was a valid id, so a typo would have compiled and
-  // registered a command nobody could invoke. Registering an id outside this list is now a
-  // compile error at the call site instead of a silent no-op.
-  const register = (id: OwnShortcutId, label: () => string, aliases: string[], code: string,
+  const addReason = () => ctx.slots.entries('sidebar.workspaces.directoryFlow').length === 0
+    ? t('shortcut.noPicker')
+    : controls.state.getSnapshot().directoryBusy ? t('shortcut.directoryBusy') : null
+  const register = (id: string, label: () => string, aliases: string[], code: string,
     modifiers: ('primary' | 'alt' | 'shift')[], webModifiers: ('primary' | 'alt' | 'shift')[], resolve: ShortcutCommand['resolve']): void => {
     ctx.effect(() => ctx.shortcuts.register({
       id: id as ShortcutCommandId, label, aliases, defaults: {
         'desktop:macos': { code, modifiers }, 'desktop:windows': { code, modifiers }, 'desktop:linux': { code, modifiers },
-        // `web:linux` is deliberately **absent**, and adding it breaks the whole plugin.
-        //
-        // An `ocr` review finding argued that a browser on Linux falls through to no binding, so
-        // the command is unreachable there, and that the entry was simply missing. That reads as
-        // correct and is the opposite of the truth: the shortcut service has a *hard* restriction
-        // on web bindings, and `defaults['web:linux']` is the one key that trips it.
-        //
-        // Measured from `@deepseek-ai/dsh-client-shortcuts/lib/client.js`: `register` walks every
-        // `runtime × platform` pair, and for one whose default is present it calls
-        // `isWebBindingAllowed`. For `platform: 'linux'` that returns true only for the three
-        // bindings `primary+Slash`, `primary+shift+Comma`, `primary+shift+Period` — every other
-        // web binding is refused. Our commands are `KeyN`/`KeyK`/`KeyO`/`KeyG`/`KeyF`/`KeyA` with
-        // `primary`(+`alt`), so **none** qualify and the first one throws:
-        //
-        //     Unsupported Web shortcut: session.new
-        //
-        // `register` runs inside `ctx.effect(...)`, which executes its callback synchronously
-        // during `apply`. So that throw fails the entire client plugin: `uiWorkspace` is never
-        // provided, the eleven official entries that wait on it stay `pending`, and the side panel
-        // shows "Failed to load plugins" — with no shortcut involved, at load time.
-        //
-        // This is why upstream has no `web:linux` key: it is not an omission to be fixed on
-        // re-sync. Leave it out, and do not "complete" the platform list.
-        'web:macos': { code, modifiers: webModifiers },
-        'web:windows': { code, modifiers: webModifiers },
+        'web:macos': { code, modifiers: webModifiers }, 'web:windows': { code, modifiers: webModifiers },
       },
       regions: ['page', 'editable'], modals: [], resolve,
     }), `ui-workspace: ${id}`)
@@ -225,31 +116,19 @@ export function installWorkspaceShortcuts(
     if (target.blank) return { status: 'blocked', reason: t('shortcut.noCompletedTurn') }
     return { status: 'handled', run: () => {
       void navigation.forkSession(target.id).catch((error: unknown) => {
-        reportForkFailure(error, controls)
+        // Client plugin bundles do not share error-class identity.
+        const unavailable = error instanceof Error && error.name === 'SessionForkError'
+          && (error as SessionForkError).rpcError.code === 'session/fork-unavailable'
+        controls.forkFailed(unavailable ? 'unavailable' : 'failed')
+        if (!unavailable) console.warn('session fork rejected:', error)
       })
     } }
   })
-  register('session.archive', () => t('menu.archiveSession'), ['archive session'], 'KeyA', ['primary', 'shift'], ['primary', 'alt'], (context) => {
+  register('session.archive', () => t('menu.archiveSession'), ['archive session'], 'KeyA', ['primary', 'shift'], ['primary', 'alt'], () => {
     const target = current()
-    if (target === undefined) return { status: 'blocked', reason: t('shortcut.noSession') }
-    // The same obscuring gate `session.rename` applies. The review asked whether the
-    // asymmetry was intentional; it does not appear to be. Both commands act on the
-    // session `current()` derives from `retainedBy.mainView`, and both end up opening a
-    // dialog over the list (`rename` sets `renameTarget`; `archiveSession` sets
-    // `archiveRequest` for the running-work confirmation), so neither can be said to work
-    // "without needing to see the row". Rename refused in this situation and archive did
-    // not, which let the same keystroke reach a destructive action that its non-destructive
-    // analogue declined to take.
-    //
-    // `blank` is deliberately **not** checked here, unlike rename: the original archive
-    // path had no such check and the review did not raise one, so only the guards it asked
-    // about were added. Changing that too would be a second behaviour decision beyond what
-    // was reported.
-    if (context.modal !== null || ctx.layout.panelInfo.getSnapshot().activePanelId !== null) {
-      return { status: 'blocked', reason: t('shortcut.noSession') }
-    }
-    return { status: 'handled', run: () => {
-      archiveSession(target.id)
-    } }
+    return target === undefined ? { status: 'blocked', reason: t('shortcut.noSession') }
+      : { status: 'handled', run: () => {
+        archiveSession(target.id)
+      } }
   })
 }

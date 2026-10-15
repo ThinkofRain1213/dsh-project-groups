@@ -101,12 +101,6 @@ export const zh = {
   // live in one contiguous block so a re-sync can re-add them mechanically.
   'baseMissing.title': '底层工作区缺失',
   'baseMissing.body': '它是本插件所有会话的落脚点，缺失时无法新建会话。',
-  // `缺失：` rather than the `当前：` that used to be here. The English said `Missing:`, so the
-  // two locales told the user different things about the same state — and the dialog's whole
-  // subject is a *missing* Workspace (`baseMissing.title`, `baseMissing.body`), which the
-  // Chinese wording contradicted. Aligned to the English meaning rather than the reverse.
-  // It reads correctly in both stages: the report names the path that is gone, and the
-  // confirmation repeats it as the path about to be re-created.
   'baseMissing.path': '缺失：{path}',
   'baseMissing.pathUnknown': '缺失：默认工作区（路径未知）',
   'baseMissing.rebuild': '重建该工作区',
@@ -124,7 +118,6 @@ export const zh = {
   'search.results.aria': '搜索结果',
   'search.pending': '正在搜索会话历史…',
   'search.noMatches': '无匹配会话',
-  'search.failed': '搜索失败，请重试。',
   'search.hasMore': '仅显示前 {n} 条结果，请缩小搜索范围。',
   'menu.addWorkspace': '添加工作区…',
   'picker.loading': '正在加载工作区…',
@@ -147,18 +140,6 @@ export const zh = {
   'row.archived': '已归档',
   'row.pinned': '已置顶',
   'toast.archivedNotOpenable': '已归档对话暂时无法查看，请取消归档后查看',
-  // The archived notice is assembled from fragments, and the whitespace in them is load-bearing.
-  //
-  // `Toast` takes `text: string` plus actions of `{ prefix, label }`, and renders them flowing as
-  // one sentence — that is the primitive's contract, not a workaround, so a single parameterized
-  // sentence with inline links is not expressible here. What follows is that the concatenation
-  // depends on the spacing embedded in these values: `toast.archived` must end with the space (or
-  // punctuation) that precedes the first action, and `toast.archivedOr` must carry its own
-  // surrounding spaces in English while Chinese needs none.
-  //
-  // So these four are one unit. Do not trim or normalize them, and do not reorder them without
-  // re-reading the assembled sentence — `verify-locales.mjs` assembles it for both languages and
-  // asserts the result, which is what turns a silent break into a failing check.
   'toast.archived': '会话已归档，可',
   'toast.stoppedAndArchived': '已停止并归档，可',
   'archive.confirm.title': '停止并归档此会话？',
@@ -176,7 +157,6 @@ export const zh = {
   'archive.confirm.listSeparator': '、',
   'archive.confirm.action': '停止并归档',
   'archive.confirm.pending': '正在停止并归档…',
-  'archive.confirm.error': '无法停止并归档，请重试。',
   'toast.archivedUndo': '撤销',
   'toast.archivedOr': '或',
   'toast.archivedFilter': '筛选已归档会话',
@@ -235,8 +215,8 @@ export const en = {
   'section.sessions': 'Sessions',
   'viewOptions.label': 'View options',
   'groupBy.label': 'Group by',
-  'groupBy.workspace': 'Workspace',
-  'groupBy.workspaceTree': 'Workspace tree',
+  'groupBy.workspace': 'WorkSpace',
+  'groupBy.workspaceTree': 'Workspace Tree',
   'groupBy.flat': 'In one list',
   'orderBy.label': 'Order by',
   'orderBy.manual': 'Manual',
@@ -299,7 +279,6 @@ export const en = {
   'search.results.aria': 'Search results',
   'search.pending': 'Searching session history…',
   'search.noMatches': 'No matching sessions',
-  'search.failed': 'Search failed. Try again.',
   'search.hasMore': 'Showing the first {n} results. Narrow your search.',
   'menu.addWorkspace': 'Add workspace…',
   'picker.loading': 'Loading workspaces…',
@@ -322,10 +301,6 @@ export const en = {
   'row.archived': 'Archived',
   'row.pinned': 'Pinned',
   'toast.archivedNotOpenable': 'Archived sessions cannot be opened. Unarchive it to view.',
-  // Fragment assembly with load-bearing whitespace — see the note on the Chinese dictionary's
-  // `toast.archived` above for why a single parameterized sentence is not expressible through
-  // this primitive's API. Note the asymmetry the note warns about: English needs the trailing
-  // space here and spaces around `toast.archivedOr`, while the Chinese fragments need neither.
   'toast.archived': 'Session archived. You can ',
   'toast.stoppedAndArchived': 'Session stopped and archived. You can ',
   'archive.confirm.title': 'Stop and archive this session?',
@@ -343,7 +318,6 @@ export const en = {
   'archive.confirm.listSeparator': ', ',
   'archive.confirm.action': 'Stop and archive',
   'archive.confirm.pending': 'Stopping and archiving…',
-  'archive.confirm.error': 'Could not stop and archive. Try again.',
   'toast.archivedUndo': 'undo',
   'toast.archivedOr': ' or ',
   'toast.archivedFilter': 'filter archived sessions',

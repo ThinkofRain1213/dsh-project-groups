@@ -43,7 +43,7 @@ import {
   type RenameSessionInjected, type RowToast, type RowToastInjected, type RowToastState, type SessionRenameDialogInjected,
   type WorkspaceBrowserInjected, type WorkspacePickerInjected,
 } from './contract/slots.ts'
-import { createWorkspaceShortcutControls, installWorkspaceShortcuts, reportForkFailure } from './shortcuts.ts'
+import { createWorkspaceShortcutControls, installWorkspaceShortcuts } from './shortcuts.ts'
 import { UiWorkspaceService } from './navigation.ts'
 import { createWorkspaceViewStore } from './stores.ts'
 import type { GroupSource } from './tree.ts'
@@ -584,22 +584,12 @@ export function apply(
     chooseBaseWorkspace: projectActions?.chooseBaseWorkspace,
   })
   const forkInjected = (): ForkSessionInjected => ({
-    forkSession: async (sessionId) => {
-      try {
-        await uiWorkspace.forkSession(sessionId, (childId) => {
-          ctx.get('productAnalytics')?.track('branch_session_click', { session_id: childId, parent_session_id: sessionId, click_position: 'sidebar' })
-        })
-      } catch (error: unknown) {
-        // Reported here rather than swallowed, and here rather than in each caller.
-        //
-        // The previous shape ended in `.catch(() => {})` with the comment "fork or child-title
-        // failure leaves the list as it was" — which is true of the list and says nothing about
-        // the user. With the keyboard command reporting refusals and this share not, the sidebar
-        // menu row was the one entry that failed silently: the menu closed and nothing happened.
-        // Reporting once, in the implementation, is what keeps the two entry points consistent.
-        reportForkFailure(error, shortcutControls)
-        throw error
-      }
+    forkSession: (sessionId) => {
+      uiWorkspace.forkSession(sessionId, (childId) => {
+        ctx.get('productAnalytics')?.track('branch_session_click', { session_id: childId, parent_session_id: sessionId, click_position: 'sidebar' })
+      }).catch(() => {
+        // Fork or child-title failure leaves the list as it was.
+      })
     },
   })
   const renameInjected = (): RenameSessionInjected => ({ requestSessionRename })
@@ -747,18 +737,9 @@ export function apply(
  * The activity a Host `workspace/session-active` refusal reported, or nothing
  * for any other failure. The class identity check goes by name: client plugin
  * bundles do not share error-class identity.
- *
- * The name is all that can be trusted, so the shape is checked before it is read.
- * `reason.name` proves the error *claims* to be a `WorkspaceArchiveError`; it does not
- * prove `rpcError` exists. Dereferencing `rpcError.code` on an error that merely carries
- * the name — a re-thrown plain error, or one crossing another bundle boundary — throws a
- * `TypeError` from inside the `.catch()` of `archiveInjected`, which turns a recoverable
- * archive refusal into an unhandled rejection and loses the notice and confirmation the
- * user was owed.
  */
 function activeSessionRefusal(reason: unknown): readonly SessionActivity[] | undefined {
   if (!(reason instanceof Error) || reason.name !== 'WorkspaceArchiveError') return undefined
-  const { rpcError } = reason as Partial<WorkspaceArchiveError>
-  if (rpcError === undefined || rpcError === null) return undefined
-  return rpcError.code === 'workspace/session-active' ? rpcError.details?.activity : undefined
+  const { rpcError } = reason as WorkspaceArchiveError
+  return rpcError.code === 'workspace/session-active' ? rpcError.details.activity : undefined
 }

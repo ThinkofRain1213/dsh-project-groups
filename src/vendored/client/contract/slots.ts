@@ -586,16 +586,8 @@ export interface SessionArchiveConfirmInjected {
 
 /** Fork action share. */
 export interface ForkSessionInjected {
-  /**
-   * Fork a Session at its last completed turn; the child arrives through the Host list.
-   *
-   * Returns a promise so the caller can tell when the request has settled — the menu row uses
-   * it to disable itself while a fork is in flight, since without that a second click starts a
-   * second fork. The **failure notice is raised by the implementation**, not by each caller, so
-   * the menu row and the keyboard command report a refusal the same way; the promise still
-   * rejects, and callers that want to act on the failure can.
-   */
-  forkSession: (sessionId: SessionId) => Promise<void>
+  /** Fork a Session at its last completed turn; the child arrives through the Host list. */
+  forkSession: (sessionId: SessionId) => void
 }
 
 /** Rename action share: the row only raises the request; the dialog entry answers it. */
@@ -610,16 +602,6 @@ export interface SessionRenameTarget {
   sessionId: SessionId
   /** Title the dialog seeds its draft from. */
   currentTitle: string
-  /**
-   * Per-request identity, increasing with every raise.
-   *
-   * The dialog keys its form on `sessionId` + this, so a **second** request for the same
-   * Session still remounts: keyed on the id alone, a re-raise that did not pass through `null`
-   * in between (a programmatic one, or a title double-click batched with the previous settle)
-   * reused the component and kept the previous draft and error, contradicting the dialog's
-   * "a new request starts a fresh draft" contract.
-   */
-  seq: number
 }
 
 /** Rename dialog share: the pending request, its settlement, and the rename hop the dialog confirms with. */

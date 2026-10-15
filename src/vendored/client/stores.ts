@@ -105,10 +105,7 @@ export function createWorkspaceViewStore(): EngineStoreHandle<WorkspaceViewState
         d.sessionOrderByAccount = Object.fromEntries(
           Object.entries(d.sessionOrderByAccount).filter(([key]) => retained.has(key)),
         )
-        // A `delete` of `sessionUpdatedAtByAccount` used to sit here, casting the draft to a
-        // shape that added the field so it could remove it. The field is not in
-        // `WorkspaceViewState` and never was in this schema, so the cast was manufacturing a
-        // property in order to delete it — dead code that read as if it cleaned something up.
+        delete (d as WorkspaceViewState & { sessionUpdatedAtByAccount?: unknown }).sessionUpdatedAtByAccount
       },
       syncSessionOrders: (d, orders) => {
         if (d.orderBy !== 'manual') return
