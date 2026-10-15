@@ -809,14 +809,11 @@ function useLinkCheck(value: string, enabled: boolean): {
    * to `checking` — a spinner that never lands, because nothing is going to conclude. Caught by
    * `8) 关掉后不出标记` when this derivation was first written without it.
    */
-  // The row's check state, as a chain rather than the nested ternary this used to be: idle when
-  // the feature is off or the field is blank; otherwise the verdict's own mark, but only while
-  // that verdict belongs to the **current** text — a verdict for something the user has since
-  // edited is stale, and `checking` is what says so.
-  let settled: LinkCheck
-  if (!enabled || isBlankLink(value)) settled = 'idle'
-  else if (verdict !== null && verdict.url === value) settled = verdict.mark
-  else settled = 'checking'
+  const settled: LinkCheck = !enabled || isBlankLink(value)
+    ? 'idle'
+    : verdict !== null && verdict.url === value
+      ? verdict.mark
+      : 'checking'
   return {
     // A green check is shown only while the row has focus; the other two show regardless.
     mark: settled === 'valid' && !focused ? 'idle' : settled,
@@ -2168,12 +2165,6 @@ function SearchResults({
       groupingOverride],
   )
   const pending = currentRemote.status === 'loading'
-  // A failed Host search is not an empty one. With `status === 'error'` the items are
-  // empty and `pending` is false, so the empty-state branch below would render
-  // `search.noMatches` — telling the user "nothing matched" when in fact nothing was
-  // asked successfully. The two need different words, and the failure needs to be
-  // visible, so the error state is pulled out here.
-  const searchFailed = currentRemote.status === 'error'
   const currentId = panelActive
     ? undefined
     : Object.values(list.byId).find(session => (session.retainedBy.mainView ?? 0) > 0)?.id
@@ -2208,10 +2199,7 @@ function SearchResults({
             ))}
           </div>
         )}
-        {searchFailed && results.items.length === 0 && (
-          <div className={css.empty} role="alert">{t('search.failed')}</div>
-        )}
-        {!pending && !searchFailed && results.items.length === 0 && (
+        {!pending && results.items.length === 0 && (
           <div className={css.empty}>{t('search.noMatches')}</div>
         )}
         {results.hasMore && (

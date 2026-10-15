@@ -7,7 +7,6 @@
  * live in the injected callbacks, not here.
  */
 import { useState } from 'react'
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SessionActivity } from '@deepseek-ai/dsh-api-workspace-controller/client'
 // Type-only: the family keys each provider merges; a key this program did not compile takes the generic line.
 import type {} from '@deepseek-ai/dsh-agent/types'
@@ -23,26 +22,6 @@ import type {
 } from '../contract/slots.ts'
 import css from '../rows/Rows.module.css'
 import browserCss from '../rows/WorkspaceBrowser.module.css'
-
-/**
- * Run the archive or the unarchive action for one row, by its archived state.
- *
- * Both entry points — the menu row below and the hover button — ask the same question of the
- * same injected share, and each wrote the ternary out in full. Duplicated toggle logic drifts:
- * a change to the flow (the confirmation path, say) applied to one and not the other would
- * leave two affordances behaving differently for the same row. One helper is the single answer.
- * @param archived - whether the Session is currently archived.
- * @param sessionId - the Session the action applies to.
- * @param actions - the injected archive/unarchive pair.
- */
-function toggleArchive(
-  archived: boolean,
-  sessionId: SessionId,
-  actions: Pick<ArchiveSessionInjected, 'archiveSession' | 'unarchiveSession'>,
-): void {
-  if (archived) actions.unarchiveSession(sessionId)
-  else actions.archiveSession(sessionId)
-}
 
 /**
  * Menu row (order 400): archive, or restore an archived row.
@@ -61,7 +40,7 @@ export function ArchiveSessionMenuItem({
       icon={archived ? <IconUnarchiveOutlineRegular size={14} /> : <IconArchiveOutlineRegular size={14} />}
       onSelect={() => {
         setMenuOpen(false)
-        toggleArchive(archived, sessionId, { archiveSession, unarchiveSession })
+        ;(archived ? unarchiveSession : archiveSession)(sessionId)
       }}
     >
       {t(archived ? 'menu.unarchiveSession' : 'menu.archiveSession')}
@@ -84,7 +63,7 @@ export function ArchiveSessionRowButton({
         type="button"
         className={css.iconButton}
         aria-label={t(archived ? 'menu.unarchiveSession' : 'menu.archiveSession')}
-        onClick={() => { toggleArchive(archived, sessionId, { archiveSession, unarchiveSession }) }}
+        onClick={() => { (archived ? unarchiveSession : archiveSession)(sessionId) }}
       >
         {archived ? <IconUnarchiveOutlineRegular size={14} /> : <IconArchiveOutlineRegular size={14} />}
       </button>
@@ -130,28 +109,15 @@ function ArchiveConfirmForm({ request, stopAndArchiveSession, onSettle, t }: {
     onSettle()
   }
   const confirm = () => {
-    // One `try`/`catch`/`finally` rather than a `.then`/`.catch` chain. The old shape repeated
-    // `setArchiving(false)` in both callbacks — the loading/error/reset transitions belong in
-    // one place, which is the project's async convention.
-    void (async () => {
-      setArchiving(true)
-      setError(null)
-      try {
-        await stopAndArchiveSession(request.sessionId)
-        setArchiving(false)
-        onSettle()
-      } catch (reason: unknown) {
-        setArchiving(false)
-        // A localized message, with the raw detail logged rather than shown.
-        //
-        // The rejection's own `message` used to go straight into the alert. For a Host/RPC
-        // failure that text is internal diagnostics — a code, a transport phrase, sometimes a
-        // path — which tells the user nothing they can act on and can leak internals into the UI.
-        // The detail is still needed, so it goes to the console where a bug report can reach it.
-        console.warn('dsh-project-groups: stop-and-archive failed', reason)
-        setError(t('archive.confirm.error'))
-      }
-    })()
+    setArchiving(true)
+    setError(null)
+    stopAndArchiveSession(request.sessionId).then(() => {
+      setArchiving(false)
+      onSettle()
+    }).catch((reason: unknown) => {
+      setArchiving(false)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
   }
   return (
     <Modal
@@ -175,19 +141,8 @@ function ArchiveConfirmForm({ request, stopAndArchiveSession, onSettle, t }: {
       )}
     >
       <ul className={browserCss.archiveActivity} aria-label={t('archive.confirm.activity')}>
-        {/*
-          * Keyed by the family and its item ids, not by the array position.
-          *
-          * An index key says "the third row" rather than "the turn family": if this list is ever
-          * reordered, filtered, or animated, React matches the wrong previous element and reuses
-          * its DOM and state for a different entry. `kind` names the family and the item ids are
-          * the family's stable identities, so the key survives a reorder and still distinguishes
-          * two entries of the same family holding different items.
-          */}
-        {request.activity.map(entry => (
-          <li key={`${entry.kind}:${(entry.items ?? []).map(item => item.id).join(',')}`}>
-            {activityLine(entry, t)}
-          </li>
+        {request.activity.map((entry, index) => (
+          <li key={`${entry.kind}-${String(index)}`}>{activityLine(entry, t)}</li>
         ))}
       </ul>
       {archiving && <div className={browserCss.deleteStatus} role="status">{t('archive.confirm.pending')}</div>}
