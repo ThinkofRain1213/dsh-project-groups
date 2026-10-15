@@ -74,20 +74,24 @@ jobs:
         # The build is deterministic, so a dirty `lib/` here means a source change was committed
         # without its regenerated artifact.
         #
-        # Porcelain, not `git diff --exit-code -- lib/`: `git diff` compares only **tracked**
-        # files, so a change that made the build emit a brand-new artifact under `lib/` — or
-        # delete one — reported clean while the committed bundles were out of sync. `lib/` is
-        # what `files` ships, so that is exactly the drift this step exists to catch.
+        # This is a **script, not an inline `run:` block**, and that is the fix for a real CI
+        # failure rather than a style preference. It used to be bash here (`set -euo pipefail`,
+        # `CHANGED="$(git status --porcelain -- lib/)"`, `if [ -n "$CHANGED" ]`), but this job's
+        # matrix includes **windows-latest**, where GitHub Actions runs `run:` under `pwsh` by
+        # default. PowerShell cannot parse `if [ -n "$CHANGED" ]; then` and died with a
+        # `ParserError` before executing a single command, so **both Windows legs failed on every
+        # run** — and the failure read as a bundle-drift report while actually being a shell
+        # mismatch. The signal this step exists to produce was missing from a third of the matrix.
         #
-        # `git status --porcelain` always exits 0, so it has to be tested rather than chained.
-        run: |
-          set -euo pipefail
-          CHANGED="$(git status --porcelain -- lib/)"
-          if [ -n "$CHANGED" ]; then
-            printf '%s\n' "$CHANGED"
-            echo '::error::lib/ is not in sync with src/ — run `pnpm build` and commit the result.'
-            exit 1
-          fi
+        # `scripts/verify-bundles.mjs` has no shell dependency and matches every other step in
+        # this file, which already calls `pnpm run <script>`.
+        #
+        # What it asserts, unchanged: `git status --porcelain` rather than
+        # `git diff --exit-code -- lib/` (the latter sees only *tracked* files, so a build that
+        # emitted a brand-new artifact — or deleted one — reported clean, and `lib/` is what
+        # `files` ships), and the output is tested rather than the command chained, because
+        # `git status --porcelain` always exits 0.
+        run: pnpm run verify:bundles
       - name: Verify the vendored patch ledger
         # Every patch id must still match a row, and the official ui-workspace
         # row must still be disabled rather than replaced.

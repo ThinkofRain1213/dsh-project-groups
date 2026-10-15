@@ -67,6 +67,7 @@
     "typecheck": "tsc -p tsconfig.json --pretty false && tsc -p tsconfig.host.json --pretty false",
     "probe": "node scripts/probe-approach-b.mjs && node scripts/probe-slots.mjs && node scripts/probe-service.mjs && node scripts/probe-grouping-seam.mjs && node scripts/probe-inject-wait.mjs && node scripts/probe-contribution.mjs && node scripts/probe-retention.mjs",
     "verify:bundle": "node scripts/compare-bundle.mjs",
+    "verify:bundles": "node scripts/verify-bundles.mjs",
     "verify:patch": "node scripts/verify-patch.mjs",
     "verify:grouping": "node scripts/verify-grouping.mjs",
     "verify:client-seats": "node scripts/verify-client-seats.mjs",

@@ -130,24 +130,20 @@ jobs:
       - name: Build the node and client bundles
         run: pnpm run build
       - name: Assert the committed bundles are in sync with src/
-        run: |
-          set -euo pipefail
-          # `git status --porcelain`, not `git diff --exit-code -- lib/`.
-          #
-          # `git diff` compares only **tracked** files, so a source change that made the build
-          # emit a brand-new artifact under `lib/` — or delete one — left this step reporting
-          # clean while the committed bundles were in fact out of sync. `files` ships `lib`, so
-          # `npm publish` would then have shipped the mismatch, which is exactly the guarantee
-          # this step exists to make. Porcelain covers modified, added and deleted at once.
-          #
-          # Note `git status --porcelain` always exits 0, so it has to be tested rather than
-          # chained into an `&&`.
-          CHANGED="$(git status --porcelain -- lib/)"
-          if [ -n "$CHANGED" ]; then
-            printf '%s\n' "$CHANGED"
-            echo '::error::lib/ is not in sync with src/ — run `pnpm build` and commit the result.'
-            exit 1
-          fi
+        # The same check `validate.yml` runs, as a script rather than a `run:` block.
+        #
+        # It was inline bash here (`set -euo pipefail`, `CHANGED="$(…)"`, `if [ -n … ]`), which
+        # happened to work because this job is `ubuntu-latest`. In `validate.yml`, whose matrix
+        # includes Windows, that same block was a hard failure: `run:` defaults to `pwsh` there,
+        # PowerShell cannot parse `if [ -n "$CHANGED" ]; then`, and both Windows legs died with a
+        # `ParserError` that read like a bundle-drift report. One implementation, in
+        # `scripts/verify-bundles.mjs`, cannot drift between the two workflows or break on a shell.
+        #
+        # What it asserts: `git status --porcelain -- lib/` (not `git diff --exit-code`, which sees
+        # only *tracked* files — a build that emitted a brand-new artifact or deleted one would
+        # report clean, and `lib/` is exactly what `files` ships), tested rather than chained
+        # because `git status --porcelain` always exits 0.
+        run: pnpm run verify:bundles
       - name: Verify the release facts
         # The same gate a release is cut under, minus `verify:bundle` — that one
         # needs a locally installed DSH's app.asar, which a runner does not have.
