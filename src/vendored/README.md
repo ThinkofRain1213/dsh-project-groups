@@ -10,10 +10,28 @@ official UI 1:1.
 |---|---|
 | Upstream | `deepseek-ai/deepseek-harness` |
 | Path | `packages/client/ui-workspace/src/` |
-| Version | **0.2.1-rc.1** |
-| Commit | `1600d8a1e1` (`dsh-v0.2.1-rc.1`) |
-| Re-synced | 2026-10-17 (from `639ed01539` / `dsh-v0.2.0-rc.2`, which was itself re-synced 2026-09-30 from `477b4f420` / `dsh-v0.1.7-rc.2`) |
+| Version | **0.2.1-rc.2** |
+| Commit | `687f282e86` (`dsh-v0.2.1-rc.2`) |
+| Re-synced | 2026-10-17 (from `1600d8a1e1` / `dsh-v0.2.1-rc.1`, itself from `639ed01539` / `dsh-v0.2.0-rc.2`, itself re-synced 2026-09-30 from `477b4f420` / `dsh-v0.1.7-rc.2`) |
 | Patch footprint | **10 files / 107 hunks / +4011 −194** against the upstream tag, plus one file upstream does not have (`client/session-actions/BaseWorkspaceMissing.tsx`) |
+
+### The 0.2.1-rc.1 → 0.2.1-rc.2 step
+
+**No source change at all.** `ui-workspace/src` is byte-identical between the two
+tags — same 28 files, all hashes equal — so this tree did not need a merge, an
+edit, or a re-derived patch table. The rc.2 release moved package **versions**
+(the whole `@deepseek-ai/dsh-*` set to `0.2.1-rc.2`) without touching this
+package's code.
+
+What did move is outside this directory: the plugin's `peerDependencies` and
+`devDependencies` had to follow the version bump, and the lockfile and the
+`pnpm-workspace.yaml` exemptions had to be rebuilt. Verified with `pnpm check`
+(845 assertions, 0 failures) and by evaluating DSH's own compatibility rule
+against a `0.2.1-rc.2` runtime, which reports no unmet requirement.
+
+A useful consequence: the patch footprint above is still the **0.2.1-rc.1**
+figure, and it is also the rc.2 figure, because the upstream side of the diff did
+not change. Any future count that differs means a real edit, not a version bump.
 
 ### How the 0.2.0 → 0.2.1 re-sync was done
 

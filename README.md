@@ -90,7 +90,7 @@ DSH 官方的工作区是**目录所有权**记录：一个会话属于某工作
 
 ## 安装
 
-需要 DSH **0.2.1-rc.1**。插件跑在 0.2.1 的壳上，vendor 源码同样取自 **0.2.1-rc.1**
+需要 DSH **0.2.1-rc.2**。插件跑在 0.2.1 的壳上，vendor 源码同样取自 **0.2.1-rc.2**
 （上游同步流程见 [`DESIGN.md` §5 的 L4.5](DESIGN.md)）。
 
 ```bash
@@ -218,7 +218,7 @@ gh release create vX.Y.Z --verify-tag --title "vX.Y.Z" --notes-file <说明.md>
 
 `src/vendored/` **起点**是上游 `packages/client/ui-workspace/src/`（`dsh-v0.1.7-rc.2`）
 的逐字节副本，**但现在已不再逐字节一致**：项目分组需要分组缝，
-现有 **107 个 patch hunk、涉及 10 个文件（另有 1 个我方独有文件）**。当前来源版本是 **0.2.1-rc.1**。
+现有 **107 个 patch hunk、涉及 10 个文件（另有 1 个我方独有文件）**。当前来源版本是 **0.2.1-rc.2**。
 
 每一处都满足同一条不变量——**不传即等官方行为**——并且全部登记在
 [`src/vendored/README.md`](src/vendored/README.md) 的 patch 表里。
