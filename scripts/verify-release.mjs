@@ -195,10 +195,23 @@ console.log('=== 7. pnpm 豁免表与 lockfile 的 dsh 集合一致 ===')
   const versionOf = entry => entry.slice(nameOf(entry).length + 1)
 
   const exemptByName = new Map(exempt.map(e => [nameOf(e), versionOf(e)]))
+  // Two views of the lockfile, because the two questions differ.
+  //
+  // `inLock` is the `@deepseek-ai/dsh-*` set: it is what the coverage assertions below compare
+  // against, since those are the packages the lockstep prerelease pins.
+  //
+  // `inLockAny` adds the non-DSH `@deepseek-ai/*` packages. `minimumReleaseAgeExclude` legitimately
+  // carries some of them — DSH 0.2.1-rc.1 requires `cordis ~4.0.5`, and pnpm appends packages whose
+  // release is too fresh for the age gate. Those entries used to be invisible here, so the
+  // "no entry absent from the lockfile" check called every one of them stale.
   const inLock = new Map()
   for (const m of lockfile.matchAll(/^ {2}(@deepseek-ai\/dsh-[a-z0-9-]+):/gm)) inLock.set(m[1], null)
   for (const m of lockfile.matchAll(/'(@deepseek-ai\/dsh-[a-z0-9-]+)@([^']+)'/g)) {
     if (!inLock.has(m[1])) inLock.set(m[1], m[2])
+  }
+  const inLockAny = new Map(inLock)
+  for (const m of lockfile.matchAll(/^ {2}'?(@deepseek-ai\/[a-z0-9-]+)@([0-9][^:'()]*?)'?:\s*$/gm)) {
+    inLockAny.set(m[1], m[2])
   }
 
   const declared = Object.keys(pkg.devDependencies ?? {}).filter(n => n.startsWith('@deepseek-ai/dsh-'))
@@ -211,13 +224,13 @@ console.log('=== 7. pnpm 豁免表与 lockfile 的 dsh 集合一致 ===')
     [...inLock.keys()].every(n => exemptByName.has(n)),
     JSON.stringify([...inLock.keys()].filter(n => !exemptByName.has(n)).sort()))
   check('pnpm 豁免表没有 lockfile 中不存在的 dsh 条目',
-    [...exemptByName.keys()].every(n => inLock.has(n)),
-    JSON.stringify([...exemptByName.keys()].filter(n => !inLock.has(n)).sort()))
+    [...exemptByName.keys()].every(n => inLockAny.has(n)),
+    JSON.stringify([...exemptByName.keys()].filter(n => !inLockAny.has(n)).sort()))
   // The version is the part that breaks: an exempt entry for a version `pnpm install` no longer
   // resolves protects nothing, and the failure surfaces as an unrelated release-age error.
   const versionMismatch = [...exemptByName.entries()]
-    .filter(([name, version]) => inLock.get(name) !== null && inLock.get(name) !== version)
-    .map(([name, version]) => `${name}: exempt=${version} lockfile=${inLock.get(name)}`)
+    .filter(([name, version]) => inLockAny.get(name) !== null && inLockAny.get(name) !== version)
+    .map(([name, version]) => `${name}: exempt=${version} lockfile=${inLockAny.get(name)}`)
   check('pnpm 豁免版本与 lockfile 一致', versionMismatch.length === 0,
     JSON.stringify(versionMismatch.slice(0, 5)))
   // A duplicate is invisible in review and usually means one entry replaced another.

@@ -108,8 +108,8 @@ See [`DESIGN.md` §26](DESIGN.md) (Chinese). The built-in spec is
 
 ## Install
 
-Requires DSH **0.2.0-rc.2**. The plugin runs on the 0.2.0 shell with vendored source taken from
-**0.2.0-rc.2** (the upstream sync process is L4.5 in [`DESIGN.md` §5](DESIGN.md), Chinese).
+Requires DSH **0.2.1-rc.1**. The plugin runs on the 0.2.1 shell with vendored source taken from
+**0.2.1-rc.1** (the upstream sync process is L4.5 in [`DESIGN.md` §5](DESIGN.md), Chinese).
 
 ```bash
 dsh plugin add dsh-project-groups
@@ -168,7 +168,7 @@ official bundle, read out of the installed `app.asar`.
 pnpm install
 pnpm typecheck        # tsc --noEmit over src (including the vendored tree)
 pnpm build            # tsdown -> lib/index.js + lib/client.js
-pnpm check            # typecheck + build + 13 verification steps + probes (851 assertions)
+pnpm check            # typecheck + build + 13 verification steps + probes (845 assertions)
 ```
 
 > **⚠️ When developing locally (`dsh plugin add .` / a `link:` install), a change under `src/`
@@ -197,7 +197,7 @@ Source layout:
 | `CHANGELOG.md` | What changed in each release, as users see it |
 | `DESIGN.md` | Architecture, verified harness facts, the layer plan and the decision record (Chinese) |
 
-**`pnpm check` runs all 13 verification steps and the probes (851 assertions).**
+**`pnpm check` runs all 13 verification steps and the probes (845 assertions).**
 `pnpm probe:doc-spec` (131 browser end-to-end assertions) additionally needs a **real DSH and a free
 port**, so it is not on the default chain — run it by hand when touching the injection or the settings
 surface.
@@ -249,7 +249,7 @@ check and `verify:release` itself, and `validate.yml` runs every remaining scrip
 `src/vendored/` **started** as a byte-identical copy of upstream
 `packages/client/ui-workspace/src/` at `dsh-v0.1.7-rc.2`, but is **no longer byte-identical**:
 project grouping needed a grouping seam, and there are now **75 structural patches across 12 files**.
-The current source version is **0.2.0-rc.2**.
+The current source version is **0.2.1-rc.1**. The tree carries **107 patch hunks across 10 files**, plus one file upstream does not have.
 
 Every one satisfies the same invariant — **omitted means upstream behaviour** — and all are listed
 in the patch table in [`src/vendored/README.md`](src/vendored/README.md). **That table is the only

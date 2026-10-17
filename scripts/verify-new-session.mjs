@@ -102,11 +102,18 @@ function bench({ items = [], sessions = {}, initializeDefault } = {}) {
   const uiWorkspace = new UiWorkspaceService(
     ctx, directoryPicker, workspaces, sessionsController, view, notify,
   )
-  // `connectWorkspace` resolves the row itself; record it by wrapping.
-  const originalConnect = uiWorkspace.connectWorkspace.bind(uiWorkspace)
-  uiWorkspace.connectWorkspace = async (workspaceId) => {
-    recording.connect.push(workspaceId)
-    return originalConnect(workspaceId)
+  // Which Workspace the flow targeted, observed at the one place every path
+  // reaches: `sessions.create({ workspaceId })`.
+  //
+  // This used to wrap `uiWorkspace.connectWorkspace`. Upstream 0.2.1 split the
+  // connection into a public `connectWorkspace` and a private `connectBlank`, and
+  // `openWorkspace` now calls the **private** one directly — so wrapping the
+  // public method recorded nothing and four assertions silently read `(none)`.
+  // Recording at creation is independent of that internal route.
+  const originalCreate = sessionsController.create
+  sessionsController.create = async (opts) => {
+    recording.connect.push(opts.workspaceId)
+    return originalCreate(opts)
   }
   // The constructor also starts the SHIPPED startup restore (`watchNavigation`
   // -> `reconcile` -> `restoreSelection`), which may itself resolve the default

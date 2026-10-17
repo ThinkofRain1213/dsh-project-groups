@@ -4,6 +4,39 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.2] — 2026-10-17
+
+**跟进 DSH 0.2.1-rc.1**。0.3.1 钉死了 DSH 0.2.0-rc.2 的 peer 版本，DSH 一升级，
+插件在启动兼容性检查处就被判定不兼容、拒绝加载——插件页会显示「与 DSH 0.2.1-rc.1 不兼容」。
+本版把整棵 vendored 源码与全部依赖同步到 0.2.1-rc.1。
+
+### 修复
+
+- **插件重新可以加载**：`peerDependencies` 中三个 `@deepseek-ai/dsh-*` 由 `0.2.0-rc.2` 改为
+  `0.2.1-rc.1`，`@deepseek-ai/dsh-api-remote-access` 补入依赖，`cordis` 由 `4.0.1` 升到 `4.0.5`
+  （0.2.1 的一整套包 peer 在 `~4.0.5`），`zod` 由 `^4.4.3` 改为**精确** `4.4.3`
+  ——DSH 自己的包就是不带宽度的精确值，写 `^` 会解析到 4.6.5 并让领域 schema 变成类型错误。
+
+### 变更
+
+- **`src/vendored/` 重新同步到 0.2.1-rc.1**：上游这一版改了 16 个文件（+617/−217），
+  其中 7 个是本目录 patch 过的。三方合并产生 23 处冲突，逐一解决后 patch 足迹为
+  **10 个文件 / 107 个 hunk**（上一版为 75 条）。新增上游的 4 个文件
+  （`contract/toast.ts`、`toast/Toast.tsx`、`toast/register.ts`、`session-actions/SessionId.tsx`）。
+- **跟随上游把「新建会话」的第二个参数做成共存**：上游用它传草稿内容与 Agent 预设，
+  本插件原本用它传「新会话落到哪个项目」。现在签名是
+  `startSession(工作区?, beforeOpen?, options?)`，两者由同一个回调组合，互不覆盖。
+- **跟随上游的会话行「水位线」模型**：上游以 `watermarkRows` / `SESSION_WATERMARK_BASE`
+  取代了原来的折叠条数上限，项目分组视图（含跨组拖拽的可见行计算）随之改用新模型。
+- **通知（toast）改走上游新的 keyed 插槽架构**：上游把每一条提示拆成
+  `workspace.toast` 的具名注册项，本插件只保留自己的「底层工作区缺失」对话框
+  ——它是在提问而不是在播报，不适合塞进提示条。
+
+### 兼容性
+
+- **只支持 DSH 0.2.1-rc.1**。0.2.0-rc.2 及更早的宿主会被启动检查拒绝（这是 DSH 的设计，
+  不是插件的判断）。升级插件前请先确认 DSH 版本。
+
 ## [0.3.1] — 2026-10-14
 
 一次**质量与安全修整**，没有新功能：外部工具对 0.3.0 的树跑出 641 条发现，全部核对完毕
@@ -203,6 +236,7 @@
 - 新会话落点统一为「底层工作区」；
 - 搜索结果行显示所属**项目**。
 
+[0.3.2]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.1.0...v0.2.0

@@ -10,9 +10,58 @@ official UI 1:1.
 |---|---|
 | Upstream | `deepseek-ai/deepseek-harness` |
 | Path | `packages/client/ui-workspace/src/` |
-| Version | **0.2.0-rc.2** |
-| Commit | `639ed01539` (`dsh-v0.2.0-rc.2`) |
-| Re-synced | 2026-09-30 (from `477b4f420` / `dsh-v0.1.7-rc.2`, copied 2026-09-26) |
+| Version | **0.2.1-rc.1** |
+| Commit | `1600d8a1e1` (`dsh-v0.2.1-rc.1`) |
+| Re-synced | 2026-10-17 (from `639ed01539` / `dsh-v0.2.0-rc.2`, which was itself re-synced 2026-09-30 from `477b4f420` / `dsh-v0.1.7-rc.2`) |
+| Patch footprint | **10 files / 107 hunks / +4011 −194** against the upstream tag, plus one file upstream does not have (`client/session-actions/BaseWorkspaceMissing.tsx`) |
+
+### How the 0.2.0 → 0.2.1 re-sync was done
+
+DSH 0.2.1-rc.1 is a **large** release: `ui-workspace/src` changed 16 files,
++617 −217, and seven of them are files this tree patches. The re-sync used the
+same three-way merge as the previous one, with `git merge-file`:
+
+```
+base   = upstream 0.2.0-rc.2   (git archive of the tag this tree was vendored from)
+ours   = this tree             (0.2.0 + our patches)
+theirs = upstream 0.2.1-rc.1   (git archive of the target tag)
+```
+
+The merge produced **23 conflicts across five files** — `rows/WorkspaceBrowser.tsx`
+(10), `client/index.ts` (5), `client/navigation.ts` (4), `contract/slots.ts` (2),
+`client/shortcuts.ts` (2) — while `tree.ts`, `rows/Rows.tsx`, `client/locales.ts`
+and `rows/AnimatedRows.tsx` merged cleanly. Three of the conflicts were **semantic**
+rather than textual, and each was resolved by letting the two designs coexist:
+
+1. **`startSession`'s second parameter.** Upstream replaced "no second parameter" with
+   `options: StartSessionOptions` (draft text, Agent preset). This plugin had already
+   claimed the slot for `beforeOpen` (a project row files the Session it just created).
+   Because upstream's own `openWorkspace` still keeps `beforeOpen` as *its* second
+   parameter, both survive: `startSession(workspaceId?, beforeOpen?, options?)`, and the
+   two compose inside one callback that `openWorkspace` runs.
+
+2. **`installWorkspaceShortcuts`'s fifth parameter.** Upstream added
+   `reportForkFailure`; this plugin had added `projectModel`. They answer different
+   questions, so the function now takes both.
+
+3. **`RowActionToast`.** Upstream rewrote it entirely, moving every notice into a new
+   keyed `workspace.toast` slot with a shared Factory (`contract/toast.ts`,
+   `toast/Toast.tsx`, `toast/register.ts`). This tree had never patched that file, so
+   upstream's version is taken verbatim — but the plugin's own `BaseWorkspaceMissing`
+   dialog stays, because it asks a question rather than reporting a notice.
+
+Two upstream removals had to be followed through the whole tree: `dismissForkError`
+disappeared from `WorkspaceBrowserInjected` (the shortcut's fork failure now travels
+through the global toast), and `collapsedSessionRows` / `COLLAPSED_SESSION_LIMIT` /
+`sessionLimits` were replaced by the watermark model (`watermarkRows`,
+`SESSION_WATERMARK_BASE`, `SESSION_WATERMARK_AUTO_MAX`). Every reference in the
+patched regions moved with them.
+
+**Four files upstream added** and this tree now carries: `client/contract/toast.ts`,
+`client/toast/Toast.tsx`, `client/toast/register.ts`, `client/session-actions/SessionId.tsx`.
+The tree deliberately does **not** carry upstream's top-level `src/index.ts`: that file
+is the plugin's empty node half, and this plugin's own `src/index.ts` is the real Host
+half, so copying it would shadow ours.
 
 ### How the 0.1.7 → 0.2.0 re-sync was done
 
@@ -42,8 +91,16 @@ confirms the produced externals still match the installed official bundle name f
 > `.pnpm`, so two copies of `dsh-typert-protocol` resolved and `tsc` failed with a `RemoteFailure`
 > mismatch on two `DirectoryBrowseError` lines — code that is upstream's verbatim. Deleting
 > `node_modules` and reinstalling resolved it; the lockfile itself was already clean.
+>
+> The 0.2.1 re-sync hit the same failure with a different pair. `zod` was declared `^4.4.3`, which
+> resolves to the newest 4.x (`4.6.5`), while DSH 0.2.1's own packages pin it **exactly** to
+> `4.4.3` (`@deepseek-ai/dsh-typert-registry` declares `zod: "4.4.3"`, no caret). Two resolved
+> copies made every `defineDomain` / `domainTable` call a type error, with the mismatch reported
+> across `$ZodCheck` internals. The fix is the same shape as upstream's: declare `zod` **exactly**,
+> not with a caret. `cordis` had to move `4.0.1 → 4.0.5` in the same pass, because 0.2.1's packages
+> peer on `~4.0.5`.
 
-Copied files (23):
+Copied files (27 — upstream's 28 minus its top-level `index.ts`, which this plugin supplies itself):
 
 ```
 client/index.ts
@@ -53,23 +110,31 @@ client/stores.ts
 client/tree.ts
 client/pin-order.ts
 client/locales.ts
-client/WorkspacePicker.tsx
-client/WorkspacePicker.module.css
 client/contract/slots.ts
-client/rows/WorkspaceBrowser.tsx
-client/rows/WorkspaceBrowser.module.css
+client/contract/toast.ts
+client/toast/Toast.tsx
+client/toast/register.ts
 client/rows/Rows.tsx
 client/rows/Rows.module.css
 client/rows/AnimatedRows.tsx
 client/rows/AnimatedRows.module.css
+client/rows/WorkspaceBrowser.tsx
+client/rows/WorkspaceBrowser.module.css
 client/session-actions/ArchiveSession.tsx
 client/session-actions/ForkSession.tsx
 client/session-actions/PinSession.tsx
 client/session-actions/RenameSession.tsx
 client/session-actions/RowActionToast.tsx
+client/session-actions/SessionId.tsx
 client/session-actions/derived.ts
+client/WorkspacePicker.tsx
+client/WorkspacePicker.module.css
 css-modules.d.ts
 ```
+
+Plus one file upstream does not have — `client/session-actions/BaseWorkspaceMissing.tsx`, the
+dialog a click opens when the configured base Workspace is gone. It is this plugin's own, not a
+patch, so a re-sync copies nothing over it.
 
 ## Why vendored
 
@@ -107,6 +172,28 @@ Most adaptation still lives *outside* this directory:
 
 Kept minimal and listed here so a re-sync is mechanical. Each is marked in the
 source with a comment naming the seam.
+
+**Measured footprint after the 0.2.1-rc.1 re-sync** (diffed against the upstream tag, per file):
+
+| File | Hunks | Added | Removed |
+|---|---:|---:|---:|
+| `client/rows/WorkspaceBrowser.tsx` | 48 | 2097 | 135 |
+| `client/index.ts` | 12 | 426 | 7 |
+| `client/tree.ts` | 12 | 220 | 6 |
+| `client/rows/Rows.tsx` | 11 | 121 | 8 |
+| `client/navigation.ts` | 7 | 238 | 32 |
+| `client/locales.ts` | 4 | 119 | 0 |
+| `client/contract/slots.ts` | 4 | 314 | 4 |
+| `client/rows/AnimatedRows.tsx` | 4 | 39 | 1 |
+| `client/shortcuts.ts` | 3 | 11 | 1 |
+| `client/rows/WorkspaceBrowser.module.css` | 2 | 426 | 0 |
+| **Total** | **107** | **4011** | **194** |
+
+The count grew from 75 entries to 107 hunks not because features were added but because
+upstream **rewrote** the regions this tree patches: `WorkspaceBrowser.tsx` alone went from a
+handful of edits to 48 hunks once the watermark model and `HoverCardGroup` landed inside the
+same functions. The table below still describes **intent** — one row per seam — and is what a
+re-sync re-applies; the counts above are what a re-sync should reproduce.
 
 | File | Patch | Re-sync action |
 |---|---|---|
