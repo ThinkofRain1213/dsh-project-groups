@@ -5278,6 +5278,60 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
 
         **未动代码。**
 
+  - [ ] **Z-17 项目下会话默认展开数量可设置**（2026-10-17 用户提出）
+        **用户原话**：「项目下会话默认展开数量设置。」（配截图：项目行下显示 5 条会话，
+        第 6 条收在「展开其余 2 个会话」里）
+
+        **现状（已核实）**：那个 5 是**硬编码常量**，没有任何设置能改它。
+
+        | 常量 | 值 | 位置 |
+        |---|---|---|
+        | `SESSION_WATERMARK_BASE` | `5` | `src/vendored/client/rows/WorkspaceBrowser.tsx:67` |
+        | `SESSION_WATERMARK_AUTO_MAX` | `50` | 同上 `:69` |
+
+        `SESSION_WATERMARK_BASE` 在全文件被引用 **9 处**：`:123`（`raiseWatermarks` 的兜底）、
+        `:1508`（`baselines`）、`:1570`（`commitSessionDrag`）、`:1603`（跨组拖拽）、
+        `:1720`/`:1721`（`renderGroup` 的 `collapsed`/`visible`）、`:2036`（「展开其余」的步进）。
+
+        #### 为什么不是"把 5 换个数字"那么简单
+
+        上游 0.2.1 把旧的「折叠条数上限」(`COLLAPSED_SESSION_LIMIT`) 换成了**水位线模型**：
+        `watermark` 是每组的**动态下界**，会被 `requiredWatermark` 因"有会话在跑/有待处理交互/
+        有未读完成/是当前会话/是揭示目标"而**自动抬高**（上限 `SESSION_WATERMARK_AUTO_MAX = 50`），
+        用户的「展开更多」再在其上手動叠加。`SESSION_WATERMARK_BASE` 只是**起点**。
+
+        ⇒ 要把它变成设置，得先回答：用户改的是**起点**，还是**同时压制自动抬高**？
+        （后者会隐藏"有会话在跑"的行，与 **Z-12** 直接冲突。）
+
+        #### 要做的（按最小可行顺序）
+
+        1. **存储**：`src/spec.ts` 的 `globalRecord` 增加一个字段，**必须带 `.default(5)`** ——
+           与 `docSpecFileName` / `perProjectDocSpec` / `validateLinks` 同一模式。
+           ⚠️ 与 Z-6/Z-8/Z-13 同族的硬约束：`single` 布局在域打开时逐条校验，**缺字段会让整个
+           文件打不开、连累所有项目**；而 `single` **不允许 bump version**。所以默认值不是
+           可选的，是**必须**的。
+        2. **投影**：`baseline()` 里逐字段列出（该方法是 field-by-field 的，**不 spread 存储的
+           global**，见其注释），否则 Client 永远读不到这个开关。
+        3. **接线**：`src/client/index.ts` 的 `browserInjected` 增加 hook，
+           `rows/WorkspaceBrowser.tsx` 用它替代 `SESSION_WATERMARK_BASE` 的 9 处字面引用
+           （至少 `:1508`/`:1720`/`:1721`/`:2036` 四处是**行为相关**的，必须一起改）。
+        4. **UI**：`src/client/settings-card.tsx` 加一个数字输入（建议 1–20；上限要解释清楚，
+           不能让人以为填 100 就能全展开——`AUTO_MAX=50` 仍会独立生效）。
+        5. **断言**：`scripts/verify-projects.mjs` 或新增校验，钉住"改设置后渲染行数跟着变"；
+           另加一条**存量数据兼容**断言（老 global 缺该字段仍能读出来，取默认 5）。
+
+        #### 必须守住的
+
+        - **不影响自动抬高**：`requiredWatermark` 的注意力逻辑独立于 base；若设置值 >
+          `AUTO_MAX`，渲染实际以谁为准必须**明确定义并写进注释**，不能留给下一读者猜。
+        - **「展开其余 N 个会话」的步进**（`:2036`）用的是 `SESSION_WATERMARK_BASE`：
+          `visible.hiddenCount <= SESSION_WATERMARK_BASE ? Infinity : watermark + SESSION_WATERMARK_BASE`。
+          改成设置值后，步进会随设置变大 —— 这是**期望行为**还是副作用？需要显式决定。
+        - 该常量位于 `src/vendored/`，属**上游 patch 区域**。将来 re-sync 时这条会与上游的
+          水位线实现再次相遇，**patch 台账**（`src/vendored/README.md`）要加一行记录。
+
+        **未动代码。**
+
 ### 通用
 - [x] 构建配置（tsdown + `cordis.patch.yml`）
 - [ ] 单元测试（domain / RPC / 注入 / 重建逻辑）
