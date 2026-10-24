@@ -109,7 +109,7 @@ See [`DESIGN.md` §26](DESIGN.md) (Chinese). The built-in spec is
 ## Install
 
 Requires DSH **`>=0.2.1-rc.2 <0.2.2`** (the 0.2.1 line). The plugin runs on the 0.2.1 shell with
-vendored source taken from **0.2.1-rc.2** (the upstream sync process is L4.5 in
+vendored source taken from **0.2.1-rc.3** (the upstream sync process is L4.5 in
 [`DESIGN.md` §5](DESIGN.md), Chinese).
 
 That range is declared as `engines.dsh` — and once it is present, **DSH decides compatibility by that
@@ -278,7 +278,7 @@ check and `verify:release` itself, and `validate.yml` runs every remaining scrip
 `src/vendored/` **started** as a byte-identical copy of upstream
 `packages/client/ui-workspace/src/` at `dsh-v0.1.7-rc.2`, but is **no longer byte-identical**:
 project grouping needed a grouping seam, and there are now **75 structural patches across 12 files**.
-The current source version is **0.2.1-rc.2**. The tree carries **107 patch hunks across 10 files**, plus one file upstream does not have.
+The current source version is **0.2.1-rc.3**. The tree carries **107 semantic edits (200 diff hunks) across 10 files**, plus one file upstream does not have.
 
 Every one satisfies the same invariant — **omitted means upstream behaviour** — and all are listed
 in the patch table in [`src/vendored/README.md`](src/vendored/README.md). **That table is the only
