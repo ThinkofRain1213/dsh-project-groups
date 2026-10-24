@@ -117,9 +117,9 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.5",
-    "@deepseek-ai/dsh-storage": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-storage-domain": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-storage": ">=0.2.1-rc.2 <0.2.2",
+    "@deepseek-ai/dsh-storage-domain": ">=0.2.1-rc.2 <0.2.2",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.2.1-rc.2 <0.2.2",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -177,6 +177,7 @@
     "project-document"
   ],
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.1-rc.2 <0.2.2"
   }
 }

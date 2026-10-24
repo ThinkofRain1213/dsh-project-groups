@@ -90,8 +90,12 @@ DSH 官方的工作区是**目录所有权**记录：一个会话属于某工作
 
 ## 安装
 
-需要 DSH **0.2.1-rc.2**。插件跑在 0.2.1 的壳上，vendor 源码同样取自 **0.2.1-rc.2**
-（上游同步流程见 [`DESIGN.md` §5 的 L4.5](DESIGN.md)）。
+需要 DSH **`>=0.2.1-rc.2 <0.2.2`**（即 0.2.1 这一条线）。插件跑在 0.2.1 的壳上，
+vendor 源码同样取自 **0.2.1-rc.2**（上游同步流程见 [`DESIGN.md` §5 的 L4.5](DESIGN.md)）。
+
+这条区间由 `engines.dsh` 声明 —— 声明了它之后，**DSH 只按这个区间判定兼容性，
+`peerDependencies` 被完全忽略**（这是官方的既定规则，不是我们的选择）。
+区间上限刻意停在 `<0.2.2`：只有实际 re-sync 验证过的版本才配放行。
 
 ```bash
 dsh plugin add dsh-project-groups
@@ -146,7 +150,7 @@ bundle 的构建满足与上游相同的模块边界规则：
 pnpm install
 pnpm typecheck        # tsc --noEmit，覆盖 src（含 vendored 树）
 pnpm build            # tsdown -> lib/index.js + lib/client.js
-pnpm check            # typecheck + build + 13 项校验 + 探针（845 条断言）
+pnpm check            # typecheck + build + 13 项校验 + 探针（851 条断言）
 ```
 
 > **⚠️ 本地开发（`dsh plugin add .` / `link:` 安装）时，改完 `src/` 必须
@@ -168,14 +172,36 @@ pnpm check            # typecheck + build + 13 项校验 + 探针（845 条断�
 | `src/spec.ts` | 领域 schema：项目记录、全局设置、三个状态值 |
 | `src/client/index.ts` | 浏览器入口：注入分组、设置卡片、选择弹窗 |
 | `src/client/spec-picker.tsx` | 规范选择 / 上传 / 删除对话框 |
-| `src/vendored/` | 官方 client 源码副本 + **75 条登记的 patch**（见其 [README](src/vendored/README.md)） |
+| `src/vendored/` | 官方 client 源码副本 + **107 个 patch hunk、涉及 10 个文件**（见其 [README](src/vendored/README.md)） |
 | `scripts/` | 探针与校验；`DESIGN.md` 说明每个脚本证明了什么 |
+| `scripts/lib/boot-dsh.mjs` | 真实 DSH 探针的共同起点：profile 自举 + 首启引导层关闭 |
 | `CHANGELOG.md` | 每个版本对使用者可见的变化 |
 | `DESIGN.md` | 架构、已核实的 harness 事实、分层计划与决策记录 |
 
-**`pnpm check` 会跑全部 13 项校验与探针（845 条断言）。**
-另有 `pnpm probe:doc-spec`（131 条浏览器端到端断言）需要**真实 DSH 与可用端口**，
-故不在默认链上——改动注入或设置界面时应手动跑一次。
+**`pnpm check` 会跑全部 13 项校验与探针（851 条断言）。**
+另有 **52 个真实 DSH 探针**需要本机装有 DSH 与可用端口，故不在默认链上。
+它们现在可以真正跑起来了（此前**全部**跑不起来，见下）：
+
+```bash
+# 在仓库根目录执行。这三个参数依次是 Electron 可执行文件、app.asar、一次性的 DSH_HOME
+node scripts/probe-doc-spec.mjs \
+  "$LOCALAPPDATA/Programs/DeepSeek Harness/DeepSeek Harness.exe" \
+  "$LOCALAPPDATA/Programs/DeepSeek Harness/resources/app.asar" \
+  "$TEMP/pg-probe-doc-spec"
+```
+
+探针会**自己**把 `probe` 那个 `DSH_HOME` 准备好：先派生 profile（`--from-default-profile web`），
+再 `plugin add` 本仓库，最后启动。**每个探针用独立的 `DSH_HOME`**——多个探针共用一个 home
+会让项目累积，而其中一些断言的是精确项目数。
+
+> **为什么以前跑不起来。** 两个环境缺口叠在一起，都已实测复现、也都不是产品缺陷：
+> 1. `dsh plugin --profile <name> add` 建出的只是**用户覆盖层**（`cordis.patch.yml` +
+>    `package.json`），**没有 `cordis.yml`**。缺了它进程会正常存活、stdout/stderr 全空、
+>    **端口从不监听** ⇒ 探针 120 秒后报 `boot timeout`，且输出里没有任何线索指向真因。
+> 2. 隔离 profile 没有账号凭据，首启会弹出「开始使用 / 登录 DeepSeek 账号」引导，
+>    它是一层**拦截所有点击**的遮罩。而旧探针的关闭清单里没有「关闭」，只有别的弹窗的文案。
+>
+> 两件事现在都由 `scripts/lib/boot-dsh.mjs` 统一处理（见 [DESIGN.md](DESIGN.md) 第 28 章）。
 
 `verify:release` 专门守住发布相关的事实：版本号在三处一致、`locale` 描述与功能同步、
 两版 README 结构对等、`files` 会打包到新增文件、以及没有误提交的 `.tgz`。

@@ -108,8 +108,13 @@ See [`DESIGN.md` §26](DESIGN.md) (Chinese). The built-in spec is
 
 ## Install
 
-Requires DSH **0.2.1-rc.2**. The plugin runs on the 0.2.1 shell with vendored source taken from
-**0.2.1-rc.2** (the upstream sync process is L4.5 in [`DESIGN.md` §5](DESIGN.md), Chinese).
+Requires DSH **`>=0.2.1-rc.2 <0.2.2`** (the 0.2.1 line). The plugin runs on the 0.2.1 shell with
+vendored source taken from **0.2.1-rc.2** (the upstream sync process is L4.5 in
+[`DESIGN.md` §5](DESIGN.md), Chinese).
+
+That range is declared as `engines.dsh` — and once it is present, **DSH decides compatibility by that
+range alone and ignores `peerDependencies` entirely** (upstream's rule, not our choice). The upper
+bound deliberately stops at `<0.2.2`: only versions actually re-synced and verified are let through.
 
 ```bash
 dsh plugin add dsh-project-groups
@@ -168,7 +173,7 @@ official bundle, read out of the installed `app.asar`.
 pnpm install
 pnpm typecheck        # tsc --noEmit over src (including the vendored tree)
 pnpm build            # tsdown -> lib/index.js + lib/client.js
-pnpm check            # typecheck + build + 13 verification steps + probes (845 assertions)
+pnpm check            # typecheck + build + 13 verification steps + probes (851 assertions)
 ```
 
 > **⚠️ When developing locally (`dsh plugin add .` / a `link:` install), a change under `src/`
@@ -192,15 +197,39 @@ Source layout:
 | `src/spec.ts` | Domain schema: the project record, global settings, the three state values |
 | `src/client/index.ts` | Browser entry: the grouping injection, the settings card, the dialogs |
 | `src/client/spec-picker.tsx` | The spec choose / upload / delete dialog |
-| `src/vendored/` | Copy of the official client source + **75 registered patches** (see its [README](src/vendored/README.md)) |
+| `src/vendored/` | Copy of the official client source + **107 patch hunks across 10 files** (see its [README](src/vendored/README.md)) |
 | `scripts/` | Probes and verification; `DESIGN.md` explains what each proves |
+| `scripts/lib/boot-dsh.mjs` | Shared starting point for the real-DSH probes: profile bootstrap + first-run overlay dismissal |
 | `CHANGELOG.md` | What changed in each release, as users see it |
 | `DESIGN.md` | Architecture, verified harness facts, the layer plan and the decision record (Chinese) |
 
-**`pnpm check` runs all 13 verification steps and the probes (845 assertions).**
-`pnpm probe:doc-spec` (131 browser end-to-end assertions) additionally needs a **real DSH and a free
-port**, so it is not on the default chain — run it by hand when touching the injection or the settings
-surface.
+**`pnpm check` runs all 13 verification steps and the probes (851 assertions).**
+Another **52 real-DSH probes** need a locally installed DSH and a free port, so they are not on the
+default chain. They can actually run now (none of them could before — see below):
+
+```bash
+# Run from the repository root. Arguments: Electron executable, app.asar, a throwaway DSH_HOME
+node scripts/probe-doc-spec.mjs \
+  "$LOCALAPPDATA/Programs/DeepSeek Harness/DeepSeek Harness.exe" \
+  "$LOCALAPPDATA/Programs/DeepSeek Harness/resources/app.asar" \
+  "$TEMP/pg-probe-doc-spec"
+```
+
+Each probe prepares its own `DSH_HOME`: it derives the profile (`--from-default-profile web`), adds
+this repository to it, and only then boots. **Give every probe its own `DSH_HOME`** — probes that
+share one accumulate projects, and several of them assert an exact project count.
+
+> **Why they could not run before.** Two environment gaps stacked on top of each other, both
+> reproduced and measured, neither a product defect:
+> 1. `dsh plugin --profile <name> add` creates only the **user override layer** (`cordis.patch.yml` +
+>    `package.json`) and **no `cordis.yml`**. Without it the process stays alive, prints nothing to
+>    stdout/stderr, and **never listens** — so the probe reports `boot timeout` after 120 s with
+>    nothing in the output pointing at the cause.
+> 2. An isolated profile has no credentials, so the first run raises the "Get started / sign in"
+>    onboarding overlay, which **intercepts every click**. The old probes' dismiss list did not
+>    contain its button — only copy belonging to other modals.
+>
+> Both are now handled in one place, `scripts/lib/boot-dsh.mjs` (see chapter 28 of [DESIGN.md](DESIGN.md)).
 
 `verify:release` guards the facts a release turns on: the version agreeing in all three places, the
 `locale` descriptions matching what the plugin now does, the two READMEs staying structurally equal,

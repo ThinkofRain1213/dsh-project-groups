@@ -5169,7 +5169,8 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
 
         **未动代码。**
 
-  - [ ] **Z-14 与 DSH 的兼容检查放宽：改用 `engines.dsh` 区间**（2026-10-17 用户提出）
+  - [x] **Z-14 与 DSH 的兼容检查放宽：改用 `engines.dsh` 区间** ✅ **已实施（2026-10-17）**
+        （2026-10-17 用户提出；同日立项并完成）
         **来源**：0.3.2 发布前核对时发现，插件的三个 `@deepseek-ai/dsh-*` peer 是**精确固定**的
         （`0.2.1-rc.2`），因此只接受**这一个** DSH 版本。实测矩阵：
 
@@ -5219,7 +5220,50 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
         - 任务记录里要写清：`engines.dsh` 一旦存在，**`peerDependencies` 的 dsh 约束就完全失效**，
           这是「只由该范围决定」的直接后果，不是疏忽。
 
-        **未动代码。**（0.3.2 发布时按现状保留精确 peer，本项作为独立改动。）
+        **✅ 已实施（2026-10-17）。** 见下方「实施记录」。
+
+        #### 实施记录（2026-10-17）
+
+        **采纳的区间**：`engines.dsh = ">=0.2.1-rc.2 <0.2.2"`，三个 dsh peer **同步放宽成同一区间**
+        （保留而非删除：两条路径说同一件事才不会让人误读；且安装期 pnpm 的 peer 警告也不再指向精确版本）。
+
+        **上限为什么是 `<0.2.2` 而不是原文设想的 `<0.3.0`**：上游仓库实测**根本没有
+        `dsh-v0.2.1`（正式版）tag** —— 最新就是 `dsh-v0.2.1-rc.2`（2026-10-17）。
+        `<0.3.0` 会预先放行 `0.2.1` 与 `0.2.2` 这些**从未验证过、甚至尚不存在**的版本；
+        `<0.2.2` 只放行已验证的 0.2.1 线，将来真升级时必须是「重同步 + 改区间」两件事一起发生。
+
+        **核实手段（不是推断）**：
+
+        1. **官方真身实现**：从已安装的 `app.asar` 里切出 `dsh-app-boot` 的
+           `satisfies` / `unmetRequirements` 源码原样执行，对新清单逐版本求值。
+           结果与 `verify-release.mjs` 里重述的实现**完全一致**。
+        2. **反向对照**（证明断言不是空话）：四种破坏各自让**对应的**那条变红 ——
+           删掉 `engines.dsh`、区间改成 `*`、区间放宽到 `<0.3.0`、peer 与 engines 不一致。
+        3. **实机验证**：隔离 profile 装本仓库 → `--dump-config` 显示插件行正常挂载 →
+           实际启动**第 1 秒**监听、stdout **无 `incompatible`、无 `skippedBundles`**。
+
+        **求值矩阵（app-boot 真身，新清单）**：
+
+        | runtime | 结果 |
+        |---|---|
+        | `0.2.0-rc.2` / `0.2.1-alpha.5` / `0.2.1-rc.1` | ❌ REJECT |
+        | **`0.2.1-rc.2`**（当前运行时） | ✅ LOAD |
+        | `0.2.1`（正式版，上游尚无此 tag） | ✅ LOAD ← **放宽的目标** |
+        | `0.2.2` / `0.3.0` | ❌ REJECT |
+
+        **新增断言**：`scripts/verify-release.mjs` 第 8 章 8 条 —— 声明存在、不是无条件放行、
+        下限覆盖当前运行时、三条必须拒绝的边界、peer 已声明、peer 与 engines 同区间。
+        门禁 **851 → 859 条**。
+
+        **实施中发现并修掉的一个校验脚本缺陷**：断言原本直接写
+        `check(..., satisfies(...))`，于是无法解析的区间（`*`、`^0.2.1`…）会让**整个脚本抛出**，
+        报告里没有任何 FAIL 行 —— 反向对照实测到：改成 `*` 后，期望变红的三条一条都没出现，
+        脚本自己崩了。现折成 `expectCompat`，把"看不懂区间"变成一条**可读的 FAIL**。
+        这与 0.3.1 那轮「检查必须能失败」是同一类：**一个只会 PASS 的断言比没有断言更糟。**
+
+        **⚠️ 必须记住的**：`engines.dsh` 一旦存在，`peerDependencies` 的 dsh 约束在兼容性检查里
+        **完全失效**（官方规则）。所以区间上限就是唯一的版本闸门 —— **每次 re-sync 后重新确认它**。
+
 
   - [ ] **Z-15 工作区内修改模式的兼容：多目录沙盒**（2026-10-17 用户提出）
         **用户原话**：「工作区内修改模式兼容——实现多目录沙盒。」
@@ -6533,6 +6577,11 @@ Unsupported Web shortcut: session.new
 >
 > **待修**：探针需要预建 profile 的步骤应写进使用说明（或由探针自己在启动前派生）。
 > 这是阶段 8.2/8.3 的前置条件，不是产品缺陷。
+>
+> **✅ 已修（2026-10-17）**：由 `scripts/lib/boot-dsh.mjs` 的 `ensureProbeProfile` 统一完成，
+> 45 个真实 DSH 探针已接入，并**实跑验证**通过。过程中还发现**第二层**缺口
+> （首启的登录引导遮罩，此前从未被记录），以及两个只在探针能跑之后才暴露的探针缺陷。
+> 全部记在 **§28**。
 
 实际**执行**过的：`probe-approach-b`、`probe-slots`、`probe-service`、`probe-grouping-seam`、
 `probe-inject-wait`、`probe-contribution`、`probe-retention`、`probe-service-timing`、
@@ -6549,3 +6598,95 @@ Unsupported Web shortcut: session.new
 - `grouping.ts` 13 个座位在旧代码上 FAIL；`tree.ts` 6 个；`isValidLink` 3 个（大写 scheme）；
   purity gate 拒绝 `TYPE_ONLY` 值导入；`verify-projects` 的 pin 顺序 3 个；
   `verify-locales` 的死键检查能抓出伪造的未使用键；asar 6 个构造损坏输入各自给出具名错误。
+
+---
+
+## 28. 探针环境缺口：两层，都已修（2026-10-17）
+
+§27.7 记了一条「52 / 59 个 probe 需要 live DSH，本环境未能执行」，并把根因写成
+「profile 缺 `cordis.yml`」，标为**待修**。本次把它修掉了，过程中发现缺口**不止一层**,
+而且**第二层从未被记录过**。
+
+### 28.1 缺口一：profile 缺 `cordis.yml`（§27.7 记录的那条）
+
+`dsh plugin --profile pg add <pkg>` 建的是**用户覆盖层**：`cordis.patch.yml` + `package.json`
+(+ `pnpm-workspace.yaml`)。它**不生成 `cordis.yml`**，而 `cordis.yml` 是 profile 的根入口。
+
+实测（同一个隔离 `DSH_HOME`，探针的 spawn 原样）：
+
+| profile 来源 | 启动后拿到 URL |
+|---|---|
+| `plugin --profile pg add …`（缺 `cordis.yml`） | 25 秒内**从未**输出，进程存活、stdout/stderr 全空 |
+| 先 `--from-default-profile web` 派生、再 `plugin add` | **第 2 秒** |
+
+⇒ 顺序是固定的：**先派生，后装插件**。反过来只会得到一个没有根入口的覆盖层。
+
+### 28.2 缺口二：首启的登录引导遮住整个侧栏（**此前未记录**）
+
+即使缺口一修好，探针仍会在第一次**非 `force`** 点击处超时。原因：隔离 profile 没有账号凭据，
+首启会弹「开始使用 / 登录 DeepSeek 账号」，它是一层**拦截所有点击**的全局遮罩。
+
+从已安装的 `app.asar` 反查（`dsh-client-ui-settings-account/lib/client.js`）：
+
+```
+渲染条件   account.loginVisible && !account.onboarding      → SignInDialog
+关闭按钮   aria-label = t("close")  ⇒ 「关闭」/「Close」
+可见性     DesktopOnboardingController: visible = !done && signedIn && !unavailable
+done       Host settings 文档 ui-settings-account 的 step === 'done'
+```
+
+**两次决定性实测**：
+
+1. **关闭不写任何持久状态。** 关闭前后 `localStorage` **逐字节相同**（都是 772 字符），
+   重载、重启都会重新弹出 ⇒ **每个页面加载都要关一次**，只关一次不够。
+2. **只有「关闭」能关掉它。** 探针原有的六个标签（稍后配置 / 继续 / Continue / Later /
+   Got it / 知道了）是**别的**弹窗的文案，对这个引导**一个都不匹配**。
+
+### 28.3 修法：一处实现，45 个探针共用
+
+新增 **`scripts/lib/boot-dsh.mjs`**，导出三件事：
+
+| 导出 | 作用 |
+|---|---|
+| `ensureProbeProfile({ exe, asarRoot, dshHome, profile, template })` | 缺 `cordis.yml` 就派生，然后把**本仓库**装进去。幂等；`official` profile 传 `installPlugin: false` |
+| `dismissModals(page)` | 用含「关闭」的标签表关弹窗，返回 `{ masked, clicked }` |
+| `settleOnboarding(page)` | 等遮罩消失再关，超时不抛错而是返回状态 |
+
+**为什么收敛而不是给 46 份副本各加一个标签**：那正是这次的成因——同一套关闭逻辑被复制了
+二十多份，每份的标签表都缺同一条，而没有任何一处是"权威的"。收敛后规则只有一个家。
+
+**顺带修掉的两个探针缺陷**（都只在探针**能跑之后**才暴露，因此此前从未被发现）：
+
+| 位置 | 缺陷 | 性质 |
+|---|---|---|
+| `probe-cross-group.mjs` 的「Host filed it under 甲」 | 把**项目 id** 传给了按**会话 id** 查归属的函数 ⇒ 右侧永远 `undefined`，断言**只在拖拽失败时**通过 | 断言反向失效 |
+| `probe-doc-spec.mjs` 的 3c / 3e-b2 / 3e-f1 | 仍在查 `[role="option"][aria-selected]`，而选择器早已改成 `<button aria-pressed>`（`src/client/spec-picker.tsx` 有明文注释） | 选择器过期；3e-f1 恒假、3e-b2 **恒真** |
+
+### 28.4 验证（实跑，不是推断）
+
+每个探针用**独立的空 `DSH_HOME`**，profile 由探针自己从零自举：
+
+| 探针 | 结果 |
+|---|---|
+| `probe-order-mode` | 8 PASS / 0 FAIL |
+| `probe-settings-card` | 35 PASS / 0 FAIL |
+| `probe-project-links` | 99 PASS / 0 FAIL |
+| `probe-cross-group` | **20 PASS / 0 FAIL**（修掉反向失效断言后） |
+| `probe-ungrouped-plus` | 5 PASS / 0 FAIL |
+| `probe-row-key-motion` | 21 PASS / 0 FAIL |
+| `probe-project-reorder` | 6 PASS / 0 FAIL |
+| `probe-doc-spec` | **131 PASS / 0 FAIL** —— 与 README 记载的「131 条浏览器端到端断言」**首次相符** |
+
+`pnpm check` 仍全绿（851 条断言，0 失败）。
+
+### 28.5 这次踩到的坑（写下来以免重犯）
+
+**批量迁移的"假成功"**：用正则给 45 个文件插入 `ensureProbeProfile({ …, profile: 'pg' })`，
+结果变量名与字符串字面量被混淆，写成 `profile: pg`（未定义标识符）与 `profile: '--no-open'`
+（把 spawn 的相邻参数当成了 profile 名）。**`node --check` 全部通过，`pnpm check` 也全绿**——
+因为语法是对的，而这类错误只在**运行时**炸。实际是抽检第一个探针时才发现。
+
+⇒ 教训：批量摄入的代码必须做**语义接线校验**（每个参数名能在本文件里解析到声明），
+只做语法检查等于没检查。另外三处也更隐蔽：`child = spawn(`（无 `const`）、
+`server = await boot('pg')`（赋值形态）、以及 `function boot()` 无参而 profile 写死在 spawn 里——
+三种形态各漏掉一批文件，而预演输出当时看起来都是"已处理"。

@@ -249,5 +249,96 @@ console.log('=== 7. pnpm 豁免表与 lockfile 的 dsh 集合一致 ===')
 }
 
 console.log('')
+console.log('=== 8. 与 DSH 的兼容声明（Z-14） ===')
+{
+  /**
+   * DSH 的兼容性规则（真身：`@deepseek-ai/dsh-app-boot` 的 `unmetRequirements`）。
+   *
+   * 声明了 `engines.dsh` 时**只由该区间判定**，`peerDependencies` 被完全忽略；没有声明时才
+   * 逐个校验 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 的 peer。判定用
+   * `{ includePrerelease: true }`，所以预发布版本参与匹配。
+   *
+   * 这一段**重述**规则而**不导入**它：脚本在 CI 上跑，那里没有 DSH 的 `app.asar` 可读，
+   * 而 `verify:bundle` 已经是唯一依赖本机安装的检查（发布前在本机跑）。
+   * 重述的代价是可能与上游漂移，所以下面既钉住"我们自己的区间取什么"，也用一组
+   * 逐版本断言把语义本身钉住 —— 一旦上游改了规则，那组断言的期望值会与它对不上。
+   */
+  const satisfies = (runtime, range) => {
+    // 只支持本仓库实际会写的区间形状；遇到别的就抛，而不是猜一个答案。
+    const m = /^>=(\d+)\.(\d+)\.(\d+)-rc\.(\d+) <(\d+)\.(\d+)\.(\d+)$/.exec(range.trim())
+    if (m === null) throw new Error(`verify-release 不认识这个区间形状：${range}`)
+    const [, ma, mi, pa, pre, Ma, Mi, Pa] = m.map(Number)
+    const p = /^(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$/.exec(runtime)
+    if (p === null) throw new Error(`无法解析运行时版本：${runtime}`)
+    const [, rMa, rMi, rPa] = p.map(Number)
+    const rPre = p[4] === undefined ? null : Number(p[4])
+    const lower = [ma, mi, pa, pre]
+    const upper = [Ma, Mi, Pa]
+    const cmp = (a, b) => {
+      for (let i = 0; i < 3; i += 1) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1
+      // 同主版本：有预发布号的小于无预发布号的（`0.2.1-rc.2` < `0.2.1`）。
+      const ap = a[3], bp = b[3]
+      if (ap === null && bp === null) return 0
+      if (ap === null) return 1
+      if (bp === null) return -1
+      return ap === bp ? 0 : ap < bp ? -1 : 1
+    }
+    return cmp([rMa, rMi, rPa, rPre], lower) >= 0 && cmp([rMa, rMi, rPa, rPre], [...upper, null]) < 0
+  }
+
+  const range = pkg.engines?.dsh
+  const PEERS = ['@deepseek-ai/dsh-storage', '@deepseek-ai/dsh-storage-domain',
+    '@deepseek-ai/dsh-typert-protocol']
+
+  /**
+   * 把 {@link satisfies} 的"看不懂就抛"折成一条断言。
+   *
+   * 直接 `check(..., satisfies(...))` 会让一个无法解析的区间（`*`、`^0.2.1`、空串…）
+   * 把整个脚本抛出去 —— 于是报告里**没有**任何 FAIL 行，只有一条 `Error: 不认识这个区间形状`。
+   * 反向对照实测到过这一点：把区间改成 `*` 后，期望的三条变红一条都没出现，脚本自己崩了。
+   * 一个"读起来像脚本坏了"的门禁，与"说了哪条不满足"的门禁，价值差一个量级。
+   * @param label - 断言名。
+   * @param runtime - 待求值的运行时版本。
+   * @param want - 期望的判定结果。
+   * @returns 判定是否与期望一致（无法解析时为 false）。
+   */
+  const expectCompat = (label, runtime, want) => {
+    let actual
+    let parseError
+    try {
+      actual = satisfies(runtime, range)
+    } catch (error) {
+      parseError = error.message
+    }
+    const ok = parseError === undefined && actual === want
+    check(label, ok, parseError === undefined ? `${runtime} → ${actual ? 'LOAD' : 'REJECT'}` : parseError)
+    return ok
+  }
+
+  check('声明了 engines.dsh', typeof range === 'string' && range.trim() !== '', String(range))
+  if (typeof range === 'string' && range.trim() !== '') {
+    // 无条件放行 **不** 等于兼容：`*` 会让一切版本通过，把这条断言变成永远成立。
+    // 所以先否决它，再谈"覆盖了什么"。
+    check('区间不是无条件放行（`*` 之类）', !/^\s*\*?\s*$/.test(range), range)
+    expectCompat('区间下限覆盖 DSH 0.2.1-rc.2（当前唯一验证过的运行时）', '0.2.1-rc.2', true)
+
+    // 矩阵：三条必须拒绝的边界。挂在断言里而不是注释里，因为区间被"顺手放宽一档"时，
+    // 注释不会红，这三条会。
+    expectCompat('拒绝 0.2.1-rc.1（未验证的旧版本）', '0.2.1-rc.1', false)
+    expectCompat('拒绝 0.2.2（未验证的新版本，re-sync 前不该放行）', '0.2.2', false)
+    expectCompat('拒绝 0.3.0（下一个次版本）', '0.3.0', false)
+  }
+
+  // 声明了 `engines.dsh` 后 peer 在兼容性检查里被忽略 —— 它们只剩安装期警告的作用。
+  // 两条路径说同一件事才不会让人误读，所以要求 peer 与本区间一致。
+  const peerRanges = PEERS.map(name => [name, pkg.peerDependencies?.[name]])
+  check('三个 dsh peer 都声明了',
+    peerRanges.every(([, r]) => typeof r === 'string'), JSON.stringify(Object.fromEntries(peerRanges)))
+  check('dsh peer 与 engines.dsh 说的是同一个区间',
+    range === undefined || peerRanges.every(([, r]) => r === range),
+    JSON.stringify({ engines: range, peers: Object.fromEntries(peerRanges) }))
+}
+
+console.log('')
 console.log(failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`)
 process.exit(failures.length === 0 ? 0 : 1)
