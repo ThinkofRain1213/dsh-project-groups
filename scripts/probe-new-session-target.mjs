@@ -109,6 +109,50 @@ const setTarget = async (target) => {
   return answer
 }
 
+/**
+ * Turn the "creating a project opens a Session" behaviour off or on.
+ *
+ * The probe needs it off for one phase. That setting defaults to **true**
+ * (`src/spec.ts`, `createOpensSession`), so a fresh probe HOME — which has no stored
+ * value — opens a Session whenever a project is created, and files that Session into
+ * the new project. The current Session then belongs to the project the phase just
+ * created, both `current` and `recent` resolve to it, and the assertion that the two
+ * differ fails on a correct build.
+ *
+ * Asserted through its resolved value rather than fire-and-forget, for the same reason
+ * {@link setTarget} asserts its write: a rejected call would leave the default in force
+ * and every later assertion in the phase would be measuring the old behaviour.
+ * @param value - whether creating a project should open a Session.
+ * @returns the RPC answer, including the stored value.
+ */
+const setCreateOpensSession = async (value) => {
+  const answer = await page.evaluate(async ({ base, token: key, want }) => {
+    const rpcId = `probe-${Math.random().toString(36).slice(2)}`
+    const response = await fetch(`${base}/api/projectGroups/setCreateOpensSession`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-dsh-token': key },
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId,
+        method: 'projectGroups/setCreateOpensSession',
+        payload: { args: { request: { value: want } } },
+      }),
+    })
+    const text = await response.text()
+    let parsed = null
+    try { parsed = JSON.parse(text) } catch { /* reported through status */ }
+    return {
+      status: response.status,
+      ok: parsed?.result?.ok,
+      value: parsed?.result?.value?.value,
+      error: parsed?.result?.error,
+      body: text.slice(0, 200),
+    }
+  }, { base: origin, token, want: value })
+  await page.waitForTimeout(1500)
+  return answer
+}
+
 const sessionsUnder = (headingText) => page.evaluate((text) => {
   const section = [...document.querySelectorAll('[data-row-key^="workspace:"]')]
     .find(node => (node.textContent ?? '').includes(text))
@@ -278,7 +322,17 @@ try {
   // an empty project created *after* the current Session's last activity wins
   // `recent` (an empty project falls back to its own `createdAt`, which is the
   // Host's rule) while `current` still names 甲.
+  //
+  // ⚠ The project created here must NOT open a Session. `createOpensSession` defaults
+  // to true, and a project that opens one files that Session into itself — so the
+  // "current Session" this whole phase measures would silently become 丙's, both
+  // answers below would be 丙, and the assertion that they differ would fail on a
+  // correct build. Switching it off keeps the premise intact; a fresh probe HOME has
+  // no stored value, so the default is what would otherwise apply.
   const gamma = `丙${stamp}`
+  const opensSession = await setCreateOpensSession(false)
+  check('premise: creating a project no longer opens a Session',
+    opensSession.value === false, JSON.stringify(opensSession))
   await makeProject(gamma)
   await dismiss()
 
