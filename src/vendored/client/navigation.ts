@@ -70,17 +70,18 @@ export interface UiWorkspace {
     options?: Pick<Parameters<ISessions['fork']>[0], 'allowMigration'>,
   ): Promise<SessionId>
   /**
-   * Resolve the Session for a new conversation in a Workspace: the Host reuses
-   * the first listed blank member while it is reusable and otherwise creates one,
-   * under the requested preset or the Host default.
+   * Resolve the Session for a new conversation in a Workspace: navigation names the first
+   * reusable blank member, skipping blanks that list a preset other than a requested one, and
+   * the Host reuses it under the requested preset or its default, or creates another Session.
    * @param workspaceId - target Workspace.
    * @param options - choices for the created or reused Session.
    * @returns a Session already addressable through the Session Controller.
    */
   connectWorkspace(workspaceId: WorkspaceId, options?: Pick<StartSessionOptions, 'agentPreset'>): Promise<SessionId>
   /**
-   * Create a fresh Session, or reuse a blank when preparing an explicit draft. A creation the Host
-   * refuses is shown through the Workspace notice and leaves the selection as it was.
+   * Open the Workspace blank `connectWorkspace` resolves, so New Session returns to that blank's
+   * unsent draft. A creation the Host refuses is shown through the Workspace notice and leaves the
+   * selection as it was.
    * @param workspaceId - explicit target; absent resolves this plugin's
    * 底层工作区 policy, then falls back to the Host's own resolution.
    * @param beforeOpen - optional synchronous preparation for the Session that
@@ -88,8 +89,8 @@ export interface UiWorkspace {
    * a flow superseded mid-navigation never opens its Session, so this does not
    * run — which is the correct outcome for an abandoned click, since nothing was
    * opened to prepare. Absent, the flow is the fire-and-forget it always was.
-   * @param options - initial content and the reused blank's preset; existing text or attachments
-   * are preserved unless clearPreviousDraft is true.
+   * @param options - initial content, the blank's preset, and `whenDraftExists`, which decides
+   * whether existing text or attachments are kept, replaced, or followed by the prompt.
    */
   startSession(
     workspaceId?: WorkspaceId,
@@ -237,18 +238,17 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   }
 
   /**
-   * @param reuse - preset for the reused or created blank; absent creates a fresh Session.
+   * @param reuse - preset for the reused or created blank.
    */
   private async connectBlank(
     workspaceId: WorkspaceId,
-    reuse: Pick<StartSessionOptions, 'agentPreset'> | undefined,
+    reuse: Pick<StartSessionOptions, 'agentPreset'>,
   ): Promise<SessionId> {
     const workspace = this.workspaces.list.getSnapshot().items
       .find(item => item.workspaceId === workspaceId)
     if (workspace === undefined) {
       throw new Error(`uiWorkspace.connectWorkspace: unknown workspace ${workspaceId}`)
     }
-    if (reuse === undefined) return this.sessions.create({ workspaceId })
     const inflight = this.connecting.get(workspaceId)
     if (inflight !== undefined && inflight.agentPreset === reuse.agentPreset) return inflight.attempt
 
@@ -259,13 +259,16 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     return attempt
   }
 
+  /** Name the first reusable member blank; a requested preset also skips blanks listing another preset. */
   private createInWorkspace(workspace: WorkspaceView, options: Pick<StartSessionOptions, 'agentPreset'>): Promise<SessionId> {
     const archived = this.workspaces.list.getSnapshot().archivedSessionIds
     const sessions = this.sessions.list.getSnapshot()
     const blank = sessions.ids.find((id) => {
       const summary = sessions.byId[id]
+      const listed = summary?.projectionValues?.agentPreset
       return summary !== undefined && summary.blank && summary.cwd === workspace.path
         && workspace.sessionIds.includes(id) && !archived.includes(id)
+        && (options.agentPreset === undefined || typeof listed !== 'string' || listed === options.agentPreset)
     })
     return this.createNamed({
       workspaceId: workspace.workspaceId,
@@ -330,7 +333,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   private async openWorkspaceSession(
     workspaceId: WorkspaceId,
     beforeOpen: ((sessionId: SessionId) => void) | undefined,
-    reuse: Pick<StartSessionOptions, 'agentPreset'> | undefined,
+    reuse: Pick<StartSessionOptions, 'agentPreset'>,
   ): Promise<void> {
     const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal])
     let sessionId: SessionId
@@ -368,8 +371,8 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     // `agentPreset` travels a different route than the draft content.
     const { agentPreset, ...draft } = options ?? {}
     const draftOptions = options === undefined ? undefined : draft
-    const initializeDraft = draftOptions !== undefined
-      && (draftOptions.prompt !== undefined || draftOptions.clearPreviousDraft === true)
+    const initializeDraft = draftOptions !== undefined && (draftOptions.prompt !== undefined
+      || (draftOptions.whenDraftExists ?? (draftOptions.clearPreviousDraft === true ? 'replace' : 'keep')) === 'replace')
 
     // This plugin's half: where the Session belongs. `beforeOpen` decides that,
     // and `onNewSession` announces the landing so the sidebar can fade the row in.
