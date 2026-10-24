@@ -15,6 +15,7 @@
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
+import { dismissModals as dismissShared, ensureProbeProfile, settleOnboarding } from './lib/boot-dsh.mjs'
 import { chromium } from 'playwright-core'
 
 const [exe, asarRoot, dshHome, profile = 'pg'] = process.argv.slice(2)
@@ -42,24 +43,7 @@ const pageErrors = []
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
-const dismiss = async () => {
-  for (let i = 0; i < 8; i += 1) {
-    if (!await isMasked()) return
-    for (const label of ['稍后配置', '继续', 'Later']) {
-      const button = page.getByRole('button', { name: label, exact: true }).first()
-      if (await button.count() > 0) {
-        // Logged rather than discarded: a click that never landed leaves the mask up, and the
-        // checks below then measure an intercepted UI for a setup reason with nothing to say so.
-        await button.click({ force: true }).catch((error) => {
-          console.log(`  dismiss: click on "${label}" failed — ${error.message}`)
-        })
-        await page.waitForTimeout(1200)
-      }
-    }
-    await page.waitForTimeout(700)
-  }
-  if (await isMasked()) console.log('  dismiss: a modal mask is STILL up after 8 rounds — later checks may be measuring an intercepted UI')
-}
+const dismiss = () => dismissShared(page)
 
 const projectRow = (title) => page.locator('[data-row-key^="workspace:"]', { hasText: title }).first()
 
@@ -142,6 +126,13 @@ try {
   // Spawned inside the `try` so the `finally` always closes the browser and kills the child.
   // While this sat above the `try`, any throw (a boot timeout, a locator timeout) skipped both
   // cleanups and left the headless Chromium and the Host running.
+  // 自举 profile：`plugin --profile <name> add` 建出的只是覆盖层，缺 cordis.yml 时
+  // 进程存活但从不监听端口 —— 那时下面这行 spawn 等到的只是一条误导性的超时。
+  const prepared = await ensureProbeProfile({ exe, asarRoot, dshHome, profile })
+  if (prepared.problem !== undefined) {
+    console.error(`无法准备探针环境：${prepared.problem}`)
+    process.exit(2)
+  }
   child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
     env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -176,6 +167,8 @@ try {
   page.on('pageerror', (error) => pageErrors.push(error.message))
 
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
+
+  await settleOnboarding(page)
   await page.waitForTimeout(7000)
   await dismiss()
 

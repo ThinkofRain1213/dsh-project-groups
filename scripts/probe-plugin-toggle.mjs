@@ -27,6 +27,7 @@ import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
+import { ensureProbeProfile, settleOnboarding } from './lib/boot-dsh.mjs'
 import { chromium } from 'playwright-core'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
@@ -136,22 +137,6 @@ async function stop(child) {
 let browser
 let page
 
-const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
-  .some(node => node.className.includes('mask')))
-const dismissModals = async () => {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    if (!await isMasked()) return
-    for (const label of ['稍后配置', '继续', 'Continue', 'Later', 'Got it', '知道了']) {
-      const button = page.getByRole('button', { name: label, exact: true }).first()
-      if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
-        await page.waitForTimeout(1200)
-      }
-    }
-    await page.waitForTimeout(800)
-  }
-}
-
 const sections = () => page.evaluate(() => [...document.querySelectorAll('[data-row-key^="workspace:"]')]
   .map(node => ({
     heading: (node.textContent ?? '').trim(),
@@ -165,14 +150,29 @@ let on
 // later run of every probe that shares it.
 let off
 try {
+  // 本探针**依次使用两个 profile**：`pg`（装本插件）与 `official`（官方侧栏）。
+  // 两个都必须在第一次 boot 之前建好 —— 缺 `cordis.yml` 时它们都是「进程活着但不监听」，
+  // 而本探针的第一阶段就会超时，让人以为插件加载失败。
+  // `official` 传 `installPlugin: false`：它要的正是**没有**本插件的侧栏。
+  const preparedPg = await ensureProbeProfile({ exe, asarRoot, dshHome, profile: 'pg' })
+  if (preparedPg.problem !== undefined) {
+    console.error(`无法准备探针环境：${preparedPg.problem}`)
+    process.exit(2)
+  }
+  const preparedOfficial = await ensureProbeProfile({ exe, asarRoot, dshHome, profile: 'official', installPlugin: false })
+  if (preparedOfficial.problem !== undefined) {
+    console.error(`无法准备探针环境：${preparedOfficial.problem}`)
+    process.exit(2)
+  }
+
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
   // --- Phase 1: plugin ON, create a project and expand it -------------------
   console.log('=== phase 1: plugin on, create and expand a project ===')
   on = await boot('pg')
   await page.goto(on.url, { waitUntil: 'networkidle', timeout: 60_000 })
-  await page.waitForTimeout(6000)
-  await dismissModals()
+  // 每个阶段都是一次**新的页面加载**，而登录引导的关闭不持久 —— 所以这里每个阶段都要关一次。
+  await settleOnboarding(page)
 
   const unique = `toggle-${Date.now().toString(36)}`
   await page.locator('button[aria-label="新建项目"]').first().click()
@@ -227,8 +227,7 @@ try {
   console.log('\n=== phase 2: plugin off, official sidebar mounts on the same port ===')
   off = await boot('official')
   await page.goto(off.url, { waitUntil: 'networkidle', timeout: 60_000 })
-  await page.waitForTimeout(8000)
-  await dismissModals()
+  await settleOnboarding(page)
   const officialSections = await sections()
   console.log(`official sections: ${JSON.stringify(officialSections)}`)
   check('the official sidebar mounted (our project rows are gone)',
@@ -243,8 +242,7 @@ try {
   console.log('\n=== phase 3: plugin on again, the row must return expanded ===')
   on = await boot('pg')
   await page.goto(on.url, { waitUntil: 'networkidle', timeout: 60_000 })
-  await page.waitForTimeout(8000)
-  await dismissModals()
+  await settleOnboarding(page)
   const restored = await sections()
   console.log(`sections: ${JSON.stringify(restored)}`)
   const back = restored.find(section => section.heading.includes(unique))

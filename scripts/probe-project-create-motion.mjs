@@ -23,6 +23,7 @@
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
+import { dismissModals as dismissShared, ensureProbeProfile } from './lib/boot-dsh.mjs'
 import { chromium } from 'playwright-core'
 
 const [exe, asarRoot, dshHome, profile = 'pg'] = process.argv.slice(2)
@@ -107,21 +108,7 @@ try {
   page = await browser.newPage()
   page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
 
-  const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
-    .some(node => node.className.includes('mask')))
-  const dismiss = async () => {
-    for (let i = 0; i < 8; i += 1) {
-      if (!await isMasked()) return
-      for (const label of ['稍后配置', '继续', 'Later']) {
-        const button = page.getByRole('button', { name: label, exact: true }).first()
-        if (await button.count() > 0) {
-          await button.click({ force: true }).catch(() => {})
-          await page.waitForTimeout(1200)
-        }
-      }
-      await page.waitForTimeout(700)
-    }
-  }
+  const dismiss = () => dismissShared(page)
 
   const projectRows = () => page.evaluate(() => [...document.querySelectorAll('[data-row-key^="workspace:"]')]
     .map(node => ({

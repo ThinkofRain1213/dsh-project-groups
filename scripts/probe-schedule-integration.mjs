@@ -24,6 +24,7 @@
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
+import { dismissModals as dismissShared, ensureProbeProfile, settleOnboarding } from './lib/boot-dsh.mjs'
 import { chromium } from 'playwright-core'
 
 const [exe, asarRoot, dshHome, profile = 'pg'] = process.argv.slice(2)
@@ -56,23 +57,16 @@ let page
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
-const dismiss = async () => {
-  for (let i = 0; i < 8; i += 1) {
-    if (!await isMasked()) return
-    for (const label of ['稍后配置', '继续', 'Later']) {
-      const button = page.getByRole('button', { name: label, exact: true }).first()
-      if (await button.count() > 0) {
-        // Logged rather than swallowed: a click that fails keeps the mask up, and the shape
-        // reading below would then describe the mask instead of the sidebar.
-        await button.click({ force: true }).catch((error) => { console.log(`  取消失败（${label}）: ${error.message}`) })
-        await page.waitForTimeout(1200)
-      }
-    }
-    await page.waitForTimeout(700)
-  }
-}
+const dismiss = () => dismissShared(page)
 
 try {
+  // 自举 profile：`plugin --profile <name> add` 建出的只是覆盖层，缺 cordis.yml 时
+  // 进程存活但从不监听端口 —— 那时下面这行 spawn 等到的只是一条误导性的超时。
+  const prepared = await ensureProbeProfile({ exe, asarRoot, dshHome, profile })
+  if (prepared.problem !== undefined) {
+    console.error(`无法准备探针环境：${prepared.problem}`)
+    process.exit(2)
+  }
   child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
     env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -115,6 +109,7 @@ try {
   page.on('pageerror', (error) => pageErrors.push(error.message))
   page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()) })
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
+  await settleOnboarding(page)
   // Readiness instead of a bare 9 s: the plugin's own sidebar affordance is the condition every
   // reading below depends on, and it either appears or the run is a failure worth reporting.
   await page.waitForFunction(

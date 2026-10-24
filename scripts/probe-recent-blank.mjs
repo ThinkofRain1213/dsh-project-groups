@@ -31,6 +31,7 @@ import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 import { installRowKeyHelpers } from './lib/row-key.mjs'
 import { redactToken } from './lib/redact.mjs'
+import { dismissModals as dismissShared, ensureProbeProfile, settleOnboarding } from './lib/boot-dsh.mjs'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
 if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
@@ -116,23 +117,14 @@ const logs = []
 let browser
 let page
 
-const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
-  .some(node => node.className.includes('mask')))
-const dismiss = async () => {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    if (!await isMasked()) return
-    for (const label of ['稍后配置', '继续', 'Later']) {
-      const button = page.getByRole('button', { name: label, exact: true }).first()
-      if (await button.count() > 0) {
-        // Logged rather than swallowed: a click that fails keeps the mask up, and the placement
-        // readings below would then be taken against the mask instead of the sidebar.
-        await button.click({ force: true }).catch((error) => { console.log(`  取消失败（${label}）: ${error.message}`) })
-        await page.waitForTimeout(1200)
-      }
-    }
-    await page.waitForTimeout(700)
-  }
-}
+/**
+ * 关掉挡路的弹窗。
+ *
+ * 收敛到 `lib/boot-dsh.mjs`：原先这份本地副本的标签表里没有「关闭」，
+ * 而隔离 profile 首启的登录引导**只有**那个按钮能关掉 —— 于是后面每一次 `makeProject` /
+ * `clickPlus` 都会超时在一个与真实原因无关的地方。
+ */
+const dismiss = () => dismissShared(page)
 
 const projectRow = (title) => page.locator('[data-row-key^="workspace:"]', { hasText: title }).first()
 
@@ -263,10 +255,16 @@ try {
   await installRowKeyHelpers(page)
   page.on('pageerror', (error) => { logs.push(`pageerror: ${error.message}`) })
   // ── Phase 1: two empty projects, and a blank parked in the first. ──
+  // 自举 profile：`plugin --profile <name> add` 建出的只是覆盖层，缺 cordis.yml 时
+  // 进程存活但从不监听端口 —— 那时下面的 boot 等到的只是一条误导性的超时。
+  const prepared = await ensureProbeProfile({ exe, asarRoot, dshHome, profile: 'pg' })
+  if (prepared.problem !== undefined) {
+    console.error(`无法准备探针环境：${prepared.problem}`)
+    process.exit(2)
+  }
   running = await boot()
   await page.goto(running.url, { waitUntil: 'networkidle', timeout: 60_000 })
-  await page.waitForTimeout(7000)
-  await dismiss()
+  await settleOnboarding(page)
 
   const stamp = Date.now().toString(36)
   const older = `甲${stamp}`

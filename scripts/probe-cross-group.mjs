@@ -20,6 +20,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 import { installRowKeyHelpers } from './lib/row-key.mjs'
+import { dismissModals as dismissShared, ensureProbeProfile, settleOnboarding } from './lib/boot-dsh.mjs'
 import { redactToken } from './lib/redact.mjs'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
@@ -77,19 +78,7 @@ const errors = []
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
-const dismissModals = async () => {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    if (!await isMasked()) return
-    for (const label of ['稍后配置', '继续', 'Continue', 'Later', 'Got it', '知道了']) {
-      const button = page.getByRole('button', { name: label, exact: true }).first()
-      if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
-        await page.waitForTimeout(1200)
-      }
-    }
-    await page.waitForTimeout(800)
-  }
-}
+const dismissModals = () => dismissShared(page)
 
 /** Session ids under one group heading, in rendered order. */
 const sessionsUnder = (headingText) => page.evaluate((text) => {
@@ -225,8 +214,16 @@ try {
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
   page.on('pageerror', (error) => { errors.push(`pageerror: ${error.message}`) })
   await installRowKeyHelpers(page)
+  // 自举 profile：`plugin --profile <name> add` 建出的只是覆盖层，缺 cordis.yml 时
+  // 进程存活但从不监听端口 —— 那时下面的 boot 等到的只是一条误导性的超时。
+  const prepared = await ensureProbeProfile({ exe, asarRoot, dshHome, profile: 'pg' })
+  if (prepared.problem !== undefined) {
+    console.error(`无法准备探针环境：${prepared.problem}`)
+    process.exit(2)
+  }
   server = await boot('pg')
   await page.goto(server.url, { waitUntil: 'networkidle', timeout: 60_000 })
+  await settleOnboarding(page)
   await page.waitForTimeout(6000)
   await dismissModals()
 
@@ -324,9 +321,24 @@ try {
   // Read once: this assertion used to await `storedDomain()` three times, so the two sides of
   // the comparison and the diagnostic came from three different file snapshots.
   const storedAfterHeader = await storedDomain()
+  // The right-hand side used to be `ownerOf(storedAfterHeader, alphaProjectId)` — a **project** id
+  // passed where a **session** id belongs. That lookup is always `undefined`, so the assertion only
+  // passed when the moving Session was *also* unfiled, i.e. exactly when the drag had failed.
+  // It went unnoticed because this probe could not run at all (the profile had no `cordis.yml`);
+  // the whole file aborted before reaching here. The comparison now uses a Session known to belong
+  // to 甲 — `alphaBefore[1]` is the one the row-drop above left behind.
+  const alphaAnchor = alphaBefore[1]
   check('and the Host filed it under 甲',
-    ownerOf(storedAfterHeader, headerMoving) === ownerOf(storedAfterHeader, alphaProjectId),
-    JSON.stringify({ headerMoving, owner: ownerOf(storedAfterHeader, headerMoving), alphaProjectId, domain: storedAfterHeader }))
+    ownerOf(storedAfterHeader, headerMoving) !== undefined
+    && ownerOf(storedAfterHeader, headerMoving) === ownerOf(storedAfterHeader, alphaAnchor),
+    JSON.stringify({
+      headerMoving,
+      owner: ownerOf(storedAfterHeader, headerMoving),
+      alphaAnchor,
+      alphaAnchorOwner: ownerOf(storedAfterHeader, alphaAnchor),
+      alphaProjectId,
+      domain: storedAfterHeader,
+    }))
 
   // ── Drag out to Ungrouped, which must be reachable even when empty. ──
   const ungroupedBefore = await ungroupedSessions()

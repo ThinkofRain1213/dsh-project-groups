@@ -29,6 +29,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { dismissModals as dismissShared, ensureProbeProfile, settleOnboarding } from './lib/boot-dsh.mjs'
 import { chromium } from 'playwright-core'
 
 /** The React major this probe's premise is built on (`validateDOMNesting` in the dev build). */

@@ -24,6 +24,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 import { installRowKeyHelpers } from './lib/row-key.mjs'
+import { dismissModals as dismissShared, ensureProbeProfile, settleOnboarding } from './lib/boot-dsh.mjs'
 import { redactToken } from './lib/redact.mjs'
 
 /**
@@ -70,6 +71,13 @@ const check = (label, ok, detail) => {
 /** The seeded project's title, shared with the behaviour steps below. */
 let alpha = ''
 
+// 自举 profile：`plugin --profile <name> add` 建出的只是覆盖层，缺 cordis.yml 时
+// 进程存活但从不监听端口 —— 那时下面这行 spawn 等到的只是一条误导性的超时。
+const prepared = await ensureProbeProfile({ exe, asarRoot, dshHome, profile: PROFILE })
+if (prepared.problem !== undefined) {
+  console.error(`无法准备探针环境：${prepared.problem}`)
+  process.exit(2)
+}
 const child = spawn(exe, [BIN, '--profile', PROFILE, '--port', String(PORT), '--no-open'], {
   env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -157,19 +165,7 @@ const measureSurface = (locator) => locator.evaluate(
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
-const dismiss = async () => {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    if (!await isMasked()) return
-    for (const label of ['稍后配置', '继续', 'Later']) {
-      const button = page.getByRole('button', { name: label, exact: true }).first()
-      if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
-        await page.waitForTimeout(1200)
-      }
-    }
-    await page.waitForTimeout(700)
-  }
-}
+const dismiss = () => dismissShared(page)
 
 /** The stored global, read from the Host's own domain file. */
 const domain = async () => {
@@ -236,6 +232,7 @@ try {
   page.on('console', (message) => { if (message.type() === 'error') logs.push(message.text()) })
   page.on('pageerror', (error) => { logs.push(`pageerror: ${error.message}`) })
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
+  await settleOnboarding(page)
   await page.waitForTimeout(7000)
   await dismiss()
 

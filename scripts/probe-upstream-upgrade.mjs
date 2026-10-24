@@ -25,6 +25,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 import { findInstalledAsar, readAsarFile } from './lib/asar.mjs'
+import { dismissModals as dismissShared, ensureProbeProfile } from './lib/boot-dsh.mjs'
 import { redactToken } from './lib/redact.mjs'
 
 const [exe, asarRoot, dshHome, profile = 'pg'] = process.argv.slice(2)
@@ -64,13 +65,13 @@ const VENDORED_FROM = (() => {
 })()
 
 /**
- * The onboarding mask's dismissal labels, in the order to try them.
+ * 关掉挡路的弹窗，并把「最后到底还有没有遮罩」原样返回。
  *
- * Centralized because they are localized copy: when a wording changes upstream, this is the
- * one obvious line to update, and the failure it causes (the mask never goes away) is
- * reported by {@link dismiss} rather than silently changing what the probe reads.
- */
-const DISMISS_LABELS = ['稍后配置', '继续', 'Later']
+ * 该本地实现保留了自己的返回值语义（`true` = 遮罩已清），所以不复用共享封装：
+ * 共享版本返回的是对象，改签名会让下面那条 `⚠️` 判断悄悄变成永远为真。
+ * 关不掉的**根因**已经收敛到 `lib/boot-dsh.mjs`：那里的标签表含「关闭」，
+ * 而原先本地那份只覆盖旧的一次性公告。
+ */const DISMISS_LABELS = ['稍后配置', '继续', 'Later']
 
 // Read the installed versions straight out of the asar, so "which upstream are we
 // actually running against" is answered by the artifact and not by a lockfile.
@@ -110,6 +111,13 @@ console.log('')
 let running
 let browser
 try {
+  // 自举 profile：`plugin --profile <name> add` 建出的只是覆盖层，缺 cordis.yml 时
+  // 进程存活但从不监听端口 —— 那时下面这行 spawn 等到的只是一条误导性的超时。
+  const prepared = await ensureProbeProfile({ exe, asarRoot, dshHome, profile })
+  if (prepared.problem !== undefined) {
+    console.error(`无法准备探针环境：${prepared.problem}`)
+    process.exit(2)
+  }
   running = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
     env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -150,32 +158,15 @@ try {
   const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
     .some(node => node.className.includes('mask')))
   /**
-   * Dismiss the onboarding mask, if it is up.
+   * 关掉挡路的弹窗，并把「最后到底还有没有遮罩」原样返回。
    *
-   * Bounded and diagnostic. The previous shape re-clicked all three labels with `force` every
-   * round and discarded every error, so "the mask was already gone" and "the button is
-   * unclickable" were indistinguishable, and a run that never dismissed the mask spent ~35 s
-   * before continuing to read a screen it did not intend. Each round now stops as soon as the
-   * mask clears, click failures are logged, and a mask that outlives the budget is reported.
-   * @returns true when no mask is on screen at the end.
+   * 该本地实现保留了自己的返回值语义（`true` = 遮罩已清），所以不复用共享封装：
+   * 共享版本返回的是对象，改签名会让下面那条 `⚠️` 判断悄悄变成永远为真。
+   * 关不掉的**根因**已经收敛到 `lib/boot-dsh.mjs`：那里的标签表含「关闭」，
+   * 关不掉的**根因**已经收敛到 `lib/boot-dsh.mjs`：那里的标签表含「关闭」，
+   * 而原先这里的 `DISMISS_LABELS` 只覆盖旧的一次性公告。
    */
-  const dismiss = async () => {
-    for (let i = 0; i < 8; i += 1) {
-      if (!await isMasked()) return true
-      for (const label of DISMISS_LABELS) {
-        const button = page.getByRole('button', { name: label, exact: true }).first()
-        if (await button.count() === 0) continue
-        await button.click({ force: true }).catch((error) => {
-          console.log(`  遮罩点击「${label}」失败: ${String(error?.message ?? error).split('\n')[0]}`)
-        })
-        await page.waitForTimeout(1200)
-        if (!await isMasked()) return true
-      }
-      await page.waitForTimeout(700)
-    }
-    console.log('  ⚠️ 遮罩 8 轮后仍在：下面的读数可能取自错误的界面')
-    return false
-  }
+  const dismiss = () => dismissShared(page).then(result => !result.masked)
 
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
   await page.waitForTimeout(9000)

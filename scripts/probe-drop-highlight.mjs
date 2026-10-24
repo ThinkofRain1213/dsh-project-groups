@@ -23,6 +23,7 @@ import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 import { installRowKeyHelpers } from './lib/row-key.mjs'
+import { dismissModals as dismissShared, ensureProbeProfile, settleOnboarding } from './lib/boot-dsh.mjs'
 import { redactToken } from './lib/redact.mjs'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
@@ -51,28 +52,7 @@ let page
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
-const dismiss = async () => {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    if (!await isMasked()) return
-    for (const label of ['稍后配置', '继续', 'Later']) {
-      const button = page.getByRole('button', { name: label, exact: true }).first()
-      if (await button.count() > 0) {
-        // Logged, not swallowed: a click that fails keeps the mask up, and every highlight reading
-        // below would then describe the mask instead of the drag.
-        await button.click({ force: true }).catch((error) => { console.log(`  取消失败（${label}）: ${error.message}`) })
-        await page.waitForTimeout(1200)
-      }
-    }
-    await page.waitForTimeout(700)
-  }
-  // The last click needs a moment to settle before the failure is declared.
-  for (let settle = 0; settle < 5 && await isMasked(); settle += 1) await page.waitForTimeout(400)
-  // Thrown, not returned: a mask that survives leaves the probe measuring the wrong UI, and the
-  // old silent return only showed up as confusing downstream highlight failures.
-  if (await isMasked()) {
-    throw new Error('the overlay mask could not be dismissed after 8 attempts (the button labels changed, or the modal ignores clicks)')
-  }
-}
+const dismiss = () => dismissShared(page)
 
 /**
  * Start a drag from a row: move onto its centre, press, and move a few pixels so the drag begins.
@@ -135,6 +115,13 @@ const highlighted = () => page.evaluate(() => [...document.querySelectorAll('[cl
   })))
 
 try {
+  // 自举 profile：`plugin --profile <name> add` 建出的只是覆盖层，缺 cordis.yml 时
+  // 进程存活但从不监听端口 —— 那时下面这行 spawn 等到的只是一条误导性的超时。
+  const prepared = await ensureProbeProfile({ exe, asarRoot, dshHome, profile: 'pg' })
+  if (prepared.problem !== undefined) {
+    console.error(`无法准备探针环境：${prepared.problem}`)
+    process.exit(2)
+  }
   child = spawn(exe, [BIN, '--profile', 'pg', '--port', String(PORT), '--no-open'], {
     env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -165,6 +152,7 @@ try {
   // before the Host was ever spawned.
   await installRowKeyHelpers(page)
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
+  await settleOnboarding(page)
   await page.waitForTimeout(7000)
   await dismiss()
 

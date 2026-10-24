@@ -22,6 +22,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 import { installRowKeyHelpers } from './lib/row-key.mjs'
+import { dismissModals as dismissShared, ensureProbeProfile, settleOnboarding } from './lib/boot-dsh.mjs'
 import { redactToken } from './lib/redact.mjs'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
@@ -50,24 +51,7 @@ const logs = []
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
-const dismiss = async () => {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    if (!await isMasked()) return
-    for (const label of ['稍后配置', '继续', 'Later']) {
-      const button = page.getByRole('button', { name: label, exact: true }).first()
-      if (await button.count() > 0) {
-        // Logged rather than discarded: a click that never landed leaves the mask up, and the
-        // checks below then read an intercepted UI for a setup reason with nothing to say so.
-        await button.click({ force: true }).catch((error) => {
-          console.log(`  dismiss: click on "${label}" failed — ${error.message}`)
-        })
-        await page.waitForTimeout(1200)
-      }
-    }
-    await page.waitForTimeout(700)
-  }
-  if (await isMasked()) console.log('  dismiss: a modal mask is STILL up after 8 rounds — later checks may be measuring an intercepted UI')
-}
+const dismiss = () => dismissShared(page)
 
 const domain = async () => {
   try {
@@ -196,6 +180,13 @@ try {
   // Spawned inside the `try` so the `finally` always reaches `child.kill()`. While this sat above
   // the `try`, a boot timeout — or any throw out of `chromium.launch` — rejected the top-level
   // await before cleanup ran and left the Host running on the port.
+  // 自举 profile：`plugin --profile <name> add` 建出的只是覆盖层，缺 cordis.yml 时
+  // 进程存活但从不监听端口 —— 那时下面这行 spawn 等到的只是一条误导性的超时。
+  const prepared = await ensureProbeProfile({ exe, asarRoot, dshHome, profile: 'pg' })
+  if (prepared.problem !== undefined) {
+    console.error(`无法准备探针环境：${prepared.problem}`)
+    process.exit(2)
+  }
   child = spawn(exe, [BIN, '--profile', 'pg', '--port', String(PORT), '--no-open'], {
     env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -231,6 +222,7 @@ try {
   await installRowKeyHelpers(page)
   page.on('console', (message) => { if (message.type() === 'error') logs.push(message.text()) })
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
+  await settleOnboarding(page)
   await page.waitForTimeout(7000)
   await dismiss()
 

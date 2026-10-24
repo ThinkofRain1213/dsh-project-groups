@@ -17,6 +17,7 @@
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
+import { dismissModals as dismissShared, ensureProbeProfile, settleOnboarding } from './lib/boot-dsh.mjs'
 import { chromium } from 'playwright-core'
 
 const [exe, asarRoot, dshHome, profile = 'pg'] = process.argv.slice(2)
@@ -48,6 +49,13 @@ let page
  * `'error'` listener (an unspawnable exe crashed the process instead of reporting).
  */
 const boot = async () => {
+  // 自举 profile：`plugin --profile <name> add` 建出的只是覆盖层，缺 cordis.yml 时
+  // 进程存活但从不监听端口 —— 那时下面这行 spawn 等到的只是一条误导性的超时。
+  const prepared = await ensureProbeProfile({ exe, asarRoot, dshHome, profile })
+  if (prepared.problem !== undefined) {
+    console.error(`无法准备探针环境：${prepared.problem}`)
+    process.exit(2)
+  }
   child = spawn(exe, [BIN, '--profile', profile, '--port', String(PORT), '--no-open'], {
     env: { ...process.env, DSH_HOME: dshHome, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -78,23 +86,7 @@ const boot = async () => {
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
-const dismiss = async () => {
-  for (let i = 0; i < 8; i += 1) {
-    if (!await isMasked()) return
-    for (const label of ['稍后配置', '继续', 'Later']) {
-      const button = page.getByRole('button', { name: label, exact: true }).first()
-      if (await button.count() > 0) {
-        await button.click({ force: true }).catch((error) => console.log(`  (点击「${label}」失败: ${error.message.split('\n')[0]})`))
-        await page.waitForTimeout(1200)
-        // One click per pass: the first matching label is the visible modal's action, and
-        // continuing through the remaining labels clicked controls that are no longer there
-        // (each costing another 1.2 s) on every one of the up-to-8 outer iterations.
-        break
-      }
-    }
-    await page.waitForTimeout(700)
-  }
-}
+const dismiss = () => dismissShared(page)
 
 const projectRow = (title) => page.locator('[data-row-key^="workspace:"]', { hasText: title }).first()
 
@@ -149,6 +141,7 @@ try {
   page = await browser.newPage()
   page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
   await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 })
+  await settleOnboarding(page)
   await page.waitForTimeout(7000)
   await dismiss()
 

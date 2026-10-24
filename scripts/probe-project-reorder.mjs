@@ -15,6 +15,7 @@ import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 import { installRowKeyHelpers, sessionIdOf } from './lib/row-key.mjs'
+import { dismissModals as dismissShared, ensureProbeProfile, settleOnboarding } from './lib/boot-dsh.mjs'
 import { redactToken } from './lib/redact.mjs'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
@@ -75,19 +76,7 @@ const errors = []
 
 const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
   .some(node => node.className.includes('mask')))
-const dismissModals = async () => {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    if (!await isMasked()) return
-    for (const label of ['稍后配置', '继续', 'Continue', 'Later', 'Got it', '知道了']) {
-      const button = page.getByRole('button', { name: label, exact: true }).first()
-      if (await button.count() > 0) {
-        await button.click({ force: true }).catch(() => {})
-        await page.waitForTimeout(1200)
-      }
-    }
-    await page.waitForTimeout(800)
-  }
-}
+const dismissModals = () => dismissShared(page)
 
 /**
  * Session row locators under one group heading, in rendered order.
@@ -140,8 +129,16 @@ try {
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
   page.on('pageerror', (error) => { errors.push(`pageerror: ${error.message}`) })
   await installRowKeyHelpers(page)
+  // 自举 profile：`plugin --profile <name> add` 建出的只是覆盖层，缺 cordis.yml 时
+  // 进程存活但从不监听端口 —— 那时下面的 boot 等到的只是一条误导性的超时。
+  const prepared = await ensureProbeProfile({ exe, asarRoot, dshHome, profile: 'pg' })
+  if (prepared.problem !== undefined) {
+    console.error(`无法准备探针环境：${prepared.problem}`)
+    process.exit(2)
+  }
   server = await boot('pg')
   await page.goto(server.url, { waitUntil: 'networkidle', timeout: 60_000 })
+  await settleOnboarding(page)
   await page.waitForTimeout(6000)
   await dismissModals()
 

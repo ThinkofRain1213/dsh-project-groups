@@ -21,6 +21,7 @@ import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { redactToken } from './lib/redact.mjs'
+import { dismissModals as dismissShared, ensureProbeProfile, settleOnboarding } from './lib/boot-dsh.mjs'
 import { chromium } from 'playwright-core'
 
 const [exe, asarRoot, dshHome] = process.argv.slice(2)
@@ -30,6 +31,7 @@ if (exe === undefined || asarRoot === undefined || dshHome === undefined) {
 }
 
 const PORT = Number(process.env.DSH_PROBE_PORT ?? 17646)
+const PROFILE = process.env.DSH_PROBE_PROFILE ?? 'pg'
 const BIN = join(asarRoot, 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 
 const failures = []
@@ -74,23 +76,13 @@ const errors = []
 let browser
 let page
 
-const isMasked = () => page.evaluate(() => [...document.querySelectorAll('div[aria-hidden="true"]')]
-  .some(node => node.className.includes('mask')))
-const dismissModals = async () => {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    if (!await isMasked()) return
-    for (const label of ['稍后配置', '继续', 'Continue', 'Later', 'Got it', '知道了']) {
-      const button = page.getByRole('button', { name: label, exact: true }).first()
-      if (await button.count() > 0) {
-        // Logged rather than swallowed: a click that fails keeps the mask up, and the mode
-        // readings below would then be taken against the mask instead of the sidebar.
-        await button.click({ force: true }).catch((error) => { console.log(`  取消失败（${label}）: ${error.message}`) })
-        await page.waitForTimeout(1200)
-      }
-    }
-    await page.waitForTimeout(800)
-  }
-}
+/**
+ * 关掉挡路的弹窗。
+ *
+ * 收敛到 `lib/boot-dsh.mjs` 的理由见那里：**登录引导的关闭不持久**，所以每次导航都要关，
+ * 而原先这份本地副本的六个标签里没有「关闭」—— 隔离 profile 首启必然被它挡住。
+ */
+const dismissModals = () => dismissShared(page)
 
 /**
  * The view store's persistence key.
@@ -134,16 +126,28 @@ const storedOrders = async () => {
 
 let server
 try {
+  // 在启动之前自举 profile。缺了这步 —— 即用 `plugin --profile pg add` 建出的那个覆盖层 ——
+  // 进程会存活但从不监听端口，下面的 `boot` 只能报一条与真实原因无关的超时。
+  const prepared = await ensureProbeProfile({ exe, asarRoot, dshHome, profile: PROFILE })
+  if (prepared.problem !== undefined) {
+    console.error(`无法准备探针环境：${prepared.problem}`)
+    process.exit(2)
+  }
+
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
   // Listeners are attached only once `page` exists: at module scope `page` was still
   // `undefined` and `page.on(...)` threw before anything else could run.
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
   page.on('pageerror', (error) => { errors.push(`pageerror: ${error.message}`) })
-  server = await boot('pg')
+  server = await boot(PROFILE)
   await page.goto(server.url, { waitUntil: 'networkidle', timeout: 60_000 })
-  await page.waitForTimeout(6000)
-  await dismissModals()
+  // 登录引导要等客户端 bundle 挂载后才渲染，所以先等遮罩出现/消失，再关。
+  // 旧写法是一个固定的 6 秒 sleep 加那份缺「关闭」的本地 dismiss —— 两步都不足以让侧栏可点。
+  const onboarded = await settleOnboarding(page)
+  if (onboarded.masked) {
+    console.log('  ⚠ 登录引导未被关掉，后续点击会超时')
+  }
 
   const unique = `mode-${Date.now().toString(36)}`
   await page.locator('button[aria-label="新建项目"]').first().click()
