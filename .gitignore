@@ -35,3 +35,8 @@ coverage/
 *.key
 *.p12
 *.pfx
+
+# Superpowers plan workspaces: scratch for a plan's ledger, briefs and review
+# packages. Never committed, so a `git clean -fdx` loses them outright — the
+# durable record is the branch's commits, not these files.
+.superpowers/

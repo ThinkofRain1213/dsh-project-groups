@@ -91,7 +91,7 @@ DSH 官方的工作区是**目录所有权**记录：一个会话属于某工作
 ## 安装
 
 需要 DSH **`>=0.2.1-rc.2 <0.2.2`**（即 0.2.1 这一条线）。插件跑在 0.2.1 的壳上，
-vendor 源码同样取自 **0.2.1-rc.2**（上游同步流程见 [`DESIGN.md` §5 的 L4.5](DESIGN.md)）。
+vendor 源码同样取自 **0.2.1-rc.3**（上游同步流程见 [`DESIGN.md` §5 的 L4.5](DESIGN.md)）。
 
 这条区间由 `engines.dsh` 声明 —— 声明了它之后，**DSH 只按这个区间判定兼容性，
 `peerDependencies` 被完全忽略**（这是官方的既定规则，不是我们的选择）。
@@ -172,7 +172,7 @@ pnpm check            # typecheck + build + 13 项校验 + 探针（851 条断�
 | `src/spec.ts` | 领域 schema：项目记录、全局设置、三个状态值 |
 | `src/client/index.ts` | 浏览器入口：注入分组、设置卡片、选择弹窗 |
 | `src/client/spec-picker.tsx` | 规范选择 / 上传 / 删除对话框 |
-| `src/vendored/` | 官方 client 源码副本 + **107 个 patch hunk、涉及 10 个文件**（见其 [README](src/vendored/README.md)） |
+| `src/vendored/` | 官方 client 源码副本 + **108 处语义改动（200 个 diff hunk）、涉及 10 个文件**（见其 [README](src/vendored/README.md)） |
 | `scripts/` | 探针与校验；`DESIGN.md` 说明每个脚本证明了什么 |
 | `scripts/lib/boot-dsh.mjs` | 真实 DSH 探针的共同起点：profile 自举 + 首启引导层关闭 |
 | `CHANGELOG.md` | 每个版本对使用者可见的变化 |
@@ -244,7 +244,7 @@ gh release create vX.Y.Z --verify-tag --title "vX.Y.Z" --notes-file <说明.md>
 
 `src/vendored/` **起点**是上游 `packages/client/ui-workspace/src/`（`dsh-v0.1.7-rc.2`）
 的逐字节副本，**但现在已不再逐字节一致**：项目分组需要分组缝，
-现有 **107 个 patch hunk、涉及 10 个文件（另有 1 个我方独有文件）**。当前来源版本是 **0.2.1-rc.2**。
+现有 **107 处语义改动（200 个 diff hunk）、涉及 10 个文件（另有 1 个我方独有文件）**。当前来源版本是 **0.2.1-rc.3**。
 
 每一处都满足同一条不变量——**不传即等官方行为**——并且全部登记在
 [`src/vendored/README.md`](src/vendored/README.md) 的 patch 表里。

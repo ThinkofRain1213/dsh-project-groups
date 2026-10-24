@@ -10,10 +10,42 @@ official UI 1:1.
 |---|---|
 | Upstream | `deepseek-ai/deepseek-harness` |
 | Path | `packages/client/ui-workspace/src/` |
-| Version | **0.2.1-rc.2** |
-| Commit | `687f282e86` (`dsh-v0.2.1-rc.2`) |
-| Re-synced | 2026-10-17 (from `1600d8a1e1` / `dsh-v0.2.1-rc.1`, itself from `639ed01539` / `dsh-v0.2.0-rc.2`, itself re-synced 2026-09-30 from `477b4f420` / `dsh-v0.1.7-rc.2`) |
-| Patch footprint | **10 files / 107 hunks / +4011 −194** against the upstream tag, plus one file upstream does not have (`client/session-actions/BaseWorkspaceMissing.tsx`) |
+| Version | **0.2.1-rc.3** |
+| Commit | `1f81c047fc` (`dsh-v0.2.1-rc.3`) |
+| Re-synced | 2026-10-24 (from `687f282e86` / `dsh-v0.2.1-rc.2`, itself from `1600d8a1e1` / `dsh-v0.2.1-rc.1`, itself from `639ed01539` / `dsh-v0.2.0-rc.2`, itself re-synced 2026-09-30 from `477b4f420` / `dsh-v0.1.7-rc.2`) |
+| Patch footprint | **10 files / 108 edits / 200 hunks / +4011 −192** against the upstream tag, plus one file upstream does not have (`client/session-actions/BaseWorkspaceMissing.tsx`) |
+
+### The 0.2.1-rc.2 → 0.2.1-rc.3 step
+
+Upstream touched **one file** in this directory: `client/navigation.ts`, +21 −20. It
+is also one of the ten files this tree patches, so the step needed a three-way merge
+rather than a copy. The merge produced exactly **2 conflicts**:
+
+1. **`startSession`'s JSDoc** — upstream rewrote the comment; this tree had added
+   `@param beforeOpen` and the 底层工作区 sentence. Resolved by keeping this tree's
+   parameter documentation and adopting upstream's new wording.
+
+2. **`startSession`'s body** — upstream replaced the `clearPreviousDraft` shorthand
+   with `whenDraftExists: 'replace' | 'append' | 'keep'`, and collapsed two
+   `openWorkspace` call paths into one. This tree's version composes three callbacks
+   (`announce`, `beforeOpen`, `draftPreparation`) and routes an unscoped Session
+   through `resolveBaseWorkspace` into `startSessionInDefaultWorkspace`. The
+   resolution keeps this tree's 85-line body and swaps **only** the `initializeDraft`
+   expression, so the new draft semantics apply without losing the composition or the
+   底层工作区 branches.
+
+Two upstream behaviour changes arrived with this step and are now live:
+
+- **Blank reuse respects the Agent preset.** `createInWorkspace` skips a blank whose
+  listed `projectionValues.agentPreset` differs from the requested one — a blank
+  created under one preset is no longer handed to a request naming another.
+- **`whenDraftExists` decides what happens to an existing draft**, replacing the
+  `clearPreviousDraft` boolean as the primary switch (the boolean still acts as
+  `'replace'` when the new field is absent).
+
+Everything else in `ui-workspace/src` — 27 of the 28 files — is byte-identical to
+rc.2. That is why `Added` is unchanged at 4011 while `Removed` drops from 194 to 192:
+upstream's own edit removed two lines this tree had already deleted differently.
 
 ### The 0.2.1-rc.1 → 0.2.1-rc.2 step
 
@@ -191,25 +223,41 @@ Most adaptation still lives *outside* this directory:
 Kept minimal and listed here so a re-sync is mechanical. Each is marked in the
 source with a comment naming the seam.
 
-**Measured footprint after the 0.2.1-rc.1 re-sync** (diffed against the upstream tag, per file):
+**Measured footprint after the 0.2.1-rc.3 re-sync** (diffed against `dsh-v0.2.1-rc.3`,
+per file, with `git diff --no-index -U0`):
 
-| File | Hunks | Added | Removed |
-|---|---:|---:|---:|
-| `client/rows/WorkspaceBrowser.tsx` | 48 | 2097 | 135 |
-| `client/index.ts` | 12 | 426 | 7 |
-| `client/tree.ts` | 12 | 220 | 6 |
-| `client/rows/Rows.tsx` | 11 | 121 | 8 |
-| `client/navigation.ts` | 7 | 238 | 32 |
-| `client/locales.ts` | 4 | 119 | 0 |
-| `client/contract/slots.ts` | 4 | 314 | 4 |
-| `client/rows/AnimatedRows.tsx` | 4 | 39 | 1 |
-| `client/shortcuts.ts` | 3 | 11 | 1 |
-| `client/rows/WorkspaceBrowser.module.css` | 2 | 426 | 0 |
-| **Total** | **107** | **4011** | **194** |
+| File | Edits | Hunks | Added | Removed |
+|---|---:|---:|---:|---:|
+| `client/rows/WorkspaceBrowser.tsx` | 48 | 114 | 2097 | 135 |
+| `client/index.ts` | 12 | 17 | 426 | 7 |
+| `client/tree.ts` | 12 | 16 | 220 | 6 |
+| `client/rows/Rows.tsx` | 11 | 15 | 121 | 8 |
+| `client/navigation.ts` | 8 | 14 | 238 | 30 |
+| `client/locales.ts` | 4 | 4 | 119 | 0 |
+| `client/contract/slots.ts` | 4 | 6 | 314 | 4 |
+| `client/rows/AnimatedRows.tsx` | 4 | 6 | 39 | 1 |
+| `client/shortcuts.ts` | 3 | 4 | 11 | 1 |
+| `client/rows/WorkspaceBrowser.module.css` | 2 | 4 | 426 | 0 |
+| **Total** | **108** | **200** | **4011** | **192** |
 
-The count grew from 75 entries to 107 hunks not because features were added but because
+> **`Edits` and `Hunks` are two counts of the same diff, and the table needs both.**
+> `Edits` counts semantic edit points — what this table has always meant. `Hunks` is what
+> `git diff -U0` emits, and it is higher because two adjacent insertions are one edit but
+> two hunks: `WorkspaceBrowser.tsx` is 48 edits and 114 hunks. `Added`/`Removed` are exact
+> under both readings and are what a re-sync should reproduce. Before rc.3 only `Edits`
+> was recorded, under the column name `Hunks`; both are now stated so neither number can
+> be mistaken for the other again.
+>
+> Neither total equals the number of rows in the patch list below: that list is
+> **76 rows** describing intents, and one row routinely covers several edits. The 108 is
+> a diff measurement, the 76 is a seam inventory. They are not meant to match.
+>
+> `navigation.ts` moved from 7 to 8 edits and from −32 to −30 removed because rc.3
+> rewrote the `startSession` body in a way that deletes two fewer lines.
+
+The count grew from 75 to 108 edits not because features were added but because
 upstream **rewrote** the regions this tree patches: `WorkspaceBrowser.tsx` alone went from a
-handful of edits to 48 hunks once the watermark model and `HoverCardGroup` landed inside the
+handful of edits to 48 once the watermark model and `HoverCardGroup` landed inside the
 same functions. The table below still describes **intent** — one row per seam — and is what a
 re-sync re-applies; the counts above are what a re-sync should reproduce.
 
@@ -230,7 +278,8 @@ re-sync re-applies; the counts above are what a re-sync should reproduce.
 | `rows/WorkspaceBrowser.tsx` | a Session can be dragged **between** groups: `DragState.overGroupKey` names the target, a row drop is positional and a header drop is not, and `commitCrossGroupDrag` files it through `assignSession` / `unassignSession` before writing the order (see below) | re-apply `overGroupKey`, `canReceiveDrag`, `insertIntoTargetOrder`, `commitCrossGroupDrag`, and the `groupDrop` wiring |
 | `rows/Rows.tsx` | a Session row's `dragover` / `drop` call `stopPropagation`, so the row is the target rather than the enclosing group section; `ProjectRowItem` takes an optional `groupDrop` that makes the **header row** — not the section — the cross-group hit target (the highlight stays on the section, painted by the region) | re-add the two calls and the `groupDrop` prop and handlers |
 | `tree.ts` | under a grouping override the Ungrouped bucket always renders, empty included — it is the drop target that takes a Session back out of a caller-supplied group (see below) | re-apply the `archivedFilter !== 'only'` alternative |
-| `navigation.ts` | `startSession` takes an optional `beforeOpen` callback and threads it into `openWorkspace`, so a caller can act on the Session that lands (a project row files it). Omitted, the flow is unchanged | re-add the parameter and the pass-through |
+| `navigation.ts` | `startSession`'s **second parameter is a union**: a `beforeOpen` callback, or upstream's `StartSessionOptions`. Upstream's second slot is the options object and two callers use it (`ui-agent-preset` since 0.2.1-rc.1, `ui-entry-customization` added in 0.2.1-rc.3); this fork needed the same slot for `beforeOpen`, so the implementation dispatches on `typeof … === 'function'`. A re-sync that restores a plain `beforeOpen` parameter re-breaks every upstream caller — silently, because the Session is created first and the throw comes after | re-add the `StartSessionSecondParameter` union, the dispatch, and assertion 12/13 in `scripts/verify-new-session.mjs` |
+| `navigation.ts` | **the `startSession` body composes upstream's draft preparation with this tree's three callbacks.** rc.3 changed the `initializeDraft` expression to honour `whenDraftExists`; this tree keeps that expression verbatim and wraps `openWorkspace`'s single `beforeOpen` so `announce` / `beforeOpen` / `draftPreparation` all run. A re-sync must merge these two, not pick one: taking upstream's 26-line conflict block drops `resolveBaseWorkspace` and `placeUnscoped`; taking this tree's body unchanged loses rc.3's draft semantics | re-apply the composition **and** keep upstream's `initializeDraft`, then re-check that `recentWorkspace` / `currentWorkspaceId` / `draft.workspaceRequired` did not come in with it |
 | `rows/WorkspaceBrowser.tsx` | rename/delete dialogs and the group drag take a `kind`-tagged row (`RowRequest`), so a caller-supplied project row drives the same affordances as a Workspace row; the header's add control runs `createProject` when the composition supplies one, and the dialog titles/labels switch on that kind | re-apply the dispatch, the two dialog blocks, and the drag wiring |
 | `rows/WorkspaceBrowser.tsx` | a **project** drop resolves its anchor against `groupingOverride`'s order and honours the side the marker showed, so the landed position equals the line the user saw (see below) | re-apply the `projectIds` lookup, the `half` from `activeDrag.over`, and the next-sibling anchor |
 | `rows/WorkspaceBrowser.tsx` | a **project title is unique**: the create dialog blocks a name another project holds, the rename dialog does too, and the rename alert names the row kind it is warning about (see below) | re-apply `createDuplicate`, the `kind === 'project'` arm of `renameDuplicate`, and the `conflict.projectNamed` dispatch |

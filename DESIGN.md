@@ -2,7 +2,7 @@
 
 > 状态：设计定案（已转向 **fork 官方组件** 路线）
 > 版本：v2.2 · 2026-10-17
-> 适用 DSH：0.2.1-rc.2（壳）· vendor 源 **0.2.1-rc.2**（同步流程见 §5 的 **L4.5**）
+> 适用 DSH：0.2.1-rc.3（壳）· vendor 源 **0.2.1-rc.3**（同步流程见 §5 的 **L4.5**）
 > 定位：可发布的社区插件（`dsh-project-groups`）
 > 交付方式：基础功能分 6 层（L0–L4.5），额外功能见 §24
 
@@ -3033,6 +3033,36 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
 2. **测试夹具过时**：0.2.0 的 `sessionTitle` 改读新字段 `title`（不再是 `displayTitle`）⇒
    3 个 verify 脚本的夹具要补 `title`。**上游自己也做了同样的夹具修改**（`tree.client.spec.ts`），
    这正是确认修法正确的依据。
+
+#### 后续同步记录
+
+| 日期 | 从 → 到 | 上游改动 | 冲突 | 结果 |
+|---|---|---|---|---|
+| 2026-10-17 | rc.1 → rc.2 | `ui-workspace/src` **逐字节相同** | 无 | 只跟版本号 |
+| **2026-10-24** | **rc.2 → rc.3** | **1 个源文件**：`navigation.ts` +21/−20 | **2 处** | 见下 |
+
+**rc.3 这一步值得记下来的三件事：**
+
+1. **上游改的正好是我们 patch 过的文件。** 28 个文件里 27 个逐字节未变，唯一变的
+   `navigation.ts` 恰是那 10 个我们打过补丁的文件之一 ⇒ 必须三方合并，不能拷贝。
+   实测 `git merge-file` 产生 **2 个冲突**（解 JSDoc + 解 `startSession` 方法体），
+   其余 12 处我方 hunk 自动合并干净。
+
+2. **`startSession` 是"必须合、不能选边"的缝。** 上游把 `clearPreviousDraft` 换成
+   `whenDraftExists` 三态、并把两路 `openWorkspace` 调用合并成一路；我方在同一函数里
+   有 85 行的三层回调组合与 `resolveBaseWorkspace` 三分支。取上游那 26 行会丢
+   `resolveBaseWorkspace` / `placeUnscoped`（真机表现为"底层工作区缺失时静默建会话"）；
+   取我方原样会丢 rc.3 的草稿语义。**解法是保留我方骨架、只换判定式**，并在
+   `src/vendored/README.md` 的 patch 表里为这条缝单独加一行。
+
+3. **豁免表与 `node_modules` 一样是"跟着版本走"的。** `pnpm-workspace.yaml` 的
+   `minimumReleaseAgeExclude` 里 77 处硬编码 `0.2.1-rc.2`，漏改会让 `pnpm install`
+   的 release-age 检查在几十个包上同时失败，而错误信息不指向原因 —— 这次是
+   `verify:release` 的「pnpm 豁免版本与 lockfile 一致」先抓住的。
+
+**顺带修正的一处台账口径**：`src/vendored/README.md` 的 patch 表列名原为 `Hunks`，
+数的是语义改动点（`WorkspaceBrowser.tsx` 记 48，而 `git diff -U0` 是 114 个 hunk）。
+两数都对，只是口径不同；现分列 `Edits` 与 `Hunks`，避免下一次再被误读为"数字错了"。
 
 ### 额外功能  ⏸ 默认不做（见 §24）
 - [ ] **X-1** 会话 hover 卡显示所属项目
