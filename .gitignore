@@ -35,3 +35,7 @@ coverage/
 *.key
 *.p12
 *.pfx
+
+# Superpowers plan workspaces: scratch for a plan's ledger, briefs and review
+# packages. `git clean -fdx` destroys these — recover from `git log`.
+.superpowers/
