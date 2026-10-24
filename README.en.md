@@ -197,7 +197,7 @@ Source layout:
 | `src/spec.ts` | Domain schema: the project record, global settings, the three state values |
 | `src/client/index.ts` | Browser entry: the grouping injection, the settings card, the dialogs |
 | `src/client/spec-picker.tsx` | The spec choose / upload / delete dialog |
-| `src/vendored/` | Copy of the official client source + **107 patch hunks across 10 files** (see its [README](src/vendored/README.md)) |
+| `src/vendored/` | Copy of the official client source + **108 semantic edits (200 diff hunks) across 10 files** (see its [README](src/vendored/README.md)) |
 | `scripts/` | Probes and verification; `DESIGN.md` explains what each proves |
 | `scripts/lib/boot-dsh.mjs` | Shared starting point for the real-DSH probes: profile bootstrap + first-run overlay dismissal |
 | `CHANGELOG.md` | What changed in each release, as users see it |

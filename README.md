@@ -172,7 +172,7 @@ pnpm check            # typecheck + build + 13 项校验 + 探针（851 条断�
 | `src/spec.ts` | 领域 schema：项目记录、全局设置、三个状态值 |
 | `src/client/index.ts` | 浏览器入口：注入分组、设置卡片、选择弹窗 |
 | `src/client/spec-picker.tsx` | 规范选择 / 上传 / 删除对话框 |
-| `src/vendored/` | 官方 client 源码副本 + **107 个 patch hunk、涉及 10 个文件**（见其 [README](src/vendored/README.md)） |
+| `src/vendored/` | 官方 client 源码副本 + **108 处语义改动（200 个 diff hunk）、涉及 10 个文件**（见其 [README](src/vendored/README.md)） |
 | `scripts/` | 探针与校验；`DESIGN.md` 说明每个脚本证明了什么 |
 | `scripts/lib/boot-dsh.mjs` | 真实 DSH 探针的共同起点：profile 自举 + 首启引导层关闭 |
 | `CHANGELOG.md` | 每个版本对使用者可见的变化 |

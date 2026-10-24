@@ -2,7 +2,7 @@
 
 > 状态：设计定案（已转向 **fork 官方组件** 路线）
 > 版本：v2.2 · 2026-10-17
-> 适用 DSH：0.2.1-rc.2（壳）· vendor 源 **0.2.1-rc.2**（同步流程见 §5 的 **L4.5**）
+> 适用 DSH：0.2.1-rc.3（壳）· vendor 源 **0.2.1-rc.3**（同步流程见 §5 的 **L4.5**）
 > 定位：可发布的社区插件（`dsh-project-groups`）
 > 交付方式：基础功能分 6 层（L0–L4.5），额外功能见 §24
 
@@ -3050,7 +3050,7 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
 
 2. **`startSession` 是"必须合、不能选边"的缝。** 上游把 `clearPreviousDraft` 换成
    `whenDraftExists` 三态、并把两路 `openWorkspace` 调用合并成一路；我方在同一函数里
-   有 88 行的三层回调组合与 `resolveBaseWorkspace` 三分支。取上游那 26 行会丢
+   有 85 行的三层回调组合与 `resolveBaseWorkspace` 三分支。取上游那 26 行会丢
    `resolveBaseWorkspace` / `placeUnscoped`（真机表现为"底层工作区缺失时静默建会话"）；
    取我方原样会丢 rc.3 的草稿语义。**解法是保留我方骨架、只换判定式**，并在
    `src/vendored/README.md` 的 patch 表里为这条缝单独加一行。

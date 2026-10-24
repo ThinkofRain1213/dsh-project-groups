@@ -61,13 +61,29 @@ const listState = (byId, ids = Object.keys(byId)) => ({
  * `recording` collects the calls the assertions read.
  */
 function bench({ items = [], sessions = {}, initializeDefault } = {}) {
-  const recording = { connect: [], created: [], notify: [], selectPanel: [] }
+  const recording = { connect: [], created: [], notify: [], selectPanel: [], drafts: [] }
   const ctx = new Context()
   const layout = {
     beginNavigation: () => new AbortController().signal,
     selectPanel: id => { recording.selectPanel.push(id) },
   }
   ctx.provide('layout', layout)
+  // `prepareDraft` reads the conversation service and hands the options to it. Provided
+  // here so the two-argument options form can be observed end to end: the assertion is
+  // that upstream's `prompt` / `whenDraftExists` actually reach this call, which is the
+  // whole point of rc.3's `ui-entry-customization`.
+  ctx.provide('conversation', {
+    input: {
+      requestDraftInitialization: (binding, options) => {
+        recording.drafts.push({ sessionId: binding?.sessionId, options })
+        return 'applied'
+      },
+    },
+  })
+  // `draftPreparationFailed` reports through this, so a failure path needs it too.
+  ctx.provide('locale', {
+    bind: () => () => 'draft failed',
+  })
 
   const workspacesSnapshot = snapshot(items)
   const sessionsState = listState(sessions)
@@ -84,6 +100,14 @@ function bench({ items = [], sessions = {}, initializeDefault } = {}) {
     }),
     // `replaceMain` resolves the retained target through this before opening.
     subagentAddress: id => id,
+    // `prepareDraft` looks the Session up through this before handing the options on.
+    //
+    // Absent until now because no case reached it: every earlier `startSession` call
+    // passed at most a `beforeOpen` callback, so `initializeDraft` was false and the
+    // draft path never ran. The two-argument options form reaches it, and without this
+    // the fixture throws `this.sessions.binding is not a function` — a fixture gap that
+    // would read like a product failure.
+    binding: id => ({ sessionId: id }),
     create: async opts => {
       // Record both the request and the id handed back, so an assertion can check
       // that the id the caller saw is the one creation produced.
@@ -126,6 +150,7 @@ function bench({ items = [], sessions = {}, initializeDefault } = {}) {
     recording.created.length = 0
     recording.notify.length = 0
     recording.selectPanel.length = 0
+    recording.drafts.length = 0
   }
   return { uiWorkspace, recording, settle }
 }
@@ -313,6 +338,67 @@ const tick = async () => {
   b.uiWorkspace.startSession(undefined, (sessionId) => { seen.push(sessionId) })
   await tick()
   check('no default Workspace means no callback', seen.length === 0, JSON.stringify(seen))
+}
+
+// 12. Upstream's two-argument form: the second parameter is an OPTIONS OBJECT, not a
+//     callback. `ui-agent-preset` has always called it that way, and rc.3 added a second
+//     such caller (`ui-entry-customization`, whose whole point is to open a Session with
+//     a prepared prompt). This tree spent the second slot on `beforeOpen`, so an object
+//     arrived where a function was expected and `beforeOpen?.(sessionId)` threw
+//     `TypeError: beforeOpen is not a function` — after the Session had already been
+//     created. The caller saw a Session with no preset, no prompt and no notice.
+//
+//     The override must not change the one-argument or callback contracts, which is what
+//     assertions 8-11 above already cover.
+{
+  const b = bench({
+    items: [workspace('default', [])],
+    initializeDefault: async () => workspace('default', []),
+  })
+  await b.settle()
+  // Exactly the shape `ui-entry-customization` uses.
+  b.uiWorkspace.startSession(undefined, {
+    agentPreset: 'cordis',
+    prompt: 'summarise the attached log',
+    whenDraftExists: 'append',
+  })
+  await tick()
+  check('a two-argument call with an options object still creates the Session',
+    b.recording.created.length === 1, JSON.stringify(b.recording.created))
+  check('and it does not report a failure',
+    b.recording.notify.length === 0, JSON.stringify(b.recording.notify))
+  // The preset travels a different route than the draft, so it lands in the create call.
+  check('the options object reaches the create call as its preset',
+    b.recording.created[0]?.agentPreset === 'cordis',
+    JSON.stringify(b.recording.created[0]))
+  // The draft content takes the other route, through `prepareDraft`. Asserting only the
+  // preset would pass on a build that dropped the prompt — and the prompt is the reason
+  // `ui-entry-customization` exists at all.
+  check('and the prompt reaches draft preparation',
+    b.recording.drafts.length === 1
+      && b.recording.drafts[0]?.options?.prompt === 'summarise the attached log',
+    JSON.stringify(b.recording.drafts))
+  check('and whenDraftExists survives the trip',
+    b.recording.drafts[0]?.options?.whenDraftExists === 'append',
+    JSON.stringify(b.recording.drafts[0]?.options))
+}
+
+// 13. An explicit Workspace plus an options object — the same dispatch, with a target.
+{
+  const b = bench({
+    items: [workspace('explicit', [])],
+    initializeDefault: async () => workspace('explicit', []),
+  })
+  await b.settle()
+  b.uiWorkspace.startSession('explicit', { agentPreset: 'cordis' })
+  await tick()
+  check('an explicit target plus an options object targets that Workspace',
+    b.recording.connect[0] === 'explicit', JSON.stringify(b.recording.connect))
+  check('...reaches the create call as its preset',
+    b.recording.created[0]?.agentPreset === 'cordis',
+    JSON.stringify(b.recording.created[0]))
+  check('...and reports no failure',
+    b.recording.notify.length === 0, JSON.stringify(b.recording.notify))
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)

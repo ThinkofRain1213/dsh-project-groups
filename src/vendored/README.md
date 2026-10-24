@@ -13,7 +13,7 @@ official UI 1:1.
 | Version | **0.2.1-rc.3** |
 | Commit | `1f81c047fc` (`dsh-v0.2.1-rc.3`) |
 | Re-synced | 2026-10-24 (from `687f282e86` / `dsh-v0.2.1-rc.2`, itself from `1600d8a1e1` / `dsh-v0.2.1-rc.1`, itself from `639ed01539` / `dsh-v0.2.0-rc.2`, itself re-synced 2026-09-30 from `477b4f420` / `dsh-v0.1.7-rc.2`) |
-| Patch footprint | **10 files / 200 hunks / +4011 −192** against the upstream tag, plus one file upstream does not have (`client/session-actions/BaseWorkspaceMissing.tsx`) |
+| Patch footprint | **10 files / 108 edits / 200 hunks / +4011 −192** against the upstream tag, plus one file upstream does not have (`client/session-actions/BaseWorkspaceMissing.tsx`) |
 
 ### The 0.2.1-rc.2 → 0.2.1-rc.3 step
 
@@ -30,7 +30,7 @@ rather than a copy. The merge produced exactly **2 conflicts**:
    `openWorkspace` call paths into one. This tree's version composes three callbacks
    (`announce`, `beforeOpen`, `draftPreparation`) and routes an unscoped Session
    through `resolveBaseWorkspace` into `startSessionInDefaultWorkspace`. The
-   resolution keeps this tree's 88-line body and swaps **only** the `initializeDraft`
+   resolution keeps this tree's 85-line body and swaps **only** the `initializeDraft`
    expression, so the new draft semantics apply without losing the composition or the
    底层工作区 branches.
 
@@ -238,21 +238,24 @@ per file, with `git diff --no-index -U0`):
 | `client/rows/AnimatedRows.tsx` | 4 | 6 | 39 | 1 |
 | `client/shortcuts.ts` | 3 | 4 | 11 | 1 |
 | `client/rows/WorkspaceBrowser.module.css` | 2 | 4 | 426 | 0 |
-| **Total** | **107** | **200** | **4011** | **192** |
+| **Total** | **108** | **200** | **4011** | **192** |
 
 > **`Edits` and `Hunks` are two counts of the same diff, and the table needs both.**
-> `Edits` counts semantic edit points — what this table has always meant, and why the
-> Total matches the "107 entries" figure the patch list below enumerates. `Hunks` is what
+> `Edits` counts semantic edit points — what this table has always meant. `Hunks` is what
 > `git diff -U0` emits, and it is higher because two adjacent insertions are one edit but
 > two hunks: `WorkspaceBrowser.tsx` is 48 edits and 114 hunks. `Added`/`Removed` are exact
 > under both readings and are what a re-sync should reproduce. Before rc.3 only `Edits`
-> was recorded under the column name `Hunks`; both are now stated so neither number can
+> was recorded, under the column name `Hunks`; both are now stated so neither number can
 > be mistaken for the other again.
+>
+> Neither total equals the number of rows in the patch list below: that list is
+> **76 rows** describing intents, and one row routinely covers several edits. The 108 is
+> a diff measurement, the 76 is a seam inventory. They are not meant to match.
 >
 > `navigation.ts` moved from 7 to 8 edits and from −32 to −30 removed because rc.3
 > rewrote the `startSession` body in a way that deletes two fewer lines.
 
-The count grew from 75 entries to 107 edits not because features were added but because
+The count grew from 75 to 108 edits not because features were added but because
 upstream **rewrote** the regions this tree patches: `WorkspaceBrowser.tsx` alone went from a
 handful of edits to 48 once the watermark model and `HoverCardGroup` landed inside the
 same functions. The table below still describes **intent** — one row per seam — and is what a
@@ -276,7 +279,7 @@ re-sync re-applies; the counts above are what a re-sync should reproduce.
 | `rows/Rows.tsx` | a Session row's `dragover` / `drop` call `stopPropagation`, so the row is the target rather than the enclosing group section; `ProjectRowItem` takes an optional `groupDrop` that makes the **header row** — not the section — the cross-group hit target (the highlight stays on the section, painted by the region) | re-add the two calls and the `groupDrop` prop and handlers |
 | `tree.ts` | under a grouping override the Ungrouped bucket always renders, empty included — it is the drop target that takes a Session back out of a caller-supplied group (see below) | re-apply the `archivedFilter !== 'only'` alternative |
 | `navigation.ts` | `startSession` takes an optional `beforeOpen` callback and threads it into `openWorkspace`, so a caller can act on the Session that lands (a project row files it). Omitted, the flow is unchanged | re-add the parameter and the pass-through |
-| `navigation.ts` | **the `startSession` body composes upstream's draft preparation with this tree's three callbacks.** rc.3 changed the `initializeDraft` expression to honour `whenDraftExists`; this tree keeps that expression verbatim and wraps `openWorkspace`'s single `beforeOpen` so `announce` / `beforeOpen` / `draftPreparation` all run. A re-sync must merge these two, not pick one: taking upstream's 26-line body drops `resolveBaseWorkspace` and `placeUnscoped`; taking this tree's body unchanged loses rc.3's draft semantics | re-apply the composition **and** keep upstream's `initializeDraft`, then re-check that `recentWorkspace` / `currentWorkspaceId` / `draft.workspaceRequired` did not come in with it |
+| `navigation.ts` | **the `startSession` body composes upstream's draft preparation with this tree's three callbacks.** rc.3 changed the `initializeDraft` expression to honour `whenDraftExists`; this tree keeps that expression verbatim and wraps `openWorkspace`'s single `beforeOpen` so `announce` / `beforeOpen` / `draftPreparation` all run. A re-sync must merge these two, not pick one: taking upstream's 26-line conflict block drops `resolveBaseWorkspace` and `placeUnscoped`; taking this tree's body unchanged loses rc.3's draft semantics | re-apply the composition **and** keep upstream's `initializeDraft`, then re-check that `recentWorkspace` / `currentWorkspaceId` / `draft.workspaceRequired` did not come in with it |
 | `rows/WorkspaceBrowser.tsx` | rename/delete dialogs and the group drag take a `kind`-tagged row (`RowRequest`), so a caller-supplied project row drives the same affordances as a Workspace row; the header's add control runs `createProject` when the composition supplies one, and the dialog titles/labels switch on that kind | re-apply the dispatch, the two dialog blocks, and the drag wiring |
 | `rows/WorkspaceBrowser.tsx` | a **project** drop resolves its anchor against `groupingOverride`'s order and honours the side the marker showed, so the landed position equals the line the user saw (see below) | re-apply the `projectIds` lookup, the `half` from `activeDrag.over`, and the next-sibling anchor |
 | `rows/WorkspaceBrowser.tsx` | a **project title is unique**: the create dialog blocks a name another project holds, the rename dialog does too, and the rename alert names the row kind it is warning about (see below) | re-apply `createDuplicate`, the `kind === 'project'` arm of `renameDuplicate`, and the `conflict.projectNamed` dispatch |

@@ -35,6 +35,26 @@ export interface StartSessionOptions extends DraftInitializationOptions {
   readonly agentPreset?: string
 }
 
+/**
+ * `startSession`'s second parameter, in either of its two shapes.
+ *
+ * Upstream's signature is `startSession(workspaceId?, options?)`. This fork needs a
+ * `beforeOpen` seam in the same position so a project row can file the Session it just
+ * created, and it originally spent that slot on the callback alone. That was wrong in a
+ * way no gate noticed: upstream callers pass an **options object** there — `ui-agent-preset`
+ * has since 0.2.1-rc.1, and rc.3 added `ui-entry-customization`, whose only job is to open a
+ * Session with a prepared prompt and preset.
+ *
+ * An object arriving where a function was expected throws `beforeOpen is not a function`
+ * *after* the Session has been created, so the user got an empty Session and no notice.
+ *
+ * The union is what makes both contracts hold at once, and it keeps the rule this tree
+ * lives by: a caller who passes neither still gets the official behaviour.
+ */
+export type StartSessionSecondParameter =
+  | ((sessionId: SessionId) => void)
+  | StartSessionOptions
+
 /** Workspace archive and directory operations consumed by Client UI domains. */
 export interface UiWorkspace {
   /**
@@ -94,7 +114,7 @@ export interface UiWorkspace {
    */
   startSession(
     workspaceId?: WorkspaceId,
-    beforeOpen?: (sessionId: SessionId) => void,
+    beforeOpenOrOptions?: StartSessionSecondParameter,
     options?: StartSessionOptions,
   ): void
   /**
@@ -364,13 +384,28 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
   startSession(
     workspaceId?: WorkspaceId,
-    beforeOpen?: (sessionId: SessionId) => void,
+    beforeOpenOrOptions?: StartSessionSecondParameter,
     options?: StartSessionOptions,
   ): void {
+    // Two callers, one slot. Upstream's second parameter is the options object; this
+    // fork's is `beforeOpen`. Dispatch on the shape rather than picking a side, so an
+    // upstream caller (`ui-agent-preset`, and rc.3's `ui-entry-customization`) and a
+    // project row both work. Without this, an object arrives where a function is
+    // expected and `beforeOpen?.(sessionId)` throws **after** the Session exists —
+    // the user gets an empty Session, no preset, no prompt, and no notice.
+    //
+    // `typeof x === 'function'` is the discriminator because the two shapes cannot
+    // overlap: an options object is never callable, and a callback never carries
+    // `prompt` / `agentPreset`. Passing neither still takes the official path.
+    const beforeOpen = typeof beforeOpenOrOptions === 'function' ? beforeOpenOrOptions : undefined
+    const resolvedOptions = typeof beforeOpenOrOptions === 'function'
+      ? options
+      : beforeOpenOrOptions ?? options
+
     // Upstream's half: what the Session starts with. Split first, because
     // `agentPreset` travels a different route than the draft content.
-    const { agentPreset, ...draft } = options ?? {}
-    const draftOptions = options === undefined ? undefined : draft
+    const { agentPreset, ...draft } = resolvedOptions ?? {}
+    const draftOptions = resolvedOptions === undefined ? undefined : draft
     const initializeDraft = draftOptions !== undefined && (draftOptions.prompt !== undefined
       || (draftOptions.whenDraftExists ?? (draftOptions.clearPreviousDraft === true ? 'replace' : 'keep')) === 'replace')
 
