@@ -96,7 +96,6 @@ async function stop(child) {
  * @returns the measurements, or `null` with a reason when the card is absent.
  */
 const measure = () => page.evaluate(() => {
-  const section = document.querySelector('[data-plugin-config] > div > div')
   const root = document.querySelector('[data-plugin-config]')
   if (root === null) return { reason: 'no [data-plugin-config]' }
 
@@ -207,7 +206,45 @@ const measure = () => page.evaluate(() => {
     )
   }
 
+  // Cross-rule distance, for EVERY rule on the card.
+  //
+  // A rule costs no space of its own, so the content-to-content distance across it
+  // is the padding above plus the padding below. When each side belongs to its own
+  // `.section` that is 16 + 16 = 32. A rule that ends up *inside* one section gets
+  // only the neighbouring blocks' 12 + 12 = 24 instead, which makes one line in a
+  // three-line card visibly tighter than the other two — the exact "two densities"
+  // problem this change exists to remove.
+  const ruleGaps = [...root.querySelectorAll('[role="separator"]')].map((node) => {
+    const previous = node.previousElementSibling
+    const next = node.nextElementSibling
+    if (previous === null || next === null) return { reason: 'rule without both neighbours' }
+    const before = getComputedStyle(previous).paddingBottom
+    const after = getComputedStyle(next).paddingTop
+    return {
+      gap: Math.round(parseFloat(before) + parseFloat(after)),
+      before,
+      after,
+      beforeTag: describe(previous),
+      afterTag: describe(next),
+    }
+  })
+
+  // The card's own bottom edge: the gap from the last block's *content* to the
+  // section's bottom edge. The block's box still has its own 12px padding inside
+  // it — the negative margin pulled the *box* down, not the padding away — so the
+  // content edge is the box's bottom minus that padding. Expect 16: the section's
+  // padding with the block's already cancelled by `:last-child`.
+  const lastSection = sections[sections.length - 1]
+  const lastSectionRect = lastSection.getBoundingClientRect()
+  const lastChild = lastSection.lastElementChild
+  const cardBottomToContent = lastChild === null ? null : Math.round(
+    lastSectionRect.bottom - lastChild.getBoundingClientRect().bottom
+      + parseFloat(getComputedStyle(lastChild).paddingBottom),
+  )
+
   return {
+    cardBottomToContent,
+    ruleGaps,
     sectionCount: sections.length,
     rowCount: rows.length,
     sectionTop: Math.round(sectionRect.top),
@@ -262,9 +299,15 @@ try {
 
   const m = await measure()
   console.log(`测量结果：${JSON.stringify(m)}`)
-  check('设置卡渲染出来且找到三个 section', m.sectionCount >= 3, String(m.sectionCount))
-
-  if (typeof m.rowPaddingTop === 'string') {
+  // The section count is the precondition for every measurement below, so its
+  // failure is reported on its own and the rest are skipped with a named reason —
+  // wrapping all ten in one `if` collapsed a real diagnostic into a single FAIL
+  // with no hint of what went wrong.
+  const measured = typeof m.rowPaddingTop === 'string'
+  check('设置卡渲染出来且找到 section', m.sectionCount >= 3, String(m.sectionCount))
+  if (!measured) {
+    console.log(`SKIP  其余测量——${String(m.reason ?? 'card did not measure')}`)
+  } else {
     check('行 padding-top 是 12px', m.rowPaddingTop === '12px', m.rowPaddingTop)
     check('行 padding-bottom 是 12px', m.rowPaddingBottom === '12px', m.rowPaddingBottom)
     check('section padding-top 是 16px', m.sectionPaddingTop === '16px', m.sectionPaddingTop)
@@ -288,7 +331,16 @@ try {
     // declared 6px is what the renderer actually put between the heading and its
     // content. Without it, a gap changed to 8px passed every other check.
     check('组标题 → 组内容 是 6px', m.groupGap === 6, `${String(m.groupGap)}px`)
+    // Every line on the card must be the same distance from the content it sits
+    // between. A line that lands inside one section gets 12 + 12 instead of
+    // 16 + 16, so this is the assertion that catches a mis-nested section — the
+    // failure mode the static check cannot see at all.
+    const gaps = m.ruleGaps ?? []
+    check('分隔线两侧各 16px（共 32px）',
+      gaps.length > 0 && gaps.every(entry => entry.gap === 32),
+      JSON.stringify(gaps))
     check('卡片顶 → 首个内容 是 16px', m.cardTopToContent === 16, `${String(m.cardTopToContent)}px`)
+    check('卡片底 → 最后内容 是 16px', m.cardBottomToContent === 16, `${String(m.cardBottomToContent)}px`)
   }
 } finally {
   if (instance?.child !== undefined && instance.child.exitCode === null) await stop(instance.child)

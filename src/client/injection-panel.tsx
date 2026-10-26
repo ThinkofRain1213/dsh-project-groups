@@ -105,8 +105,10 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
     <pre key={key} className={css.injectionText}>{text}</pre>
   )
   /*
-   * Two groups, separated by a rule — a fragment so both are `.stack`'s own children and the
-   * caller controls the rules around them.
+   * Two groups, separated by a rule, **each in its own `.section`**, and a fragment around the
+   * whole so both sections stay the card's own children — which is what keeps the rules between
+   * them the same 16 + 16 apart as the card's own rules. Wrapping both halves in one section
+   * instead made this rule's sides 12 + 12, the one line on the card that read tighter.
    *
    * The card has no panel: each half is the same `.group` shape 文档规范 uses (a heading and what
    * it introduces). They used to be one group holding both halves, with a `.injectionSubTitle` label
@@ -119,12 +121,16 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
    * everything else inside a group.
    */
   return (
-    // One card segment. The panel's two halves and the seam rule between them all
-    // live inside it, so the boundary above and below is the segment's own 16px
-    // padding — the same source the card's other segments use.
-    <div className={css.section}>
-      <div className={css.group}>
-        <div className={css.groupTitle}>{t('injectionTitle')}</div>
+    // Two card segments, one per half, so the seam rule between them sits
+    // *between* sections rather than inside one. A single wrapping section put the
+    // rule-between-halves and the card's own rules at different distances (12 + 12
+    // against 16 + 16), which made the middle line of three visibly tighter than its
+    // neighbours. The fragment generates no element, so both sections stay direct
+    // children of the card's `.stack`.
+    <>
+      <div className={css.section}>
+        <div className={css.group}>
+          <div className={css.groupTitle}>{t('injectionTitle')}</div>
         {main === null
           ? <div className={css.injectionOff}>{t('injectionOff')}</div>
           : renderBlock(main)}
@@ -139,6 +145,7 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
          * one thing that is true then.
          */}
         {main !== null && <div className={css.desc}>{t('injectionNote')}</div>}
+        </div>
       </div>
 
       {/*
@@ -147,10 +154,6 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
        * compare. With the master switch off `injectionDiffGroups` returns nothing, so both go — a
        * rule with no group under it would be a line with nothing on either side of it, and an
        * empty group would be a heading over no rows.
-       *
-       * The rule is part of this half rather than the card's: the two rules the card renders around
-       * the panel bound the whole section, and with this half gone they end up one either side of
-       * the first group, which is exactly the pair the panel needs then.
        */}
       {groups.length > 0 && (
         <>
@@ -158,13 +161,13 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
            * The rule between the halves, and only there: it marks where "what is injected" ends and
            * "how the states differ" begins, which is the seam the user wanted visible.
            *
-           * Like the card's other rules it costs no space — `margin: 0`, so it drops into the middle
-           * of the space the two groups already leave between their contents (12px of bottom
-           * padding above, 12px of top padding below), which is what keeps a ruled boundary the
-           * same content-to-content distance as an unruled one.
+           * It sits between two sections, like the card's own rules, so the distance across it is
+           * the same 16 + 16 those get. Inside one section it would have been 12 + 12 and read as
+           * a tighter seam than the lines above and below it.
            */}
           <div className={css.rule} role="separator" />
 
+          <div className={css.section}>
           <div className={css.group}>
             <div className={css.groupTitle}>{t('injectionDiffTitle')}</div>
             {/*
@@ -206,8 +209,9 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
               </div>
             ))}
           </div>
+          </div>
         </>
       )}
-    </div>
+    </>
   )
 }

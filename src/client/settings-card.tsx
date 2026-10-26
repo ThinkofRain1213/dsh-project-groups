@@ -685,7 +685,9 @@ export function ProjectGroupsCard({
 
         It sits after the injection chain it describes, so the card reads: the switches, what they
         produce, then where Sessions land. The panel returns two `.group`s — the same shape the
-        文档规范 row uses — with a rule of its own between them, and no enclosing surface.
+        文档规范 row uses — each in its own `.section`, with a rule of its own between the two
+        sections. That placement is what makes the middle line as far from its neighbours as the
+        card's own lines are; see the note in `injection-panel.tsx`.
       */}
       <InjectionPanel
         injectInfo={injectInfo}

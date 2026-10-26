@@ -187,19 +187,20 @@
 /*
  * A boundary line between two blocks, and it costs no space.
  *
- * `margin: 0` is the whole design. Two neighbouring blocks already leave 16 + 16 = 32px between
- * their contents (each one's own `padding`), and this rule drops into the middle of that gap, so
- * "content to rule" and "rule to content" are both 16px — the same value either side of it, and
- * content-to-content stays exactly the 32px it would be with no rule at all.
+ * `margin: 0` is the whole design. The blocks either side of a rule belong to two
+ * different `.section`s, and each section contributes its own 16px of padding, so the rule
+ * drops into the middle of 16 + 16 = 32px — "content to rule" and "rule to content" are the
+ * same value, and content-to-content stays the 32px it would be with no rule at all.
  *
  * That is also why the rule is **centred by construction**: its position is decided by the two
  * paddings it sits between, not by a margin of its own. The invariant to keep is therefore that
- * the block above and the block below pad the same amount. If one of them ever changes, the rule
- * drifts toward the other and stops meaning "the boundary".
+ * **both neighbours are sections**. A rule that ends up inside one section sees only the blocks'
+ * own 12px paddings and sits 12 + 12 = 24px apart — visibly tighter than the other lines on the
+ * card. `probe-settings-rhythm.mjs` asserts every rule's two sides to catch exactly that.
  *
  * Drawn as its own element rather than as a `border` on a neighbour: a border belongs to one
  * block, which makes that block's own padding lopsided — and that asymmetry, where the rule sat
- * on one side of a gap it did not own, is what this card removed earlier today. It is full width
+ * on one side of a gap it did not own, is what this card removed earlier. It is full width
  * because a separator between two full-width blocks is not inset.
  *
  * An earlier version carried `margin: 16px 0`, which made this the one place on the card where two
