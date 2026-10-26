@@ -6828,3 +6828,71 @@ for (const ancestor of lineage.ancestors) { … }
 > **构建产物必须同步**：插件入口是 `lib/client.js`，探针加载的也是它。只改 `src/` 而不
 > `pnpm build`，探针测到的是上一次的产物——本已用反向对照证实：未构建时反向对照仍全绿，
 > 构建后才正确失败 5 条。`lib/` 随源码一起提交，与仓库既有惯例一致。
+
+## 30. 设置页纵向节奏统一（对齐通用 UI 规范）
+
+### 30.1 改动前的问题
+
+同一张卡里有**两种行距**：
+
+| 位置 | 构成 | 值 |
+|---|---|---|
+| 行 → 行 | `.row` padding 16 + 16 | 32px |
+| 组内块 → 块 | 16 + `.group` gap 8 + 16 | **40px** |
+| 行 → 组标题 | 16 + 16 + 8 | **40px** |
+
+根源是 `.group` 的 `gap: 8px` 叠在块自带的 16px padding 之上。规范 §0 的骨架里没有 `gap` 这一层，节奏全部由块自身的 padding 提供。两种数字并排，肉眼能看出「组内的行比散行松」。
+
+### 30.2 目标模型
+
+卡片根改为三段 `div.section`，段间用 `div.rule`：
+
+```
+div.stack                      gap 0
+├── div.section                ① ~ ⑦
+├── div.rule      ═════
+├── div.section                ⑧ 注入内容（由 InjectionPanel 自己输出）
+├── div.rule      ═════        ← 仅在 ⑨ 存在时
+├── div.section                ⑨ 状态差异
+├── div.rule      ═════
+└── div.section                ⑩ 底层工作区
+```
+
+数值：
+
+```css
+.section                { padding: 16px 0; }
+.section > :first-child { margin-top: -12px; }
+.section > :last-child  { margin-bottom: -12px; }
+.row / .group           { padding: 12px 0; }
+.group                  { gap: 6px; }
+.rowText                { gap: 6px; }
+```
+
+由此：行 → 行 24、行 → 组 24、组标题 → 内容 6、块 → 线 / 线 → 块 16、**跨线内容 → 内容 32**、卡片顶底各 16。
+
+### 30.3 两条负边距，其中一条是规范没有的
+
+《DSH-插件设置页UI规范》§2.3 只写 `:last-child`，因为它设想的首孩子是 `h3.heading`（`margin: 0`）。
+
+**我们的首孩子永远是带 12px padding 的行或组**，所以上侧也要吸——否则卡片顶是 16 + 12 = 28px。这是本项目对规范的补充，不是照抄。
+
+### 30.4 删除 `.groupHeading`
+
+⑩ 原用 `.groupHeading { gap: 4px }` 包住「标题 + 说明」，而 ⑧ 是把两者作为 `.group` 的直接孩子、靠 6px gap 分开。
+
+删掉包裹层后两处同构，**全卡不再有 4px 的 title/desc 间距**。`4px` 只保留在 `.cube` 内部（卡片 name → path → action）与 `.injectionVariant`（标签贴着它命名的块），二者都不是 title/desc 关系。
+
+### 30.5 验证
+
+| 文件 | 作用 |
+|---|---|
+| `scripts/verify-settings-rhythm.mjs` | 读样式表，钉死四个声明值 + 两条负边距 + 两个「不该动」的守卫 |
+| `scripts/probe-settings-rhythm.mjs` | 真机量计算样式与盒子几何，10 条断言 |
+
+两者不能互相替代：前者证明**声明**是对的，后者证明**渲染**是那个数。Task 5 的反向对照证实了这一点——把 `.group` 的 gap 改回 8px，静态断言只有一半能抓到，直到补上「组标题 → 组内容 6px」这条几何测量才正确失败。
+
+两个测量方法上的坑（已写进探针注释）：
+
+- **`getBoundingClientRect` 含 padding**：相邻 flex 项无 margin 时盒子首尾相接，直接测盒子间距恒为 0。内容间距是两侧 padding 之和。
+- **取「行的第一个 div」会落进撑满整行的 flex 单元格**，测出整行高度而非文字间距。要取 `.rowText` 的第一个孩子。
