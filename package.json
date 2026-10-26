@@ -117,7 +117,8 @@
     "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:client-seats && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:project-directories && pnpm verify:project-injection && pnpm verify:fork-inheritance && pnpm verify:settings-rhythm && pnpm verify:doc-spec && pnpm verify:locales && pnpm verify:release && pnpm verify:host-import && pnpm probe",
     "probe:fork-inherits": "node scripts/probe-fork-inherits-project.mjs",
     "verify:fork-inheritance": "node scripts/verify-fork-inheritance.mjs",
-    "verify:settings-rhythm": "node scripts/verify-settings-rhythm.mjs"
+    "verify:settings-rhythm": "node scripts/verify-settings-rhythm.mjs",
+    "probe:settings-rhythm": "node scripts/probe-settings-rhythm.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.5",
