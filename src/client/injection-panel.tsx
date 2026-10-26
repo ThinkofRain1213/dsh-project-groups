@@ -119,7 +119,10 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
    * everything else inside a group.
    */
   return (
-    <>
+    // One card segment. The panel's two halves and the seam rule between them all
+    // live inside it, so the boundary above and below is the segment's own 16px
+    // padding — the same source the card's other segments use.
+    <div className={css.section}>
       <div className={css.group}>
         <div className={css.groupTitle}>{t('injectionTitle')}</div>
         {main === null
@@ -204,6 +207,6 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
           </div>
         </>
       )}
-    </>
+    </div>
   )
 }

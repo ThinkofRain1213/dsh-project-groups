@@ -363,6 +363,15 @@ export function ProjectGroupsCard({
      * official cards use.
      */
     <div className={css.stack}>
+      {/*
+        Segment 1: every setting row, from the New Session destination down to the
+        per-project spec switch. The segment's own `padding: 16px 0` is what the
+        boundary above and below it is made of, and its `:first-child` /
+        `:last-child` negative margins absorb the 12px the first and last rows
+        carry — so the card's top edge and its ruled boundary are both exactly
+        16px from content.
+      */}
+      <div className={css.section}>
       <div className={css.row}>
         <div className={css.rowText}>
           <div className={css.title}>{t('title')}</div>
@@ -618,6 +627,7 @@ export function ProjectGroupsCard({
           {...injectDoc && injectInfo ? {} : { title: t('perProjectSpecGated') }}
         />
       </div>
+      </div>
 
       {pickingSpec && (
         <SpecPicker
@@ -696,6 +706,8 @@ export function ProjectGroupsCard({
         bundle's purity gate rejects a value import from a package outside
         PLATFORM_MODULES / INLINE_SAFE, and `ui-theme` is not one.
       */}
+      {/* Segment 3: the base workspace. Its own 16px padding closes the card. */}
+      <div className={css.section}>
       <div className={css.group}>
         {/*
           The heading and its one-line explanation, as a pair.
@@ -775,6 +787,7 @@ export function ProjectGroupsCard({
             {cubeAction(t('baseChoose'), () => { setPicking(true) })}
           </button>
         </div>
+      </div>
       </div>
 
       {picking && (
