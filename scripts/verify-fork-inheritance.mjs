@@ -59,9 +59,11 @@ const fakeSessions = ({ outcome = 'ok', afterOnCreated = 'ok' } = {}) => {
       return `child-${record.forks.length}`
     },
   }
+  // The method as the instance shipped it, so a test can tell "still wrapped"
+  // from "restored" by identity rather than by a marker that never existed.
+  record.originalFork = sessions.fork
   return { sessions, record }
 }
-
 const deps = (projectId, record, { assignThrows = false } = {}) => ({
   projectOf: () => projectId,
   assign: async (childId, pid) => {
@@ -158,12 +160,19 @@ const deps = (projectId, record, { assignThrows = false } = {}) => ({
 // --- 8. The cleanup restores the original method ----------------------------
 {
   const { sessions, record } = fakeSessions()
+  // Capture the method object itself: the assertion below compares identity, so
+  // it can only pass when the very same function is back on the instance.
+  // The previous version checked `sessions.fork.marker !== true`, but `marker`
+  // lives on `sessions`, never on `fork`, so it was `undefined` in every state —
+  // including while still wrapped. It passed without testing anything.
+  const original = sessions.fork
   const undo = wrapFork(sessions, deps('P1', record))
+  const wrapped = sessions.fork
+  check('包装后实例上换成了另一个函数', wrapped !== original, String(wrapped === original))
   undo()
+  check('还原后 fork 是原来那个函数', sessions.fork === original, String(sessions.fork === wrapped))
   await sessions.fork({ sessionId: 'parent' })
   check('还原后不再写入', record.assigns.length === 0, JSON.stringify(record.assigns))
-  check('还原后 fork 回到原型方法', sessions.fork.marker !== true,
-    String(sessions.fork.marker))
 }
 
 // --- 9. A failure AFTER onCreated must not write ----------------------------
@@ -201,6 +210,40 @@ const deps = (projectId, record, { assignThrows = false } = {}) => ({
   check('模型未就绪 → fork 仍返回子会话', childId === 'child-1', String(childId))
   check('模型未就绪 → 不写 assignment、不记警告',
     record.assigns.length === 0 && record.warns.length === 0, JSON.stringify(record))
+}
+
+// --- 11. A stale disposer must not tear down a newer wrap -------------------
+{
+  // The HMR shape this guards against: two *different* wrappers in sequence,
+  // where the older disposer runs after the newer one installed.
+  //
+  // `wrapFork` refuses to stack when it sees its own marker, so the sequence has
+  // to be built the way Cordis actually produces it: the first wrapper, then a
+  // *second, independent* wrapper (as a reloaded module copy would install), then
+  // the first disposer. Without an ownership check that disposer restores the
+  // original and the live instance ends up unwrapped.
+  //
+  // `index.ts:401-407` already guards this race for the module-level service
+  // captures; this wrapper owes the same discipline.
+  const { sessions, record } = fakeSessions()
+  const originalFork = sessions.fork
+  const undoFirst = wrapFork(sessions, deps('P1', record))
+  const firstWrapped = sessions.fork
+  // Clear the marker so a second, independent wrap installs over the first —
+  // exactly what a reloaded module copy does (its `Symbol.for` marker is the same,
+  // but the *wrapper identity* differs, which is what the ownership check reads).
+  delete firstWrapped[Symbol.for('dsh-project-groups/fork-inheritance')]
+  const undoSecond = wrapFork(sessions, deps('P1', record))
+  check('第二次包装确实换成了另一个函数', sessions.fork !== firstWrapped,
+    String(sessions.fork === firstWrapped))
+  // The first fibre's disposer runs after the second installed.
+  undoFirst()
+  check('旧 disposer 不会把新包装拆掉', sessions.fork !== originalFork,
+    String(sessions.fork === originalFork))
+  await sessions.fork({ sessionId: 'parent' })
+  check('旧 disposer 跑过之后继承仍然生效', record.assigns.length >= 1,
+    JSON.stringify(record.assigns))
+  undoSecond()
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)

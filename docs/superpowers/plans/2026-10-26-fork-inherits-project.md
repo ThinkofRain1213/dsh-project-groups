@@ -123,7 +123,7 @@ export function wrapFork(sessions: ForkableSessions, deps: ForkInheritanceDeps):
 - **写入时机**：**`await` 原方法成功返回之后**才写，**不要**在 `opts.onCreated` 里写。`ClientSessions.fork` 的内部顺序是 `onCreated` → `rename` → `return`（`service.ts:474-482`），rename 失败会让整个 `fork` 抛错。若在 `onCreated` 里写，会留下一条件指向"失败分支"的孤儿记录。
 - **`onCreated` 原样转交**：包装不拦截它，`{ ...opts }` 透传即可——原方法会照常调用调用方的回调。
 - **失败不吞**：`original.call` 的异常直接透传（fork 失败必须让调用方看见），且此时**不写入**。
-- **还原**：cleanup 里 `delete sessions.fork`（实例自有属性被删即回到原型方法）。
+- **还原**：cleanup 里**赋回原方法**（`sessions.fork = current`），**不是 `delete`**。`delete` 只在原型方法上才会回退，实例自有属性会被整个删掉、`fork` 变 `undefined`；单测用普通对象驱动会立刻崩。另需**校验属主**（仅当 `sessions.fork === wrapped` 时才还原），否则旧 fiber 的 disposer 可能拆掉新 apply 装好的包装。
 
 - [ ] **Step 4: 运行测试确认通过**
 

@@ -106,11 +106,20 @@ function boot() {
 async function stop(child) {
   if (child.exitCode !== null) return
   const exited = new Promise((resolve) => { child.once('exit', resolve) })
+  // 必须真的发信号。只 `Promise.race` 等十秒不发任何信号时，进程永远不会退出，
+  // 探针结束（`process.exit`）后 DSH 服务仍占着硬编码的 PORT=17671——下一次跑在
+  // boot 阶段就以 `exited early` 或超时失败，而错误信息完全指不到「端口被占」。
+  child.kill()
   const released = await Promise.race([
     exited.then(() => true),
     new Promise((resolve) => setTimeout(() => resolve(false), 10_000)),
   ])
-  if (released) await new Promise(resolve => setTimeout(resolve, 500))
+  if (released) {
+    // 给操作系统一点时间释放监听套接字。
+    await new Promise(resolve => setTimeout(resolve, 500))
+  } else {
+    console.log('  （警告：进程 10s 内没有退出，端口可能仍被占用）')
+  }
 }
 
 const origin = () => new URL(page.url()).origin

@@ -119,6 +119,11 @@ jobs:
         run: pnpm run verify:project-directories
       - name: Verify the injected runtime context
         run: pnpm run verify:project-injection
+      - name: Verify the fork inheritance wrapper
+        # The wrapper shadows `ClientSessions.fork`. Its most dangerous failure is
+        # losing `this` — that breaks **every** branch entry rather than only the
+        # inheritance, and nothing else in the gate covers this module.
+        run: pnpm run verify:fork-inheritance
       - name: Verify document specs
         run: pnpm run verify:doc-spec
       - name: Verify the locale dictionaries

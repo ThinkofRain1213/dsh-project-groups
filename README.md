@@ -150,7 +150,7 @@ bundle 的构建满足与上游相同的模块边界规则：
 pnpm install
 pnpm typecheck        # tsc --noEmit，覆盖 src（含 vendored 树）
 pnpm build            # tsdown -> lib/index.js + lib/client.js
-pnpm check            # typecheck + build + 13 项校验 + 探针（851 条断言）
+pnpm check            # typecheck + build + 15 项校验 + 探针（890 条断言）
 ```
 
 > **⚠️ 本地开发（`dsh plugin add .` / `link:` 安装）时，改完 `src/` 必须
@@ -178,7 +178,7 @@ pnpm check            # typecheck + build + 13 项校验 + 探针（851 条断�
 | `CHANGELOG.md` | 每个版本对使用者可见的变化 |
 | `DESIGN.md` | 架构、已核实的 harness 事实、分层计划与决策记录 |
 
-**`pnpm check` 会跑全部 13 项校验与探针（851 条断言）。**
+**`pnpm check` 会跑全部 15 项校验与探针（890 条断言）。**
 另有 **52 个真实 DSH 探针**需要本机装有 DSH 与可用端口，故不在默认链上。
 它们现在可以真正跑起来了（此前**全部**跑不起来，见下）：
 

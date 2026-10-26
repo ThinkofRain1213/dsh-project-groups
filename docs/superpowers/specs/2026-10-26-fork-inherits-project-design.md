@@ -86,9 +86,18 @@
 
 插件 `apply` 在热重载时可能重跑。无脑覆盖会产生 `包装(包装(原方法))`，同一次分支写两遍 assignment。需要在原方法上打标记（如 `original[WRAPPED] === true` 则跳过）。
 
-**3. 卸载时必须还原**
+**3. 卸载时必须还原，且必须校验属主**
 
-用 `ctx.effect(() => () => { delete sessions.fork })` 的模式（参照 `src/vendored/client/index.ts:434` 的既有写法）。`sessions` 实例本身由 `rootCtx.effect` 管理（`service.ts:265-282`），它销毁时我们的包装自然失效；此时 `delete` 一个不存在的属性是安全的。
+用 `ctx.effect(() => cleanup)` 的模式（参照 `src/vendored/client/index.ts:434` 的既有写法）。
+`sessions` 实例本身由 `rootCtx.effect` 管理（`service.ts:265-282`），它销毁时我们的包装自然失效。
+
+还原做两件事：
+
+- **赋回原方法**，不是 `delete`。`delete` 只有在 `fork` 是**原型方法**时才会回退；对自带 `fork`
+  自有属性的实例（测试里的假对象就是）会把它整个删掉、`fork` 变 `undefined`。赋值对两种对象都对。
+- **校验属主**：仅当实例上的 `fork` 仍是**本包装**时才还原。Cordis 在替换 fiber 时会执行旧
+  disposer，而它可能晚于新 apply—无条件还原会把新包装拆掉，之后继承静默失效且无日志。
+  `src/client/index.ts:401-407` 对同一竞态已有同样的属主校验。
 
 **4. 必须在原方法 `resolve` 之后写，不能在 `onCreated` 里写**
 

@@ -127,6 +127,14 @@ export function wrapFork(sessions: ForkableSessions, deps: ForkInheritanceDeps):
   return () => {
     if (restored) return
     restored = true
+    // Ownership check, not an unconditional restore. Cordis runs a fibre's
+    // disposers when it is replaced, and that can happen *after* the
+    // replacement's `apply`: the new apply sees this wrapper's marker, returns a
+    // no-op, and then this disposer would put the original back — leaving the
+    // live instance unwrapped, so inheritance disappears until a restart with
+    // nothing in the log. `index.ts`'s module-level service captures guard the
+    // same race the same way.
+    if ((sessions as unknown as { fork: unknown }).fork !== wrapped) return
     ;(sessions as unknown as { fork: unknown }).fork = current
   }
 }
