@@ -21,16 +21,50 @@
 }
 
 /*
+ * A card segment: everything between two rules, plus the two ends of the card.
+ *
+ * The padding is the whole boundary. The negative margins cancel the 12px the
+ * first and last block carry of their own, so 16px here is the boundary's only
+ * source — which is what makes an unruled boundary and a ruled one read as the
+ * same content-to-content distance (32px), with the rule sitting in the middle
+ * rather than closer to one side.
+ *
+ * Only the bottom end needs this in the official `SubagentCard`, whose first
+ * child is a heading with `margin: 0`. Our first child always carries padding,
+ * so both ends do.
+ */
+.section {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 16px 0;
+}
+
+/*
+ * Direct children only. `.group` spaces its own children by 12px, and an
+ * unqualified `:first-child` would also match the group's first child and drag
+ * it up by 12px — a bug that renders as "one group sits slightly high".
+ */
+.section > :first-child { margin-top: -12px; }
+.section > :last-child { margin-bottom: -12px; }
+
+/*
  * The row geometry is the official settings-row one — `PermissionRow` and
  * `PreferenceRow` in the checkout carry this same block, copied rather than
  * imported because the client bundle purity gate forbids a value import from
  * another plugin (tsdown.config.ts). Copying it is what upstream itself does.
+ *
+ * The padding is **12px, not the official 16px**. `.group` below uses 12px so
+ * every block in a segment shares one rhythm; with the official 16px a row and a
+ * group still read as 32px apart from each other, but the group's own inner
+ * spacing stopped matching its neighbours, which made one card look like two
+ * densities.
  */
 .row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 16px 0;
+  padding: 12px 0;
 }
 
 /*
@@ -132,10 +166,21 @@
  *
  * Every value is a theme variable, so both colour schemes follow automatically.
  */
+/*
+ * A block whose children are one heading plus the controls under it.
+ *
+ * `gap: 6px` is the same value `.rowText` uses between a row's label and its
+ * hint, so "heading then explanation" and "label then hint" read as one
+ * relationship rather than two. It used to be 8px, which made the group heading
+ * sit slightly further from its content than any other title sat from its.
+ *
+ * `padding: 12px 0` matches `.row`, so a segment's blocks all carry the same
+ * internal padding — the thing that makes the whole card one rhythm.
+ */
 .group {
   flex-direction: column;
-  gap: 8px;
-  padding: 16px 0;
+  gap: 6px;
+  padding: 12px 0;
   display: flex;
 }
 
