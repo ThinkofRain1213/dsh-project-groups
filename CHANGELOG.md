@@ -4,6 +4,17 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.3] — 2026-10-27
+
+### 修复
+
+- **分支出的会话现在继承父会话的项目**。此前从「分叉会话」（侧栏菜单 / `Ctrl+Alt+F`）
+  或「在新对话中分支」（消息下方）产生的子会话一律落到「未分组」，需要手动拖一次。
+  现在分支完成时会自动归入父会话所在的项目，且**只写这一次**——之后你把它拖到别处或
+  拖回「未分组」，系统都不会再改。
+  - 父会话本来就在「未分组」时，子会话同样不归类（与官方按父会话归属取用的行为一致）。
+  - 已存在的历史分支**不会**自动归位。
+
 ## [0.3.2] — 2026-10-17
 
 **跟进 DSH 0.2.1**。0.3.1 钉死了 DSH 0.2.0-rc.2 的 peer 版本，DSH 一升级，
@@ -238,6 +249,7 @@
 - 新会话落点统一为「底层工作区」；
 - 搜索结果行显示所属**项目**。
 
+[0.3.3]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.2.0...v0.3.0

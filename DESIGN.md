@@ -6720,3 +6720,111 @@ done       Host settings 文档 ui-settings-account 的 step === 'done'
 只做语法检查等于没检查。另外三处也更隐蔽：`child = spawn(`（无 `const`）、
 `server = await boot('pg')`（赋值形态）、以及 `function boot()` 无参而 profile 写死在 spawn 里——
 三种形态各漏掉一批文件，而预演输出当时看起来都是"已处理"。
+
+## 29. 分支会话继承父会话的项目
+
+### 29.1 现象
+
+官方三种「分支」入口产生的子会话都落在源会话所在的 Workspace。本插件把侧栏「工作区」
+换成了「项目」，但分支出的会话**不继承项目，一律落到「未分组」**，用户每次都要手动拖一次。
+
+真机核对（2026-10-26，本机 117 个会话）：
+
+| 事实 | 数据 |
+|---|---|
+| 分支（`isSeeded: true` 且无 `origin`） | 16 |
+| 其中父会话**有**项目归属 | **13 / 16** |
+| 其中分支自身有归属 | 13 / 16 |
+
+那 13 个是用户逐个手动拖进去的，不是系统行为。分支 header 的实测结构：
+
+```
+{ id, createdAt, cwd, parentSession, isSeeded: true, delegationDepth, agentPreset }
+                              ↑ 有父会话     ↑ 无 origin
+```
+
+### 29.2 为什么不能被动观察会话创建
+
+最初的方案是订阅 `session/created`，看到新分支就写一条 assignment。它有一个结构性缺陷：
+
+**`session/created` 在 `resume` 时会重新派发。**
+`agent-loop/src/index.ts:658` 的 `announce(session)` 由 `setupAndPublish:814` 调用，而
+`resumeWith` 走的正是 `setupAndPublish`；官方断言见 `resume.spec.ts:850`
+（`published` 等于 `['session/created', 'agent/created']`）。
+
+后果链：用户把分支拖回「未分组」→ `unassign` 删掉记录 → 关闭重开 → resume 重入 →
+系统看到「没有记录」就把它塞回父项目。**用户显式取消的归属会被系统撤销。**
+
+这同时击穿了「靠已有 assignment 天然幂等」这条论证——它只在「移到别的项目」时成立，
+在「取消归属」时不成立。要用被动观察修好它，就得引入时间判据或一张「已判定」表。
+
+### 29.3 采用的方案：在 fork 调用点写一次
+
+**系统只在「用户触发分支」这一瞬间写一条 assignment，之后完全放手。**
+
+主动写入没有 resume 重放问题：按钮点一次写一次，`resume` 不经过 `fork`。因此不需要
+时间判据、不需要「已判定」持久表、不需要 assignment 的 `source` 字段。
+
+### 29.4 为什么落点是 `ClientSessions.fork`
+
+三个入口的真实调用路径：
+
+| 入口 | 调用 |
+|---|---|
+| 侧栏「分叉会话」 | `uiWorkspace.forkSession(...)` → `this.sessions.fork(...)` |
+| 快捷键 `Ctrl+Alt+F` | 同上 |
+| 消息下方「在新对话中分支」 | **`ctx.sessions.fork(...)` 直接调用**（官方 `ui-chat/src/client/apply.ts:288`） |
+
+客户端全仓只有两个 `fork` 调用点，二者都落到 `ClientSessions.fork`
+（`packages/api/session-controller/src/client/sessions/service.ts:459`），且都在**调用时**
+读取该属性——没有提前捕获的引用，所以实例上的遮蔽立即生效。
+
+> 曾把落点放在 `UiWorkspaceService.forkSession`，那会漏掉消息级入口，而它恰好是最常用的
+> 那个。这个错误在写计划阶段被代码核对拦下。
+
+`ctx.provide('sessions', …)` 不可行：`reflect.provide` 对已注册名字直接抛错
+（`vendor/cordis/src/reflect.ts:290-292`）。只能遮蔽实例方法。
+
+### 29.5 四条实现约束（每条对应一个真实失败形态）
+
+| 约束 | 写错的后果 |
+|---|---|
+| `original.call(sessions, opts)` | `this` 丢失 → **分支功能整体坏掉**，不是仅仅没继承 |
+| **在 promise resolve 之后写**，不在 `onCreated` 内 | `fork` 内部顺序是 `onCreated` → `rename` → `return`，rename 失败会让整个 fork 抛错，此时写入会留下指向「失败分支」的孤儿记录 |
+| 包装函数打标记防重复 | 热重载后同一次分支写两遍 |
+| `ctx.effect` 还原（赋回原方法） | 卸载后包装残留 |
+
+还原用「赋回原方法」而非 `delete`：`delete` 只在原型方法上才会回退，实例自有属性会被
+整个删掉，`fork` 变成 `undefined`。这一点由断言 8 在实现前抓出来。
+
+### 29.6 已知差异（不是等价）
+
+官方 `forkWorkspace()`（`packages/api/session-controller/src/commands.ts:550-560`）：
+
+```ts
+const direct = workspaces.find(ws => ws.sessionIds.includes(source.id))
+if (direct !== undefined || source.origin !== 'subagent') return direct
+const lineage = await this.ctx.sessionQuery.traceSession(source.id)   // 仅 subagent 走这里
+for (const ancestor of lineage.ancestors) { … }
+```
+
+即：父是普通会话时单层取用；**父是 subagent 时才向上追溯祖先**。
+
+本插件不做 subagent 的祖先追溯。理由：侧栏只把 ordinary forks 列为可分支行
+（`src/vendored/client/tree.ts:676`），从 subagent 会话触发分支不是实际路径。
+
+### 29.7 实现与验证
+
+| 文件 | 作用 |
+|---|---|
+| `src/client/fork-inheritance.ts` | 遮蔽/还原 `fork`，以及 `inheritForkProject`；**不进 `vendored/`**——它与上游行为无关，是插件自己的增值功能 |
+| `src/client/index.ts` | 在 `apply` 里用 `ctx.effect` 安装 |
+| `scripts/verify-fork-inheritance.mjs` | 19 条断言，覆盖 `this` 绑定、不吞 `onCreated`、assign 失败不影响 fork、fork 失败不写入、重复包装、还原、模型未就绪 |
+| `scripts/probe-fork-inherits-project.mjs` | 真机：两个入口各测一次 |
+
+真机结果：**12 PASS / 0 FAIL**，两个入口都产出了继承父项目的子会话。
+反向对照（禁用包装后重跑）：**5 FAIL**。
+
+> **构建产物必须同步**：插件入口是 `lib/client.js`，探针加载的也是它。只改 `src/` 而不
+> `pnpm build`，探针测到的是上一次的产物——本已用反向对照证实：未构建时反向对照仍全绿，
+> 构建后才正确失败 5 条。`lib/` 随源码一起提交，与仓库既有惯例一致。

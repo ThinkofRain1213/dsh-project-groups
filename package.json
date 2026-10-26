@@ -1,6 +1,6 @@
 {
   "name": "dsh-project-groups",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "DSH plugin: group sidebar sessions by project (a label, not a directory), give each project a work document whose format follows a spec, register its related links, and show the exact runtime-context injection on the settings card.",
   "license": "MIT",
   "type": "module",
