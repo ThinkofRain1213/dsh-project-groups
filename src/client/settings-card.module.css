@@ -707,12 +707,14 @@
 /*
  * One segment: a child of the diff group, not a block of its own.
  *
- * No `padding` — and that is the point. The rows sit inside `.group`, so `.group`'s `gap: 8px`
- * spaces them from the heading above and from each other. A 16px padding here would add to that
- * gap and make these rows read as 24px apart while every other gap in the group reads 8px.
+ * No `padding` — and that is the point. The rows sit inside `.group`, so the group's own `gap`
+ * spaces them from the heading above and from each other. A 12px padding here would add to that
+ * gap and make these rows read much further apart than every other gap in the group.
  *
  * `gap: 8px` is this row's internal rhythm — between the toggle and the expanded shapes, and
  * between the shapes themselves — so an expanded row also has one spacing value and no exceptions.
+ * It is deliberately its own value rather than the group's: what it separates is a control from
+ * the thing it opened, not one setting from the next.
  */
 .injectionDiffRow {
   display: flex;
