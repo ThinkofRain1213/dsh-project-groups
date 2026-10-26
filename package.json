@@ -114,7 +114,8 @@
     "probe:default-workspace-takeover": "node scripts/probe-default-workspace-takeover.mjs",
     "probe:official-default-probe": "node scripts/probe-official-default-probe.mjs",
     "probe:entry-customization": "node scripts/probe-entry-customization.mjs",
-    "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:client-seats && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:project-directories && pnpm verify:project-injection && pnpm verify:doc-spec && pnpm verify:locales && pnpm verify:release && pnpm verify:host-import && pnpm probe"
+    "check": "pnpm typecheck && pnpm build && pnpm verify:bundle && pnpm verify:patch && pnpm verify:grouping && pnpm verify:client-seats && pnpm verify:new-session && pnpm verify:projects && pnpm verify:project-host && pnpm verify:project-directories && pnpm verify:project-injection && pnpm verify:doc-spec && pnpm verify:locales && pnpm verify:release && pnpm verify:host-import && pnpm probe",
+    "probe:fork-inherits": "node scripts/probe-fork-inherits-project.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.5",
