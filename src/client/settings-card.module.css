@@ -243,30 +243,6 @@
   line-height: 22px;
 }
 
-/*
- * A group heading with an explanation under it — the same title/description pair the rows use.
- *
- * `gap: 4px` is the tighter of the card's two title/description values; `.rowText` uses 6px
- * because a settings row also carries a control on the right, while a heading here stands
- * alone above its cards. The pair is still deliberately held together the same way — one
- * vocabulary of title-to-description spacing, not a second rule that happens to look similar.
- * The 8px between this pair and the cards below it is `.group`'s own `gap`, which is what
- * separates a heading from what it introduces.
- *
- * (An earlier version of this comment claimed 4px *was* `.rowText`'s value. It is not, and a
- * reader checking that claim would have found the comment wrong rather than the code — the
- * assertion is gone rather than restated.)
- *
- * Only the base-workspace group uses this. 文档规范 and the official 外观 row need no
- * explanation; this one does, and the explanation belongs to the heading rather than standing
- * beside it as a third peer element.
- */
-.groupHeading {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
 .cubeRow {
   flex-wrap: wrap;
   align-items: stretch;
@@ -804,8 +780,9 @@
   display: flex;
 }
 
-/* A label and its block are one unit; this is the card's tighter title-to-description gap (see
- * `.groupHeading`, which uses the same 4px for the same reason). */
+/* A label and its block are one unit. 4px here is a label sitting directly on the
+ * block it names, not a title/description pair — the card's title/description
+ * gap is 6px, and this is deliberately tighter because the block is the thing. */
 .injectionVariant {
   flex-direction: column;
   gap: 4px;

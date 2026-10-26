@@ -129,9 +129,9 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
           ? <div className={css.injectionOff}>{t('injectionOff')}</div>
           : renderBlock(main)}
         {/*
-         * Below the block, not between the heading and it as `groupHeading` does elsewhere: this
-         * sentence explains how to read the brackets *inside* the block, so it can only be read
-         * after the block exists. On other rows the note says what the setting is, which belongs
+         * Below the block, not between the heading and it: this sentence explains how
+         * to read the brackets *inside* the block, so it can only be read after the
+         * block exists. On other rows the note says what the setting is, which belongs
          * above its control.
          *
          * Shown only while there is a block: with the master switch off there is no frame and no

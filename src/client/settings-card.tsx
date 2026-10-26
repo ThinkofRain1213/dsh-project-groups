@@ -712,17 +712,19 @@ export function ProjectGroupsCard({
         {/*
           The heading and its one-line explanation, as a pair.
 
-          This is the same title/description shape the rows above use (14px over 12px, 4px
-          apart), reused rather than reinvented — see the note on `.groupHeading`. Only this
-          group has one: 文档规范 and the official 外观 row are self-explanatory from their
-          cards, whereas "底层工作区" is not, and is the one setting here that someone could
-          reasonably read as describing where their projects live. Saying outright that it does
-          not is the point of the sentence.
+          These are direct children of `.group` rather than wrapped in a heading row:
+          `.group`'s own 6px gap is what separates them, the same value the injected
+          panel's heading uses. A wrapper would have to declare its own gap, and that
+          is how this pair ended up 4px apart while every other title/description pair
+          in the card was 6px.
+
+          Only this group has one: 文档规范 and the official 外观 row are self-explanatory
+          from their cards, whereas "底层工作区" is not, and is the one setting here that
+          someone could reasonably read as describing where their projects live. Saying
+          outright that it does not is the point of the sentence.
         */}
-        <div className={css.groupHeading}>
-          <div className={css.groupTitle}>{t('baseTitle')}</div>
-          <div className={css.desc}>{t('baseDesc')}</div>
-        </div>
+        <div className={css.groupTitle}>{t('baseTitle')}</div>
+        <div className={css.desc}>{t('baseDesc')}</div>
         <div className={css.cubeRow}>
           <button
             type="button"
