@@ -181,5 +181,27 @@ const deps = (projectId, record, { assignThrows = false } = {}) => ({
     JSON.stringify(record.assigns))
 }
 
+// --- 10. A model that has not landed yet is not an error --------------------
+{
+  // `projectModel()` answers undefined until the Remote baseline arrives, and
+  // the plugin is installed before that. A branch taken in that window must not
+  // warn or throw — there is simply nothing to inherit from yet.
+  const { sessions, record } = fakeSessions()
+  const undo = wrapFork(sessions, {
+    // Exactly what `projectModel()?.projectOf(id)` answers with no model.
+    projectOf: () => undefined,
+    assign: async () => Promise.reject(new Error('must not be called')),
+    warn: (message) => { record.warns.push(message) },
+  })
+  let threw = false
+  let childId
+  try { childId = await sessions.fork({ sessionId: 'parent' }) } catch { threw = true }
+  undo()
+  check('模型未就绪 → 不抛', threw === false, String(threw))
+  check('模型未就绪 → fork 仍返回子会话', childId === 'child-1', String(childId))
+  check('模型未就绪 → 不写 assignment、不记警告',
+    record.assigns.length === 0 && record.warns.length === 0, JSON.stringify(record))
+}
+
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)
 process.exit(failures.length === 0 ? 0 : 1)

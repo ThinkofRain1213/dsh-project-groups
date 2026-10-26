@@ -58,6 +58,7 @@ import {
   installLocaleService, installProjectModel, projectModel,
 } from './grouping.ts'
 import { ProjectModel } from './projects.ts'
+import { wrapFork, type ForkableSessions } from './fork-inheritance.ts'
 import { recentDestination, resolveTarget } from './target.ts'
 import { projectGroupsRemote } from './remote.ts'
 import { ProjectGroupsCard } from './settings-card.tsx'
@@ -410,6 +411,25 @@ export function apply(ctx: Context): void {
   // sidebar then renders one Ungrouped bucket and the project verbs refuse
   // loudly, which is better than a dead sidebar.
   void mountProjects(ctx).then(() => { refreshOfficialBase(projectModel()) })
+  // One shadow covers every branch entry. The sidebar menu and the shortcut go
+  // through `UiWorkspaceService.forkSession`, while the message-level action in
+  // the official `ui-chat` calls `ctx.sessions.fork` directly; both read the
+  // method off the instance at call time, so this reaches them both. The write
+  // itself waits for the fork to resolve — see `fork-inheritance.ts` for why it
+  // must not ride on `onCreated`.
+  ctx.effect(() => {
+    const sessions = ctx.get('sessions') as ForkableSessions | undefined
+    // A composition without the Session service gets no inheritance rather than
+    // a startup failure: every other verb in this plugin runs without it.
+    if (sessions === undefined || typeof sessions.fork !== 'function') return () => {}
+    return wrapFork(sessions, {
+      // Read through the live model on every fork: it is created by
+      // `mountProjects`, so capturing it here would capture `undefined`.
+      projectOf: parentId => projectModel()?.projectOf(parentId),
+      assign: async (childId, projectId) => { await projectModel()?.assign(childId, projectId) },
+      warn: (message, error) => { console.warn(message, error) },
+    })
+  }, 'project-groups: fork inheritance')
   // The probe follows the **Workspace registry**, not the project stream: a Workspace
   // deletion is what makes the official default unreachable, and that is the only signal
   // that has to be watched. It also fires when the registry's own baseline lands, which is
