@@ -159,17 +159,18 @@ export function InjectionPanel({ injectInfo, injectDoc, locale, t }: InjectionPa
            * "how the states differ" begins, which is the seam the user wanted visible.
            *
            * Like the card's other rules it costs no space — `margin: 0`, so it drops into the middle
-           * of the 32px the two groups already leave between their contents (16px of bottom padding
-           * above, 16px of top padding below).
+           * of the space the two groups already leave between their contents (12px of bottom
+           * padding above, 12px of top padding below), which is what keeps a ruled boundary the
+           * same content-to-content distance as an unruled one.
            */}
           <div className={css.rule} role="separator" />
 
           <div className={css.group}>
             <div className={css.groupTitle}>{t('injectionDiffTitle')}</div>
             {/*
-             * One row per segment, each a child of this group so `gap: 8px` spaces them. The rows
-             * carry no padding of their own: an 8px gap plus a 16px padding would read as 24px
-             * where every other gap in the group reads 8px.
+             * One row per segment, each a child of this group so the group's own `gap` spaces
+             * them. The rows carry no padding of their own: a gap plus a 12px padding would read
+             * as much wider than the gap every other sibling in the group gets.
              */}
             {groups.map(group => (
               <div key={group.key} className={css.injectionDiffRow}>
