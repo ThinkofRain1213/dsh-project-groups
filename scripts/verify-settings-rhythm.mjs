@@ -72,5 +72,11 @@ check('.cube 的 gap 仍是 4px（未被误改）', /\.cube\s*\{[^}]*gap:\s*4px/
 // a future edit cannot make the two shapes drift apart again.
 check('.rowText gap 仍是 6px', /\.rowText\s*\{[^}]*gap:\s*6px/s.test(css))
 
+// The diff area's own spacing. Its rows sit in a `.group` whose gap is 6, so a row
+// that kept 8 would be *looser inside itself* than the distance to its neighbour —
+// a control further from the thing it opened than from the next control.
+check('.injectionDiffRow 的 gap 是 6px', /\.injectionDiffRow\s*\{[^}]*gap:\s*6px/s.test(css))
+check('.injectionDiffBody 的 gap 是 6px', /\.injectionDiffBody\s*\{[^}]*gap:\s*6px/s.test(css))
+
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `${failures.length} CHECK(S) FAILED`}`)
 process.exit(failures.length === 0 ? 0 : 1)

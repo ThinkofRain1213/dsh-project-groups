@@ -712,15 +712,16 @@
  * spaces them from the heading above and from each other. A 12px padding here would add to that
  * gap and make these rows read much further apart than every other gap in the group.
  *
- * `gap: 8px` is this row's internal rhythm — between the toggle and the expanded shapes, and
- * between the shapes themselves — so an expanded row also has one spacing value and no exceptions.
- * It is deliberately its own value rather than the group's: what it separates is a control from
- * the thing it opened, not one setting from the next.
+ * `gap: 6px` is this row's internal rhythm — between the toggle and the expanded shapes, and
+ * between the shapes themselves. It matches the group's own gap on purpose: a control should not
+ * sit further from the thing it just opened than it does from the next control beside it, which
+ * is what 8px made it do once the group moved to 6. The card therefore has exactly one
+ * title/content distance, whether the content is a paragraph or an expanded panel.
  */
 .injectionDiffRow {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 /*
@@ -778,7 +779,7 @@
  */
 .injectionDiffBody {
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   padding-left: 18px;
   display: flex;
 }
