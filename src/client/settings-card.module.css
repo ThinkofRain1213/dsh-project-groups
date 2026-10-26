@@ -484,6 +484,13 @@
  * The Workspace chooser dialog's list. `role="listbox"` rows rather than menu rows:
  * a `menuitem` is only valid inside a menu, and the shipped single-select lists
  * (`ui-commands`, `ui-input-trigger`, `ui-schedule`) use this vocabulary.
+ *
+ * `padding: 0` is load-bearing, not a reset for tidiness. This element is a `<ul>`,
+ * and the browser gives every list a default `padding-inline-start` of 40px — so the
+ * rows started 40px right of the dialog's title while the negative margin below only
+ * pulled them back 8. `margin: 0 -8px` then exists to cancel the body's 24px side
+ * padding, letting a selected row's fill run to the dialog's edge; with the list's
+ * own padding zeroed, the row's own padding is what aligns its text with the title.
  */
 .pickerList {
   display: flex;
@@ -492,6 +499,8 @@
   max-height: 320px;
   overflow-y: auto;
   margin: 0 -8px;
+  padding: 0;
+  list-style: none;
 }
 
 .pickerRow {
@@ -533,6 +542,13 @@
  * target as wide as the row rather than only as wide as the text, which is what it was when the
  * row itself carried the click handler. A separate class rather than more `.pickerName` rules
  * because the browser picker uses that class on a span.
+ *
+ * **The font properties are spelled out, not `font: inherit`.** That shorthand is the usual way
+ * to stop a `<button>` rendering in the platform's button font, but it also resets `font-size`,
+ * and this rule comes after `.pickerName` at the same specificity — so `.pickerName`'s 13px was
+ * silently replaced by the inherited size. The spec row's name then rendered markedly larger
+ * than the Workspace chooser's, which puts the same `.pickerName` on a `<span>` and never sees
+ * this rule. `font-family` alone is what actually needed inheriting.
  */
 .pickerNameButton {
   flex: 1;
@@ -541,7 +557,9 @@
   border: none;
   background: transparent;
   cursor: pointer;
-  font: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 20px;
   text-align: left;
 }
 
