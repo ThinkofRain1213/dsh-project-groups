@@ -4,6 +4,34 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.4] — 2026-10-28
+
+### 修复
+
+- **同时安装 `dsh-auto-expand` 时，本插件设置页的分组标题会贴到分隔线上**。
+  标题与其上方分隔线的间距会从 16px 变成 4px，两处都出现：卡片顶部那一段，
+  以及每条分隔线下方。只装本插件时一切正常，所以症状只在**两个插件同时启用**
+  时出现；关掉 `dsh-auto-expand` 立刻恢复。
+
+  **原因**：两个插件的设置卡片都叫 `src/client/settings-card.module.css`，而
+  CSS Modules 的类名哈希只由这个文件名算出、**不含包名**——于是两边生成了
+  完全相同的类名（实测 10 个）。两个插件的样式表会同时生效，`dsh-auto-expand`
+  的 `.section > :first-child { margin-top: -12px }` 因此落到了本插件的
+  `<h3>` 上。那条规则对它自己是对的（它的每组第一个元素是带内边距的行），
+  对本插件不对（本插件的第一个元素是标题，不带内边距）。
+
+  **修法**：生成本插件类名时把包名并入名字来源，两个插件从此各用各的类名。
+  这只改变类名本身，**不改变任何样式规则的内容**，所以除了上面对这处间距的修复，
+  界面没有任何其它变化。
+
+  **不受影响的部分**：`dsh-smooth-cursor-patched`、`dsh-smooth-stream-patched`
+  等其它插件没有同名样式表，未受此问题影响。
+
+### 内部
+
+- 新增 `verify:css-isolation` 并接入 `pnpm check`：比对同级目录所有已构建插件的
+  类名集合，交集必须为空。此前的门禁只测本插件自己，测不出跨插件撞名。
+
 ## [0.3.3] — 2026-10-27
 
 ### 修复
@@ -256,6 +284,7 @@
 - 新会话落点统一为「底层工作区」；
 - 搜索结果行显示所属**项目**。
 
+[0.3.4]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.0...v0.3.1
