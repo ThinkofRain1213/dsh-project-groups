@@ -236,10 +236,23 @@ const client = {
       // build. `identity` is already computed above and is unique per file; the five stylesheets
       // in this tree happen not to collide today, so this was latent rather than live.
       const { code, exports: cssExports } = transform({
-        // The repo-relative identity, not the absolute path: lightningcss
-        // derives the CSS Module hash from this, so an absolute path would make
-        // class names differ per checkout directory.
-        filename: identity,
+        // The repo-relative identity **prefixed with the package name**, not the bare identity.
+        //
+        // lightningcss derives the CSS Module hash from `filename` alone, and `identity` is
+        // `relative(process.cwd(), abs)` — evaluated in each repository's own root. Two plugins
+        // that both ship `src/client/settings-card.module.css` therefore produce the *same*
+        // identity string, hence the same hash and byte-identical class names. Measured against
+        // `dsh-auto-expand`: ten shared classes (`_section`, `_row`, `_rule`, `_stack`, …).
+        //
+        // The injected `tagId` carries the package name, but that only stops the two stylesheets
+        // from overwriting each other — it does **not** scope their selectors. With both plugins
+        // installed both sheets are live, so `.X_section` matches the other plugin's elements.
+        // The live symptom: auto-expand's `.section > :first-child { margin-top: -12px }` landed
+        // on this card's group headings, pulling each `h3` from 16px below the section top to 4px.
+        //
+        // Prefixing the package name gives the same file a different hash in each repository.
+        // Only the hash is affected: `identity` still drives `resolve` and asset inlining.
+        filename: `${PACKAGE_NAME}/${identity}`,
         code: source,
         cssModules: { pattern: '[hash]_[local]' },
         minify: true,
