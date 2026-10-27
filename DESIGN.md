@@ -4557,31 +4557,40 @@ if (state.defaultWorkspaceId !== void 0) return this.entities.get(state.defaultW
           `single` 布局不能 bump version ⇒ 只能靠 `.default([])` +
           union/coerce，需先验证 schema 能否在**不删数据**的前提下做到
         **未定，未动代码。**
-  - [x] **Z-9 详情页展示"当前注入文案"** ✅ **已实施（2026-10-09）**（2026-10-07 用户提出）
+  - [x] **Z-9 详情页展示"当前注入文案"** ✅ **已实施（2026-10-09 实施 / 中途回滚 / 2026-10-13 恢复，现役）**（2026-10-07 用户提出）
 
-        > ## ⚠️ 已暂时回滚（2026-10-12，用户要求「暂时拿掉」）
+        > ## ✅ 当前状态：注入预览在两个半区都在（2026-10-28 核实）
         >
-        > **注入预览面板不在当前代码里。** 本节以下全部内容是**设计记录**，记录当时怎么设计、
-        > 怎么验证、踩过哪些坑；它**描述的不是当前实现**。
+        > **本节以下全部内容描述的是当前实现**，不是过时的设计记录。
         >
-        > **本次回滚方式（方案二：只删预览，保留无关变更）**：
+        > 曾经的「已暂时回滚」标注**已失效**，保留下来是为了记录那段反复。完整时间线：
+        >
+        > | 日期 | 提交 | 事件 |
+        > |---|---|---|
+        > | 2026-10-12 | `a16f3fe` | **第一次回滚**（用户要求「暂时拿掉」），只删预览、保留无关变更 |
+        > | 2026-10-13 | `ccd8053` | 再次拿掉 |
+        > | **2026-10-13** | **`5c71c37`** | **用户决定放回**（"User decision: put the preview back where it was"）。面板、数据模块、locale 接线一并恢复，随后按卡片当时的新字阶迁移了三个字号值 |
+        > | 2026-10-13 起 | `dc82765` 等 | 逐步重构成现在的两半区形态（主展示 / 分块差异），其间新增了分隔线、独立标题、链接空态句等 |
+        > | 2026-10-27 | `d86b6ab` / `d0aaadb` | 删掉 `groupHeading`、线 B 独立成段，与卡片最终节奏对齐 |
+        >
+        > **`v0.3.0` 起每个发布版本都含此面板**（`git ls-tree v0.3.0` 可见
+        > `src/client/injection-panel.tsx` / `injection-preview.ts`），CHANGELOG 0.3.0 的
+        > 「新增注入预览」即指这次恢复。
+        >
+        > **当年的回滚细节，仅供追溯**（**不是现状**）：
         >
         > | 处理 | 内容 |
         > |---|---|
-        > | **删除** | `injection-panel.tsx` / `injection-preview.ts` 两个文件；`grouping.ts` 的 locale 座位（`installLocaleService` / `clientInjectionLocale`）；`index.ts` 的 5 处接线；`settings-locales.ts` 的 22 个文案键；`settings-card.module.css` 的面板样式段；探针的 `7)` / `7b)` 两组断言 |
-        > | **保留** | **「开启http(s)://校验」开关移位** —— 它是 Z-9 期间**独立**的一个决定（不依赖预览），探针里留下 `6b)` 断言守着它 |
-        > | **保留** | **本节的文档**（用户要求）、`Z-13`（项目嵌套待办，完全独立）、探针定位器的既有缺陷修复 |
+        > | 曾删除 | `injection-panel.tsx` / `injection-preview.ts`；`grouping.ts` 的 locale 座位；`index.ts` 的 5 处接线；`settings-locales.ts` 的 22 个文案键；`settings-card.module.css` 的面板样式段；探针的 `7)` / `7b)` 断言 |
+        > | 始终保留 | **「开启http(s)://校验」开关移位** —— Z-9 期间**独立**的决定（不依赖预览），探针里留下 `6b)` 断言守着它 |
+        > | 始终保留 | 本节文档、`Z-13`（完全独立）、探针定位器的既有缺陷修复 |
         >
-        > **逐文件核对**：`grouping.ts` / `index.ts` / `settings-locales.ts` / `settings-card.module.css`
-        > 与本功能之前的基线（标签 **`pre-injection-preview`**）**逐字节一致**；
-        > `settings-card.tsx` 相对该基线**只剩校验开关移位**这一处差异。
+        > 回滚时 `grouping.ts` / `index.ts` / `settings-locales.ts` / `settings-card.module.css`
+        > 曾与基线 `pre-injection-preview` **逐字节一致**；该基线现仅作历史参照，
+        > `scheme-B` / `scheme-C` / `rhythm-fixed` 是当时试过的面板形态标签，
+        > **都不应再用作恢复目标**——恢复由 `5c71c37` 完成。
         >
-        > **恢复方式**：`git checkout scheme-C -- <那些文件>` 可取回 C 形态，
-        > 或 `git checkout pre-injection-preview -- src/` 取回无预览的基线。
-        > 相关标签：`pre-injection-preview`（本节功能的起点）、`scheme-C` / `scheme-B`（试过的两种面板形态）、
-        > `rhythm-fixed`（间距修复，随面板一起回滚）。
-        >
-        > **以下为设计记录，保留原文。**
+        > **以下为设计记录，全部仍有效。**
 
         **目标**：在本插件的插件详情页（设置卡所在页）显示**模型实际会收到的注入文本**。
 
