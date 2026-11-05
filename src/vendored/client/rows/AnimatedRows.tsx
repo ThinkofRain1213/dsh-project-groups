@@ -1,5 +1,5 @@
 /** React-commit-driven movement and entry/exit fades for the sidebar's keyed rows. */
-import { Component, createRef, type ReactNode } from 'react'
+import { Component, createRef, type AriaRole, type ReactNode } from 'react'
 import css from './AnimatedRows.module.css'
 
 const ROW_FADE_MS = 100
@@ -8,6 +8,15 @@ const ROW_GLIDE_MS = 200
 interface AnimatedRowsProps {
   children: ReactNode
   className: string
+  /**
+   * List role for the scrolling element; `tree` unless the caller says otherwise.
+   *
+   * Upstream's `ui-primitives` copy takes this as an optional prop. Accepting it here
+   * keeps this fork's call sites byte-identical to upstream's, which is what keeps the
+   * two copies mergeable — the only *behavioural* divergence between them is
+   * `enteringKeys` / `onEnteringKeysDrawn` below.
+   */
+  role?: AriaRole
   label: string
   /** Unique DOM-order keys matching the rendered data-row-key attributes. */
   rowKeys: readonly string[]
@@ -208,7 +217,7 @@ export class AnimatedRows extends Component<AnimatedRowsProps> {
       <div
         ref={this.list}
         className={this.props.className}
-        role="tree"
+        role={this.props.role ?? 'tree'}
         aria-label={this.props.label}
         onPointerDownCapture={() => { this.armed = true }}
         onKeyDownCapture={() => { this.armed = true }}

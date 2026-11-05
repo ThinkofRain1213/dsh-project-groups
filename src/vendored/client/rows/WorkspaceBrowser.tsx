@@ -16,6 +16,7 @@
  */
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
+import { WorkspaceDialogs } from './WorkspaceDialogs.tsx'
 import {
   Button, HoverCardGroup, IconArchiveCheckOutlineRegular, IconArchiveOffOutlineRegular, IconArchiveOutlineRegular,
   IconCheckOutlineRegular,
@@ -43,7 +44,13 @@ import {
   owningSourceKey,
   pinCurrentBlank, reconcileManualOrder, sameStringList, sessionMemberIds, UNGROUPED_KEY,
 } from '../tree.ts'
-import { ProjectRowItem, SearchResultItem, SessionNodeItem, sessionRowKey } from './Rows.tsx'
+import { ProjectGroupRowItem, ProjectRowItem, SearchResultItem, SessionNodeItem, sessionRowKey } from './Rows.tsx'
+// The fork's own copy, not ui-primitives': upstream moved AnimatedRows into the shared
+// package, but this build needs the two extra props (`enteringKeys` /
+// `onEnteringKeysDrawn`) that make a New Session landing on a *reused* blank Session fade
+// in instead of gliding from its old group. ui-primitives is external — provided by the
+// shell at runtime and not modifiable from here — and its AnimatedRows members are
+// private, so subclassing is not an option either. See src/vendored/README.md.
 import { AnimatedRows } from './AnimatedRows.tsx'
 import { FLAT_SESSION_ORDER_KEY, type SessionGroupBy } from '../stores.ts'
 // The validation rule itself, imported rather than reimplemented: it is shared with the
@@ -208,7 +215,7 @@ function ViewOptionsMenu({ groupBy, orderBy, archivedFilter, onGroupPick, onOrde
       // be cut off at the header's bounds.
       portal
       anchor={(
-        <Tooltip label={t('viewOptions.label')} side="bottom" delayMs={500}>
+        <Tooltip label={t('viewOptions.label')} side="bottom" delayMs={500} portal>
           <button
             type="button"
             className={clsx(css.iconButton, css.wide)}
@@ -1239,11 +1246,12 @@ function DocSpecRow({
 
 type SessionTreeProps = Pick<
   WorkspaceBrowserProps,
-  'useSessionStatus' | 'startSession' | 'open'
+  'useSessionStatus' | 'startSession' | 'open' | 'openSessionMenu' | 'openWorkspaceMenu' | 'useContextMenuTarget' | 'useContextMenu'
   | 'insertWorkspaceBefore' | 't' | 'usePanelInfo'
+  | 'useRemoteAccess' | 'useSessionAccess' | 'useWorkspaceAccess'
 > & PropsRenderSlots<
-  | 'sidebar.workspaces.session.menu.item'
   | 'sidebar.workspaces.session.row.action'
+  | 'sidebar.session.row.trailing'
   | 'sidebar.session.row.leading'
   | 'sidebar.session.row.hover'
 > & {
@@ -1351,13 +1359,13 @@ function EmptySessions({ rowState, onLeaveArchivedOnly, t }: Pick<SessionTreePro
 function SessionTree({
   list, useSessionStatus, startSession, open, workspaces, groupingOverride, ungroupedSessionIds,
   rowState, onLeaveArchivedOnly,
-  workspaceReady, animationResetKey, usePanelInfo,
+  workspaceReady, animationResetKey, usePanelInfo, useRemoteAccess, useSessionAccess, useWorkspaceAccess,
   onRenameRequest, onDeleteRequest, onSessionRenameRequest,
   reorderProject,
   assignSession,
   unassignSession,
   orderBy,
-  renderSlot,
+  renderSlot, openSessionMenu, openWorkspaceMenu, useContextMenuTarget, useContextMenu,
   insertWorkspaceBefore,
   nestWorkspaces, groupExpansion, setGroupExpanded,
   projectExpansion, setProjectExpanded,
@@ -1811,6 +1819,59 @@ function SessionTree({
         if (active !== null) commitSessionDrag(active, null, group.key)
       },
     } : undefined
+    // The header's two behaviours, shared by both header components below (upstream's
+    // `ProjectRowItem` for a Workspace row, this fork's `ProjectGroupRowItem` for a
+    // project row). They live here while the row components are pure presentation.
+    const newShortcut = shortcuts.find(row => row.id === 'session.new')
+    const onToggleGroup = (): void => {
+      if (group.expanded) dropWatermarks(key => withinGroup(key, group.key))
+      recordExpansion(group.key, !group.expanded)
+    }
+    const onCreateInGroup = (): void => {
+      // Expand even when no Session ends up created: a collapsed group
+      // would swallow the new row and read as "the click did nothing".
+      recordExpansion(group.key, true)
+      // How this row files the Session it creates. A project row files it
+      // under itself and the Ungrouped bucket files it under nothing; both
+      // state a destination, which is what separates them from the unscoped
+      // entries — the shell's New Session button and its shortcut — where
+      // nothing states one and the caller's policy decides.
+      //
+      // The Ungrouped case must be stated rather than left as "no callback".
+      // Sending none made the click indistinguishable from an unscoped one:
+      // it resolved the default Workspace, reused the blank Session already
+      // there, and inherited whatever project that Session was filed under,
+      // so clicking ＋ under Ungrouped created nothing under Ungrouped.
+      //
+      // A real Workspace row files nothing — it predates projects — and
+      // keeping that branch explicit is what stops such a row from being
+      // unassigned if this browser is ever composed without an override.
+      //
+      // The filing rides `beforeOpen`, which the navigation runs once the
+      // Session exists and before it becomes the main view. A rejection is
+      // logged rather than surfaced: the Session was created and opened, so
+      // a filing failure must not read as a failed New Session. It is also
+      // best-effort by design — a navigation superseded mid-flight never
+      // opens its Session, and an unfiled Session is the right outcome for
+      // an abandoned click.
+      const isProject = group.kind === 'project'
+      const isUngrouped = group.key === UNGROUPED_KEY
+      const file = isProject && assignSession !== undefined
+        ? (sessionId: SessionId) => assignSession(sessionId, group.key)
+        : isUngrouped && unassignSession !== undefined
+          ? (sessionId: SessionId) => unassignSession(sessionId)
+          : undefined
+      startSession(
+        group.workspaceId,
+        file === undefined
+          ? undefined
+          : (sessionId) => {
+            void file(sessionId).catch((reason: unknown) => {
+              console.warn('file session rejected:', reason)
+            })
+          },
+      )
+    }
     return (
     // Group section: header, descendant Workspaces, and own Session rows. The
     // inter-group breathing room is the section's own margin
@@ -1852,104 +1913,75 @@ function SessionTree({
             }
           }}
       >
-        <ProjectRowItem
-          newShortcut={shortcuts.find(row => row.id === 'session.new')}
-          group={group}
-          containsCurrentDescendant={currentAncestors.has(group.key)}
-          home={home}
-          t={t}
-          onToggle={() => {
-            if (group.expanded) dropWatermarks(key => withinGroup(key, group.key))
-            recordExpansion(group.key, !group.expanded)
-          }}
-          onCreate={() => {
-            // Expand even when no Session ends up created: a collapsed group
-            // would swallow the new row and read as "the click did nothing".
-            recordExpansion(group.key, true)
-            // How this row files the Session it creates. A project row files it
-            // under itself and the Ungrouped bucket files it under nothing; both
-            // state a destination, which is what separates them from the unscoped
-            // entries — the shell's New Session button and its shortcut — where
-            // nothing states one and the caller's policy decides.
-            //
-            // The Ungrouped case must be stated rather than left as "no callback".
-            // Sending none made the click indistinguishable from an unscoped one:
-            // it resolved the default Workspace, reused the blank Session already
-            // there, and inherited whatever project that Session was filed under,
-            // so clicking ＋ under Ungrouped created nothing under Ungrouped.
-            //
-            // A real Workspace row files nothing — it predates projects — and
-            // keeping that branch explicit is what stops such a row from being
-            // unassigned if this browser is ever composed without an override.
-            //
-            // The filing rides `beforeOpen`, which the navigation runs once the
-            // Session exists and before it becomes the main view. A rejection is
-            // logged rather than surfaced: the Session was created and opened, so
-            // a filing failure must not read as a failed New Session. It is also
-            // best-effort by design — a navigation superseded mid-flight never
-            // opens its Session, and an unfiled Session is the right outcome for
-            // an abandoned click.
-            const isProject = group.kind === 'project'
-            const isUngrouped = group.key === UNGROUPED_KEY
-            const file = isProject && assignSession !== undefined
-              ? (sessionId: SessionId) => assignSession(sessionId, group.key)
-              : isUngrouped && unassignSession !== undefined
-                ? (sessionId: SessionId) => unassignSession(sessionId)
-                : undefined
-            startSession(
-              group.workspaceId,
-              file === undefined
-                ? undefined
-                : (sessionId) => {
-                  void file(sessionId).catch((reason: unknown) => {
-                    console.warn('file session rejected:', reason)
+        {/*
+          Two header components, chosen by row kind — see the two-name note at the top of
+          Rows.tsx. Upstream's `ProjectRowItem` renders a **Workspace** header (split into
+          `UngroupedProjectRow` / `WorkspaceProjectRow`, menu driven by `ctx.contextMenus`
+          and gated on the row having both a `workspaceId` and a `cwd`). This fork's
+          `ProjectGroupRowItem` renders a **project** header, which has neither, so its
+          private rename/delete menu has to stay until a `project` menu target exists.
+
+          The Ungrouped bucket goes through the fork's component too, not upstream's
+          `UngroupedProjectRow`. Both have no `workspaceId`, but only this fork's accepts
+          `groupDrop`, and dragging a Session **back into Ungrouped** is one of the
+          project-group actions — `canReceiveDrag(UNGROUPED_KEY)` returns true as soon as
+          `unassignSession` exists, so routing this row to upstream's component would show
+          a drop highlight on a header that has no drop handler.
+        */}
+        {group.kind === 'project' || group.workspaceId === undefined ? (
+          <ProjectGroupRowItem
+            newShortcut={newShortcut}
+            group={group}
+            containsCurrentDescendant={currentAncestors.has(group.key)}
+            home={home}
+            t={t}
+            onToggle={onToggleGroup}
+            onCreate={onCreateInGroup}
+            drag={workspaceDragProps}
+            groupDrop={groupDrop}
+            actions={group.kind === 'project'
+              ? {
+                rename: () => {
+                  onRenameRequest({
+                    kind: 'project',
+                    id: group.key,
+                    title: group.label,
+                    // Resolved from the override by key rather than carried on the
+                    // node: the derived tree is presentation, and a directory list
+                    // is not something it renders. `?? []` because a consumer
+                    // grouping by something else supplies none.
+                    directories: groupingOverride?.find(source => source.key === group.key)?.directories ?? [],
+                    // Same lookup, same reason as the directories above.
+                    links: groupingOverride?.find(source => source.key === group.key)?.links ?? [],
+                    // Same lookup, same reason: the spec override is data, not
+                    // presentation, so it stays on the source rather than the node.
+                    ...(() => {
+                      const stored = groupingOverride?.find(source => source.key === group.key)?.docSpec
+                      return stored === undefined ? {} : { docSpec: stored }
+                    })(),
                   })
                 },
-            )
-          }}
-          drag={workspaceDragProps}
-          groupDrop={groupDrop}
-          actions={group.kind === 'project'
-            ? {
-              rename: () => {
-                onRenameRequest({
-                  kind: 'project',
-                  id: group.key,
-                  title: group.label,
-                  // Resolved from the override by key rather than carried on the
-                  // node: the derived tree is presentation, and a directory list
-                  // is not something it renders. `?? []` because a consumer
-                  // grouping by something else supplies none.
-                  directories: groupingOverride?.find(source => source.key === group.key)?.directories ?? [],
-                  // Same lookup, same reason as the directories above.
-                  links: groupingOverride?.find(source => source.key === group.key)?.links ?? [],
-                  // Same lookup, same reason: the spec override is data, not
-                  // presentation, so it stays on the source rather than the node.
-                  ...(() => {
-                    const stored = groupingOverride?.find(source => source.key === group.key)?.docSpec
-                    return stored === undefined ? {} : { docSpec: stored }
-                  })(),
-                })
-              },
-              delete: () => { onDeleteRequest({ kind: 'project', id: group.key, title: group.label }) },
-            }
-            : group.workspaceId === undefined
-              ? undefined
-              : {
-                rename: () => {
-                  /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
-                  if (group.workspaceId !== undefined) {
-                    onRenameRequest({ kind: 'workspace', id: group.workspaceId, title: group.label })
-                  }
-                },
-                delete: () => {
-                  /* v8 ignore next -- narrowing guard: the actions object exists only for real-workspace groups. */
-                  if (group.workspaceId !== undefined) {
-                    onDeleteRequest({ kind: 'workspace', id: group.workspaceId, title: group.label })
-                  }
-                },
-              }}
-        />
+                delete: () => { onDeleteRequest({ kind: 'project', id: group.key, title: group.label }) },
+              }
+              // The Ungrouped bucket is no one's record: no rename, no delete, and — as
+              // upstream — no Workspace menu.
+              : undefined}
+          />
+        ) : (
+          <ProjectRowItem
+            newShortcut={newShortcut}
+            group={group}
+            openWorkspaceMenu={openWorkspaceMenu} useContextMenu={useContextMenu} useContextMenuTarget={useContextMenuTarget}
+            useRemoteAccess={useRemoteAccess}
+            useWorkspaceAccess={useWorkspaceAccess}
+            containsCurrentDescendant={currentAncestors.has(group.key)}
+            home={home}
+            t={t}
+            onToggle={onToggleGroup}
+            onCreate={onCreateInGroup}
+            drag={workspaceDragProps}
+          />
+        )}
         {childRows.length > 0 && (
           <div role="group">
             {childRows}
@@ -2012,10 +2044,14 @@ function SessionTree({
               onOpen={open}
               onRenameRequest={onSessionRenameRequest}
               renderSlot={renderSlot}
+              openSessionMenu={openSessionMenu} useContextMenu={useContextMenu}
+              useContextMenuTarget={useContextMenuTarget}
               onReveal={node.id === revealSessionId && group.key === revealGroup
                 ? () => { onSessionRevealed(node.id) }
                 : undefined}
               drag={dragProps}
+              home={home}
+              useSessionAccess={useSessionAccess}
               t={t}
             />
           )
@@ -2053,6 +2089,7 @@ function SessionTree({
       {workspaceDropAtListStart && <span className={css.listTopDropIndicator} aria-hidden="true" />}
       <AnimatedRows
         className={clsx(css.list, workspaceDropAtListStart && css.listTopDropActive)}
+        role="tree"
         label={t('section.sessions')}
         rowKeys={rowKeys}
         ready={list.phase === 'ready' && workspaceReady && !nativeDragActive}
@@ -2072,15 +2109,18 @@ function SessionTree({
 
 /** The flat "In one list" body: every session is one draggable top-level row. */
 function FlatList({
-  list, sessionIds, rowState, onLeaveArchivedOnly, useSessionStatus, open, onSessionRenameRequest,
+  list, sessionIds, rowState, onLeaveArchivedOnly, useSessionStatus, useSessionAccess, open, onSessionRenameRequest,
   usePanelInfo, setSessionOrder, workspaceReady, animationResetKey,
-  revealSessionId, onSessionRevealed, renderSlot, t, enteringKeys, onEnteringKeysDrawn,
+  revealSessionId, onSessionRevealed, renderSlot, openSessionMenu, useContextMenuTarget, useContextMenu, home, t,
+  enteringKeys, onEnteringKeysDrawn,
 }: Pick<
   SessionTreeProps,
   | 'useSessionStatus'
+  | 'useSessionAccess'
   | 'open'
   | 'onSessionRenameRequest'
   | 'renderSlot'
+  | 'openSessionMenu' | 'useContextMenuTarget' | 'useContextMenu'
   | 'usePanelInfo'
   | 'setSessionOrder'
   | 'workspaceReady'
@@ -2089,6 +2129,7 @@ function FlatList({
   | 'onSessionRevealed'
   | 'rowState'
   | 'onLeaveArchivedOnly'
+  | 'home'
   | 't'
   | 'enteringKeys'
   | 'onEnteringKeysDrawn'
@@ -2120,6 +2161,7 @@ function FlatList({
     <HoverCardGroup className={clsx(css.treeBody, css.wide)}>
       <AnimatedRows
         className={clsx(css.list, css.flatList)}
+        role="tree"
         label={t('section.sessions')}
         rowKeys={rows.length === 0 ? ['empty'] : rows.map(row => `session:${row.id}`)}
         ready={list.phase === 'ready' && workspaceReady && drag === null}
@@ -2143,9 +2185,12 @@ function FlatList({
               onOpen={open}
               onRenameRequest={onSessionRenameRequest}
               renderSlot={renderSlot}
+              openSessionMenu={openSessionMenu} useContextMenu={useContextMenu}
+              useContextMenuTarget={useContextMenuTarget}
               onReveal={node.id === revealSessionId
                 ? () => { onSessionRevealed(node.id) }
                 : undefined}
+              useSessionAccess={useSessionAccess}
               drag={{
                 start: () => {
                   dropCommitted.current = false
@@ -2167,6 +2212,7 @@ function FlatList({
                   dropCommitted.current = false
                 },
               }}
+              home={home}
               t={t}
             />
           )
@@ -2198,8 +2244,9 @@ function SearchResults({
   remote,
   resultLimit,
   usePanelInfo,
+  useSessionAccess,
   t,
-}: Pick<WorkspaceBrowserProps, 'useSessions' | 'useSessionStatus' | 'open' | 't' | 'usePanelInfo'> & {
+}: Pick<WorkspaceBrowserProps, 'useSessions' | 'useSessionStatus' | 'open' | 't' | 'usePanelInfo' | 'useSessionAccess'> & {
   workspaces: readonly WorkspaceView[]
   /** Caller-supplied groups, so a result row names the project its Session is filed under. */
   groupingOverride: readonly GroupSource[] | undefined
@@ -2249,6 +2296,7 @@ function SearchResults({
               currentId={currentId}
               onOpen={open}
               onUnarchive={onUnarchive}
+              useSessionAccess={useSessionAccess}
               t={t}
             />
           ))}
@@ -2293,6 +2341,9 @@ export function WorkspaceBrowser({
   expandSidebar,
   useSessions,
   useSessionStatus,
+  useRemoteAccess,
+  useSessionAccess,
+  useWorkspaceAccess,
   useWorkspaces,
   useGrouping,
   useStore,
@@ -2301,7 +2352,7 @@ export function WorkspaceBrowser({
   open,
   requestSessionRename,
   notifyArchivedNotOpenable,
-  renameWorkspace,
+  renameWorkspace, useWorkspaceActionRequest, settleWorkspaceAction,
   deleteWorkspace,
   insertWorkspaceBefore,
   unarchiveSession,
@@ -2334,7 +2385,7 @@ export function WorkspaceBrowser({
   useInjectProjectDoc,
   useSpecs,
   useValidateLinks,
-  renderSlot,
+  renderSlot, openSessionMenu, openWorkspaceMenu, useContextMenuTarget, useContextMenu,
   t,
 }: WorkspaceBrowserProps) {
   const home = useHostInfo(info => info.home)
@@ -2581,6 +2632,24 @@ export function WorkspaceBrowser({
   // does not silently drop an in-progress filter.
   const [query, setQuery] = useState('')
   const [searchExpanded, setSearchExpanded] = useState(false)
+  const [searchSpacingMotionEnabled, setSearchSpacingMotionEnabled] = useState(false)
+  const [searchOnExpand, setSearchOnExpand] = useState(false)
+  const [lastSearchRequest, setLastSearchRequest] = useState(0)
+  // Search state must commit before the effect expands the shell's external store.
+  if (lastSearchRequest !== shortcutState.searchRequest) {
+    setLastSearchRequest(shortcutState.searchRequest)
+    if (shortcutState.searchRequest !== 0) {
+      setSearchExpanded(true)
+      setSearchSpacingMotionEnabled(wide)
+      if (!wide) setSearchOnExpand(true)
+    }
+  }
+  // Search gestures animate spacing; entering wide layout from the rail lands at its final geometry.
+  if (!wide && searchSpacingMotionEnabled) setSearchSpacingMotionEnabled(false)
+  const changeSearchExpanded = (expanded: boolean): void => {
+    setSearchSpacingMotionEnabled(wide)
+    setSearchExpanded(expanded)
+  }
   const [revealSessionId, setRevealSessionId] = useState<SessionId | undefined>(undefined)
   // The Session a New Session flow announced, and whether its entry fade has been drawn.
   //
@@ -2627,7 +2696,11 @@ export function WorkspaceBrowser({
     setCreating(true)
   }, [addRequested, projectModelAvailable, closeAddWorkspace])
   const wsPlusRef = useRef<HTMLButtonElement>(null)
+  // The project edit dialog's IME guard. It shares no state with the create dialog's
+  // `createComposingRef` below: the two dialogs open at different times, and one flag
+  // for both would let either one's composition block the other's Enter key.
   const composingRef = useRef(false)
+  const workspaceActionRequest = useWorkspaceActionRequest(value => value)
 
   const openSearchResult = (sessionId: SessionId): void => {
     if (archivedSessionIds.includes(sessionId)) {
@@ -2636,7 +2709,7 @@ export function WorkspaceBrowser({
     }
     setRevealSessionId(sessionId)
     setQuery('')
-    setSearchExpanded(false)
+    changeSearchExpanded(false)
     open(sessionId)
   }
   const acknowledgeSessionReveal = (sessionId: SessionId): void => {
@@ -2648,7 +2721,6 @@ export function WorkspaceBrowser({
 
   // Rail search = expand + land in the search box: the flag arms before the
   // expand request; once the shell flips wide the input mounts and takes focus.
-  const [searchOnExpand, setSearchOnExpand] = useState(false)
   useEffect(() => {
     if (wide && searchOnExpand) {
       const timer = window.setTimeout(() => {
@@ -2661,8 +2733,7 @@ export function WorkspaceBrowser({
   useEffect(() => {
     if (shortcutState.searchRequest === 0) return
     closeAddWorkspace()
-    setSearchExpanded(true)
-    if (!wide) {
+    if (!wide || searchInput.current?.closest('[inert]')) {
       setSearchOnExpand(true)
       expandSidebar()
     } else searchInput.current?.focus({ preventScroll: true })
@@ -2684,7 +2755,7 @@ export function WorkspaceBrowser({
       if (!(event.target instanceof Node) || searchRoot.current?.contains(event.target) === true) return
       searchInput.current?.blur()
       if (normalizedQuery !== '') return
-      setSearchExpanded(false)
+      changeSearchExpanded(false)
     }
     document.addEventListener('click', onClick)
     return () => { document.removeEventListener('click', onClick) }
@@ -3018,7 +3089,7 @@ export function WorkspaceBrowser({
 
   return (
     <div className={clsx(css.root, !wide && css.rail)}>
-      <div className={css.sectionHeader}>
+      <div className={clsx(css.sectionHeader, wide && searchSpacingMotionEnabled && css.searchSpacingMotion)}>
         {wide && (
           <span className={clsx(css.sectionLabel, css.wide, searchExpanded && css.sectionLabelHidden)}>
             {groupBy === 'flat' ? t('section.sessions') : t('section.workspaces')}
@@ -3031,11 +3102,11 @@ export function WorkspaceBrowser({
               className={clsx(css.search, searchExpanded && css.searchExpanded)}
               onClick={() => {
                 closeAddWorkspace()
-                setSearchExpanded(true)
+                changeSearchExpanded(true)
                 searchInput.current?.focus()
               }}
             >
-              <Tooltip label={t('search')} shortcutKeys={searchShortcut?.keys} side="bottom" delayMs={500} disabled={searchExpanded}>
+              <Tooltip label={t('search')} shortcutKeys={searchShortcut?.keys} side="bottom" delayMs={500} disabled={searchExpanded} portal>
                 <button
                   type="button"
                   className={css.searchButton}
@@ -3061,7 +3132,7 @@ export function WorkspaceBrowser({
                 onKeyDown={(e) => {
                   if (e.key !== 'Escape') return
                   setQuery('')
-                  setSearchExpanded(false)
+                  changeSearchExpanded(false)
                 }}
               />
               {searchExpanded && (
@@ -3072,7 +3143,7 @@ export function WorkspaceBrowser({
                   onClick={(e) => {
                     e.stopPropagation()
                     setQuery('')
-                    setSearchExpanded(false)
+                    changeSearchExpanded(false)
                   }}
                 >
                   <IconCloseFillRegular />
@@ -3112,6 +3183,7 @@ export function WorkspaceBrowser({
               shortcutKeys={projectModelAvailable ? undefined : addShortcut?.keys}
               side="bottom"
               delayMs={500}
+              portal
             >
               <button
                 ref={wsPlusRef}
@@ -3155,7 +3227,7 @@ export function WorkspaceBrowser({
 
       {/* The collapsed rail keeps search as its own 36px control. */}
       {!wide && <div className={css.search}>
-        <Tooltip label={t('search')} shortcutKeys={searchShortcut?.keys}>
+        <Tooltip label={t('search')} shortcutKeys={searchShortcut?.keys} portal>
           <button
             type="button"
             className={css.searchButton}
@@ -3177,6 +3249,7 @@ export function WorkspaceBrowser({
           ? (
             <SearchResults
               usePanelInfo={usePanelInfo}
+              useSessionAccess={useSessionAccess}
               useSessions={useSessions}
               useSessionStatus={useSessionStatus}
               open={openSearchResult}
@@ -3194,6 +3267,7 @@ export function WorkspaceBrowser({
           : groupBy === 'flat'
             ? (
               <FlatList
+                useSessionAccess={useSessionAccess}
                 usePanelInfo={usePanelInfo}
                 list={list}
                 sessionIds={orderedFlatSessionIds}
@@ -3205,16 +3279,22 @@ export function WorkspaceBrowser({
                 open={guardedOpen}
                 onSessionRenameRequest={requestSessionRename}
                 renderSlot={renderSlot}
+                openSessionMenu={openSessionMenu} useContextMenu={useContextMenu}
+                useContextMenuTarget={useContextMenuTarget}
                 setSessionOrder={saveSessionOrder}
                 revealSessionId={revealSessionId}
                 onSessionRevealed={acknowledgeSessionReveal}
                 enteringKeys={enteringKeys}
                 onEnteringKeysDrawn={releaseLanded}
+                home={home}
                 t={t}
               />
             )
             : (
               <SessionTree
+                useRemoteAccess={useRemoteAccess}
+                useSessionAccess={useSessionAccess}
+                useWorkspaceAccess={useWorkspaceAccess}
                 usePanelInfo={usePanelInfo}
                 list={list}
                 shortcuts={shortcuts}
@@ -3223,6 +3303,9 @@ export function WorkspaceBrowser({
                 renderSlot={renderSlot}
                 reorderProject={reorderProject}
                 assignSession={assignSession}
+                openSessionMenu={openSessionMenu} useContextMenu={useContextMenu}
+                openWorkspaceMenu={openWorkspaceMenu}
+                useContextMenuTarget={useContextMenuTarget}
                 workspaces={orderedWorkspaces}
                 groupingOverride={orderedProjects}
                 ungroupedSessionIds={orderedUngroupedSessionIds}
@@ -3500,6 +3583,18 @@ export function WorkspaceBrowser({
           {createError !== null && <div className={css.renameError} role="alert">{createError}</div>}
         </Modal>
       )}
+
+      {/*
+        Upstream rc.1 moved the Workspace rename/delete dialogs out of this component
+        into `WorkspaceDialogs`, driven by the `workspaceActionRequest` hook. That path
+        is kept for **Workspace** rows only. A project row's rename/delete still runs
+        through the dialogs above: a project is not a registry entry, so it cannot go
+        through `renameWorkspace` / `deleteWorkspace`, and routing it there would drop
+        the directory / link / doc-spec editing that "项目增删改排" requires.
+      */}
+      {workspaceActionRequest !== null && <WorkspaceDialogs key={`${workspaceActionRequest.action}/${workspaceActionRequest.workspaceId}`}
+        request={workspaceActionRequest} workspaces={workspaces} renameWorkspace={renameWorkspace} deleteWorkspace={deleteWorkspace}
+        settleWorkspaceAction={settleWorkspaceAction} t={t} />}
     </div>
   )
 }
