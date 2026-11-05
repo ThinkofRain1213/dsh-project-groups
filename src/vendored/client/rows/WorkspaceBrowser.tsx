@@ -8,11 +8,13 @@
  * is the header button's one action, so it raises the directory flow with no
  * menu in between; the flow and its error dialog live in WorkspacePicker
  * (same package — direct composition, no slot between them). A Session row's
- * "..." menu and hover buttons are the `sidebar.workspaces.session.menu.item`
- * and `sidebar.workspaces.session.row.action` lists rendered through this
- * entry's `renderSlot`; the actions in them, this package's own included,
- * are slot entries with their own behavior, so this component threads no
- * action callbacks and hosts no action surface.
+ * "..." menu is the shared Web popup fed by `ctx.contextMenus` (this package's
+ * built-in verbs contribute there) plus the legacy
+ * `sidebar.workspaces.session.menu.item` list for external React entries, which
+ * this entry renders through `renderSlot`; its hover buttons are the
+ * `sidebar.workspaces.session.row.action` list. No built-in action registers
+ * into either list any more, so this component threads no action callbacks and
+ * hosts no action surface.
  */
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'

@@ -150,7 +150,7 @@ confirms the produced externals still match the installed official bundle name f
 > not with a caret. `cordis` had to move `4.0.1 → 4.0.5` in the same pass, because 0.2.1's packages
 > peer on `~4.0.5`.
 
-Copied files (27 — upstream's 28 minus its top-level `index.ts`, which this plugin supplies itself):
+Copied files (upstream's set minus its top-level `index.ts`, which this plugin supplies itself):
 
 ```
 client/index.ts
@@ -159,6 +159,7 @@ client/shortcuts.ts
 client/stores.ts
 client/tree.ts
 client/pin-order.ts
+client/path-suffix.ts
 client/locales.ts
 client/contract/slots.ts
 client/contract/toast.ts
@@ -166,21 +167,33 @@ client/toast/Toast.tsx
 client/toast/register.ts
 client/rows/Rows.tsx
 client/rows/Rows.module.css
-client/rows/AnimatedRows.tsx
-client/rows/AnimatedRows.module.css
 client/rows/WorkspaceBrowser.tsx
 client/rows/WorkspaceBrowser.module.css
+client/rows/WorkspaceDialogs.tsx
 client/session-actions/ArchiveSession.tsx
-client/session-actions/ForkSession.tsx
 client/session-actions/PinSession.tsx
 client/session-actions/RenameSession.tsx
 client/session-actions/RowActionToast.tsx
-client/session-actions/SessionId.tsx
+client/session-actions/SessionMenu.tsx
+client/session-actions/context-menus.tsx
 client/session-actions/derived.ts
 client/WorkspacePicker.tsx
 client/WorkspacePicker.module.css
+client/rows/AnimatedRows.tsx
+client/rows/AnimatedRows.module.css
 css-modules.d.ts
 ```
+
+> The last two are a **locally retained copy**: as of 0.2.2-rc.1 upstream no longer ships
+> `AnimatedRows`, and this fork keeps its own copy on purpose (see Task 6 of the resync
+> plan). They are listed at the end so a future re-sync does not mistake them for
+> upstream files that disappeared by accident.
+>
+> `session-actions/ForkSession.tsx` and `session-actions/SessionId.tsx` are **gone** as of
+> 0.2.2-rc.1: upstream folded both verbs into `session-actions/context-menus.tsx`, which
+> registers every built-in Session menu action through `ctx.contextMenus` instead of the
+> legacy `sidebar.workspaces.session.menu.item` Slot. This tree followed, so nothing
+> registers into that Slot any more — it stays declared only for external plugins.
 
 Plus one file upstream does not have — `client/session-actions/BaseWorkspaceMissing.tsx`, the
 dialog a click opens when the configured base Workspace is gone. It is this plugin's own, not a

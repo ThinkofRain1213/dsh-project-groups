@@ -52,15 +52,14 @@ import { UiWorkspaceService } from './navigation.ts'
 import { createWorkspaceViewStore } from './stores.ts'
 import type { GroupSource } from './tree.ts'
 import { WorkspaceBrowser } from './rows/WorkspaceBrowser.tsx'
-import { ArchiveSessionMenuItem, ArchiveSessionRowButton, SessionArchiveConfirmDialog } from './session-actions/ArchiveSession.tsx'
+import { ArchiveSessionRowButton, SessionArchiveConfirmDialog } from './session-actions/ArchiveSession.tsx'
 import { BaseWorkspaceMissingDialog } from './session-actions/BaseWorkspaceMissing.tsx'
 import { derive } from './session-actions/derived.ts'
-import { ForkSessionMenuItem } from './session-actions/ForkSession.tsx'
-import { PinSessionMenuItem, PinSessionRowButton } from './session-actions/PinSession.tsx'
-import { RenameSessionMenuItem, SessionRenameDialog } from './session-actions/RenameSession.tsx'
+import { registerSessionMenus } from './session-actions/context-menus.tsx'
+import { PinSessionRowButton } from './session-actions/PinSession.tsx'
+import { SessionRenameDialog } from './session-actions/RenameSession.tsx'
 import { RowActionToast } from './session-actions/RowActionToast.tsx'
 import { registerToasts } from './toast/register.ts'
-import { SessionIdMenuItem } from './session-actions/SessionId.tsx'
 import { WorkspacePicker } from './WorkspacePicker.tsx'
 import { workspaceDictionaries, zh, type WorkspaceKey } from './locales.ts'
 
@@ -779,20 +778,15 @@ export function apply(
       kind: 'list', scope: 'root', inject: { hooks: { menuOpenState: menuOpenStateFactory, shortcuts: ctx.shortcuts.catalog } },
     } },
   }, SessionMenu))
-  // The shipped row actions take the same route as a plugin's: `slots.inject`
-  // waits for the declaration above and the entries leave with it. Explicit
-  // orders leave room for plugin entries.
-  //
-  // TODO(rc1-resync Task 3): delete this block. rc.1 registers the same verbs
-  // through `registerSessionMenus(ctx, ...)` in `session-actions/context-menus.tsx`
-  // (already merged in, not yet called); enabling it while these five entries
-  // remain would render every verb twice — once structured, once legacy.
-  ctx.slots.inject('sidebar.workspaces.session.menu.item', function* () {
-    yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'pin', order: 100, locale: NS, inject: pinInjected }, PinSessionMenuItem)
-    yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'rename', order: 200, locale: NS, inject: renameInjected }, RenameSessionMenuItem)
-    yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'fork', order: 300, locale: NS, inject: forkInjected }, ForkSessionMenuItem)
-    yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'archive', order: 400, locale: NS, inject: archiveInjected }, ArchiveSessionMenuItem)
-    yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'session-id', order: 450, locale: NS, inject: sessionIdInjected }, SessionIdMenuItem)
+  // The built-in actions travel as structured data now, exactly as in rc.1: one
+  // `ctx.contextMenus` contribution per verb, over the same callbacks the row
+  // buttons use, so the popup renders them beside whatever other plugins
+  // contribute to the `session` target (e.g. ui-open-in-app's "show in folder",
+  // order 500). The legacy `sidebar.workspaces.session.menu.item` Slot stays
+  // declared above for *external* React entries, but nothing here registers into
+  // it any more — registering both routes would render every verb twice.
+  registerSessionMenus(ctx, {
+    ...pinInjected(), ...archiveInjected(), ...renameInjected(), ...forkInjected(), ...sessionIdInjected(),
   })
   ctx.slots.inject('sidebar.workspaces.session.row.action', function* () {
     yield ctx.slots.register({ name: 'sidebar.workspaces.session.row.action', id: 'archive', order: 100, locale: NS, inject: archiveInjected }, ArchiveSessionRowButton)

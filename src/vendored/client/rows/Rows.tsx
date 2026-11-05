@@ -3,11 +3,13 @@
  * all data and callbacks arrive via props. Hover swaps (folder->chevron,
  * time->ellipsis, action buttons) are CSS-only, and a session row's clipped
  * title marquees programmatically while the row is hovered. Workspace row
- * menus share captured Workspace actions with right-click. A Session row's "..." menu and
- * its hover buttons are the `sidebar.workspaces.session.menu.item` and
- * `sidebar.workspaces.session.row.action` lists, rendered through the
- * browser's `renderSlot` with the menu's open state as the occurrence's hook
- * context; this package's own actions are entries like any plugin's. The
+ * menus share captured Workspace actions with right-click. A Session row's "..." menu is
+ * the shared Web popup filled from `ctx.contextMenus` (this package's built-in verbs
+ * contribute there) plus the legacy `sidebar.workspaces.session.menu.item` list, which
+ * renders external React entries through the browser's `renderSlot` with the menu's open
+ * state as the occurrence's hook context; its hover buttons are the
+ * `sidebar.workspaces.session.row.action` list. No built-in action registers into the
+ * legacy list any more. The
  * session and workspace hover cards are suppressed while a menu is open.
  *
  * ## Two header rows, two names — read this before touching either

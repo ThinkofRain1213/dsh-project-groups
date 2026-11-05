@@ -27,6 +27,8 @@
  * contributions. The Session menu adapter owns the legacy
  * `sidebar.workspaces.session.menu.item` Slot for external React entries;
  * they receive the captured row identity and render together before Archive.
+ * This package's own verbs no longer register into that legacy list — they are
+ * `ctx.contextMenus` contributions (`session-actions/context-menus.tsx`).
  *
  * The browser entry additionally declares `list` seats per Session row
  * (`sidebar.session.row.leading`, `sidebar.session.row.trailing`, and
