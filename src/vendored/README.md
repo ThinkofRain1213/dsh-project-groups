@@ -182,15 +182,22 @@ client/session-actions/context-menus.tsx
 client/session-actions/derived.ts
 client/WorkspacePicker.tsx
 client/WorkspacePicker.module.css
-client/rows/AnimatedRows.tsx
-client/rows/AnimatedRows.module.css
 css-modules.d.ts
 ```
 
-> The last two are a **locally retained copy**: as of 0.2.2-rc.1 upstream no longer ships
-> `AnimatedRows`, and this fork keeps its own copy on purpose (see Task 6 of the resync
-> plan). They are listed at the end so a future re-sync does not mistake them for
-> upstream files that disappeared by accident.
+Locally retained — **not** in upstream's set any more, so a re-sync has nothing to copy here
+(see *Locally retained: `AnimatedRows`* below):
+
+```
+client/rows/AnimatedRows.tsx
+client/rows/AnimatedRows.module.css
+```
+
+> As of 0.2.2-rc.1 upstream moved `AnimatedRows` into `ui-primitives` and deleted the
+> `ui-workspace` copy; this fork keeps its own because it needs two props the shared package
+> does not have. Both files are listed apart so a future re-sync does not mistake them for
+> upstream files that disappeared by accident — and, just as importantly, does not copy the
+> `ui-primitives` version over them.
 >
 > `session-actions/ForkSession.tsx` and `session-actions/SessionId.tsx` are **gone** as of
 > 0.2.2-rc.1: upstream folded both verbs into `session-actions/context-menus.tsx`, which
@@ -201,6 +208,98 @@ css-modules.d.ts
 Plus one file upstream does not have — `client/session-actions/BaseWorkspaceMissing.tsx`, the
 dialog a click opens when the configured base Workspace is gone. It is this plugin's own, not a
 patch, so a re-sync copies nothing over it.
+
+### Locally retained: `AnimatedRows`
+
+`client/rows/AnimatedRows.tsx` and its `.module.css` are the only two files here that are **not
+derived from `ui-workspace` at all**. 0.2.2-rc.1 moved the component out of this package into
+`packages/client/ui-primitives/src/AnimatedRows.tsx` (`5d3ea87d286`, *refactor(web): share
+workspace drag behavior with model lists*) and deleted the `ui-workspace` copy. This tree keeps
+its own, so **a re-sync must never overwrite or delete them**, and the upstream side to compare
+against is `ui-primitives`, not `ui-workspace`.
+
+#### Why it is not followed
+
+Two hard constraints, both read from the installed packages rather than assumed:
+
+1. **`ui-primitives` is external.** It sits in `tsdown.config.ts`'s `PLATFORM_MODULES`, so the
+   shell supplies it at runtime; a plugin cannot add a prop to it.
+2. **Its members are private.** `armed` / `list` / `overlay` / `movements` / `exits` /
+   `readPositions` / `move` are all `private` in the published
+   `lib/types/AnimatedRows.d.ts`, so a subclass cannot reach the state the two props need.
+
+The two props are the point of the copy, not a nicety. `enteringKeys` states which rows are
+arrivals, and `onEnteringKeysDrawn` releases that announcement once the commit that drew it has
+run; together they are deliberate behaviour deviation 6 below. Without them a New Session that
+**reuses the blank Session** keeps its row key and glides from its old group instead of
+arriving — a feature loss, which is the line this whole re-sync must not cross.
+
+#### What upstream rc.1 has and this copy does not
+
+Complete list, in file order. Rows 1–5 are 0.2.2-rc.1's own generalization of the component for
+a shared package; rows 6–7 are this fork's. Each was judged separately:
+
+| # | Upstream `ui-primitives` at rc.1 | This copy | Follow? |
+|---:|---|---|---|
+| 1 | file header and class doc say "keyed rows" (the package is generic) | both say "the sidebar's keyed rows" | no — comment only |
+| 2 | `export interface AnimatedRowsProps`, re-exported as a type from `index.ts` | the interface is module-private | no — nothing here imports the type |
+| 3 | `label?: string` (optional) | `label: string` (required) | no — both call sites pass it |
+| 4 | `role?: AriaRole`, rendered as `role={this.props.role}` | `role?: AriaRole`, rendered as `role={this.props.role ?? 'tree'}` | **no** — both call sites pass `role="tree"`, so the rendered attribute is identical; the default only restores rc.3's hard-coded value for a caller that omits it |
+| 5 | the exit clone copies the row's computed `paddingInlineStart` | the exit clone copies the `--dsh-workspace-indent` custom property | **no** — see below |
+| 6 | — | `enteringKeys` | this is the copy's reason to exist |
+| 7 | — | `onEnteringKeysDrawn`, its two `release()` call sites, and the `arriving.has(key)` branch | same |
+
+**Item 5 is required by this tree's markup, not a stale leftover.** The exit clone is appended
+to `.exits`, which `AnimatedRows` renders as a **sibling** of `.list` (see its `render`), so the
+clone sits beside the group section rather than inside it. The section is what sets
+`--dsh-workspace-indent` per depth (`WorkspaceBrowser.tsx`, `style={{ '--dsh-workspace-indent':
+… }}`), and the row stylesheets consume it —
+`Rows.module.css` (`padding-inline-start: calc(… + var(--dsh-workspace-indent, 0px))`) and
+`WorkspaceBrowser.module.css` (the session-overflow row). A clone that did not carry the value
+would therefore fall back to `0px` and the fading copy would jump left by its indentation. Both
+forms solve that — upstream's computed `paddingInlineStart` bakes the whole sum into the clone,
+this copy's custom property reproduces the one term the clone cannot inherit — and they render
+identically, because the property is set from the same row's computed value. rc.1 moved to the
+computed form because a **shared** package cannot know about a sidebar-only variable; the same
+commit moved `useRowDragPreview` the same way, and this tree's `Rows.tsx` did follow that half
+(it passes `DRAG_PREVIEW_PROPERTIES` for the three sidebar variables, exactly as upstream).
+
+**Judgement: nothing in rows 1–5 needs to be carried.** rc.1's version contains no behavioural
+improvement this copy lacks. The whole upstream-side diff is one generalization forced by
+relocation (item 5) plus two optionality changes and a comment rewrite; of those, only item 4
+changes behaviour, and only for a caller that omits `role` — which both of this tree's call
+sites pin to `"tree"`.
+
+#### Drift risk
+
+The risk is asymmetric, and worth stating precisely: **upstream can change this component and
+this tree will not notice.**
+
+- This file is a **whole copy**, not a patch. A re-sync three-way merges the other
+  `ui-workspace` files; these two are not in that set, so an upstream rewrite of the animator
+  produces no conflict at all — the fork would simply keep running the rc.1-era implementation.
+- What upstream could change without this tree following: the two durations (`100` / `200` ms),
+  the `armed` rule (motion starts only after local pointer or keyboard input), the
+  reduced-motion check, the viewport/intersects filtering, the exit-overlay protocol (the
+  `data-row-key` clone, `inert`, the indentation capture), the interruption semantics
+  (`readPositions` reading a live opacity, `cancelMovements`), and the per-commit
+  `sameRows` / `resetKey` / `ready` gating. Any of them moving upstream means the two sidebars
+  animate differently.
+- **Nothing else in this repo would catch that**: no unit test imports this copy — it is driven
+  only through a live instance by `scripts/probe-row-key-motion.mjs` (a New Session fades, a
+  re-filed Session glides, a blank becoming real does **not** animate) and
+  `scripts/probe-new-session-motion.mjs`, both outside `pnpm check` because each spawns a
+  server.
+- The counterweight, and why this is acceptable: the component is called from exactly **two**
+  places (`WorkspaceBrowser.tsx`, the grouped and the flat list), both in this tree, and it
+  depends on nothing else in `ui-primitives`. A re-sync therefore only has to diff it against
+  `packages/client/ui-primitives/src/AnimatedRows.tsx` **once per upgrade** and record the
+  result here, the way the table above does for rc.1.
+
+> The numeric baseline table below still carries an `AnimatedRows.tsx` row, because it was
+> measured against `dsh-v0.2.1-rc.3`, when the file *was* an upstream file this tree patched.
+> Against 0.2.2-rc.1 there is nothing to patch, so that row's meaning changes rather than its
+> numbers — see the re-measurement in Task 7 Step 5.
 
 ## Why vendored
 
@@ -309,7 +408,7 @@ re-sync re-applies; the counts above are what a re-sync should reproduce.
 | `rows/Rows.tsx` | adds `sessionRowKey(id)`: a Session row's animation identity is the Session itself (`session:<id>`), kept as one shared constructor so the ordered `rowKeys` array and the rendered attribute cannot drift | re-add the helper and its doc block |
 | `rows/Rows.tsx` | `SessionNodeItem` takes an optional `rowKey`, and its `data-row-key` is `rowKey ?? sessionRowKey(node.id)` | re-add the prop and the fallback |
 | `rows/WorkspaceBrowser.tsx` | the grouped view passes `sessionRowKey(node.id)` twice — into `rowKeys` and into the row's `rowKey` — in the same order | re-apply both call sites together |
-| `rows/AnimatedRows.tsx` | takes `enteringKeys` / `onEnteringKeysDrawn`: a New Session that **reuses a blank Session** keeps its row key, so its entry fade is announced instead of inferred (**behaviour change**, see below) | drop both props and the `arriving` branch |
+| `rows/AnimatedRows.tsx` | takes `enteringKeys` / `onEnteringKeysDrawn`: a New Session that **reuses a blank Session** keeps its row key, so its entry fade is announced instead of inferred (**behaviour change**, see below). Since 0.2.2-rc.1 upstream no longer ships this file in `ui-workspace`, so there is nothing to re-apply it against: the file is a **locally retained copy** — see *Locally retained: `AnimatedRows`* above | keep both props, and never copy upstream's `ui-primitives` version over the file |
 | `contract/slots.ts` | adds `newSessionLanded` to `WorkspaceBrowserInjected['hooks']`: `{ sessionId, seq } \| null`, the Session every New Session flow landed on, sequenced because the reused blank re-announces one id | drop the field |
 | `navigation.ts` | the service takes an optional `onNewSession` callback, called from `startSession` for every entry, composed with `beforeOpen` rather than replacing it (**behaviour change**, see below). Omitted, the flow is unchanged | re-add the parameter and the two compositions |
 | `contract/slots.ts` | adds `BaseWorkspaceMissingRequest` / `BaseWorkspaceDialogInjected` / `BaseWorkspaceDialogProps`: the report a New Session raises when its 底层工作区 is gone | re-add the three declarations |
@@ -582,6 +681,11 @@ id twice (the blank is reused); a store compares by value, so without it the sec
 arrival would read as no change. `AnimatedRows` reports back through
 `onEnteringKeysDrawn` once the commit that drew the fade has run, so a later scroll or
 expansion does not re-fade the row.
+
+> Since 0.2.2-rc.1 the component this deviation patches is no longer upstream's: it is the
+> **locally retained copy** described under *Locally retained: `AnimatedRows`* above. When a
+> re-sync updates this deviation, the code to change is in that copy, and the `ui-primitives`
+> version must not be swapped in — it has neither prop.
 
 `blank` is deliberately **not** folded into the key: a blank New Session becoming
 real stays in its group, so its key does not change and the row is patched in place
@@ -1006,6 +1110,21 @@ git -C "$H" diff -U0   dsh-v0.1.7-rc.2 dsh-vX.Y.Z-rc.N -- packages/client/ui-wor
 For 0.2.0 this was 145 lines across 7 of our patched files. Cross-check each `@@` hunk against the
 patch table below: a hunk landing in a file the table names is the one that needs a decision, and
 everything else is mechanical.
+
+**Two files are outside this diff and must be diffed separately**: `rows/AnimatedRows.tsx` and its
+`.module.css` are a *locally retained copy* whose upstream counterpart moved to
+`packages/client/ui-primitives/src/` in 0.2.2-rc.1. Diff them against that path — never against
+`ui-workspace`, where they no longer exist — and never let a merge or a copy overwrite them:
+
+```bash
+git -C "$H" diff dsh-v0.2.2-rc.1 dsh-vX.Y.Z-rc.N -- packages/client/ui-primitives/src/AnimatedRows.tsx
+git -C "$H" show dsh-vX.Y.Z-rc.N:packages/client/ui-primitives/src/AnimatedRows.tsx \
+  > /tmp/theirs/rows/AnimatedRows.tsx   # compare by hand; do not copy in
+```
+
+What to do with the result is described under *Locally retained: `AnimatedRows`* above: decide
+per difference whether it is a real improvement worth carrying, then record the decision and the
+new diff there.
 
 ### 3. Three-way merge every patched file
 
