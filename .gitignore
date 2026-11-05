@@ -40,3 +40,9 @@ coverage/
 # packages. Never committed, so a `git clean -fdx` loses them outright — the
 # durable record is the branch's commits, not these files.
 .superpowers/
+
+# Feature worktrees. A linked worktree checked out inside the repository would
+# otherwise be committed as a nested tree — `git add .` at the root would stage
+# a second copy of every tracked file. Frontend-shape experiments live here, so
+# the working `lib/` that the installed DSH loads is never touched.
+.worktrees/
