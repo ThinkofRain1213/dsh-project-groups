@@ -72,6 +72,26 @@ export type WorkspaceActionRequest = {
 }
 
 /**
+ * One request for the **project** edit or delete dialog.
+ *
+ * A sibling of {@link WorkspaceActionRequest} rather than a widening of it: the two name
+ * different resources with different identities (`WorkspaceId` vs a project id), and the
+ * dialogs they open commit through different verbs (`renameWorkspace` / `deleteWorkspace`
+ * vs `updateProject` / `deleteProject`). Folding them would force every consumer to
+ * discriminate on a union it does not need.
+ *
+ * It exists because the project row's menu is a `ctx.contextMenus` contribution now — see
+ * `src/client/project-menu.ts` — and a contribution runs outside this browser component,
+ * while the dialogs it must open are this component's own `useState`. The store is the same
+ * bridge upstream already uses for the Workspace row, pointed the other way.
+ */
+export type ProjectMenuRequest = {
+  readonly action: 'rename' | 'delete'
+  /** The project's id, which is also its group key. */
+  readonly projectId: string
+}
+
+/**
  * Owner share of the directory-flow holes: the complete conversation between
  * the trigger surface and the picking interaction. The occupant reads `open`
  * to run/render its interaction and reports exactly one outcome per open.
@@ -246,12 +266,43 @@ export type DirectoryPickingHooks = PropsHooks<DirectoryPickingInjected['hooks']
 export type WorkspaceBrowserInjected = {
   /** Open the registered Workspace actions without changing expansion or selection. */
   openWorkspaceMenu: (workspaceId: WorkspaceId, path: string, displayTitle: string, point: { x: number; y: number }, mode?: 'toggle') => void
+  /**
+   * Open one project's `ctx.contextMenus` menu without changing expansion or selection.
+   *
+   * The project target family, contributed by this plugin rather than upstream — see
+   * `src/client/project-menu.ts`. `directories` rides on the captured target because a
+   * project may hold any number of them (including none), which is why the Workspace family
+   * cannot serve it.
+   */
+  openProjectMenu: (
+    projectId: string,
+    title: string,
+    directories: readonly string[],
+    point: { x: number; y: number },
+    mode?: 'toggle',
+  ) => void
   /** Dismiss the settled Workspace dialog. */
   settleWorkspaceAction: () => void
+  /**
+   * Consume the settled **project** dialog request.
+   *
+   * The project menu's rename/remove verbs raise {@link ProjectMenuRequest} rather than
+   * opening anything themselves, and this is how the browser clears it once the dialog it
+   * drove has closed — the same lifecycle as {@link settleWorkspaceAction}.
+   */
+  settleProjectMenu: () => void
   /** Open actions for the clicked Session without selecting it. */
   openSessionMenu: (sessionId: SessionId, displayTitle: string, point: { x: number; y: number }, mode?: 'toggle') => void
   hooks: DirectoryPickingInjected['hooks'] & {
     workspaceActionRequest: HostObservable<WorkspaceActionRequest | null>
+    /**
+     * The project dialog request a menu verb raised, until the browser consumes it.
+     *
+     * Mandatory like the other hooks: the renderer binds hooks from the observable's
+     * identity, so a composition without this feature supplies an observable answering
+     * `null`, which reads as "no request".
+     */
+    projectMenuRequest: HostObservable<ProjectMenuRequest | null>
     contextMenuTarget: HostObservable<ContextMenuTarget | null>
     /**
      * Fixed Host facts, reached through a hook rather than injected as values:

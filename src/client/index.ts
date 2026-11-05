@@ -46,7 +46,7 @@ import type { TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol'
 // 'plugins.bundle.config' entry). Collaborating through a slot, never a value.
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import { apply as applyVendored, inject as vendoredInject } from '../vendored/client/index.ts'
-import type { ProjectActions } from '../vendored/client/index.ts'
+import type { ProjectActions, VendoredBrowserHandles } from '../vendored/client/index.ts'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { WorkspaceSource } from '@deepseek-ai/dsh-api-workspace-controller/client'
@@ -58,6 +58,8 @@ import {
   installLocaleService, installProjectModel, projectModel,
 } from './grouping.ts'
 import { ProjectModel } from './projects.ts'
+import { registerProjectMenu } from './project-menu.ts'
+import type { ProjectMenuActions } from './project-menu.ts'
 import { wrapFork, type ForkableSessions } from './fork-inheritance.ts'
 import { recentDestination, resolveTarget } from './target.ts'
 import { projectGroupsRemote } from './remote.ts'
@@ -345,6 +347,59 @@ const projectActions: ProjectActions = {
   },
 }
 
+/**
+ * The verbs the project row's context menu drives.
+ *
+ * All three are closures over `apply`'s captures rather than module functions, because the
+ * two that open dialogs go through the vendored browser handle (`requestProjectMenu`) and
+ * the third needs the Remote namespace.
+ * @param browser - what the vendored half handed back from its own `apply`.
+ * @returns the three verbs {@link registerProjectMenu} expects.
+ */
+function projectMenuActions(browser: VendoredBrowserHandles): ProjectMenuActions {
+  return {
+    // The browser's **edit** dialog, not a new one: it seeds the directory, link and
+    // doc-spec drafts from the stored record and commits all four fields with one write.
+    rename: (id) => { browser.requestProjectMenu('rename', id) },
+    // The browser's delete confirmation, deliberately not `deleteProject` directly. That
+    // Remote call does exist on this side and would be one line, but it would remove a
+    // project with no confirmation, and the confirmation is where the user is told the
+    // Sessions survive and return to Ungrouped.
+    remove: (id) => { browser.requestProjectMenu('delete', id) },
+    reveal: revealInFileManager,
+  }
+}
+
+/** The slice of the Session Remote this plugin calls to show a directory. */
+interface SessionPathRemote {
+  openWorkspacePath(
+    request: { path: string; action: 'reveal' },
+    signal?: AbortSignal,
+  ): Promise<{ ok: boolean; error?: { message: string } }>
+}
+
+/**
+ * Show one directory in the Host's file manager.
+ *
+ * Reuses the endpoint `ui-open-in-app` itself uses for "show in folder"
+ * (`session/openWorkspacePath` with `action: 'reveal'`), reached through the mounted
+ * `remote.session` namespace rather than by importing that plugin: a client plugin's
+ * contribution to another plugin's menu is data, not a shared function, and importing it
+ * would pull a second copy of its controller into this bundle.
+ *
+ * The rejection is **not** swallowed: the context-menu layer catches it and reports through
+ * its own localized failure notice, which is the one surface that outlives the closed menu.
+ * @param path - absolute host path, as stored on the project.
+ */
+async function revealInFileManager(path: string): Promise<void> {
+  const remote = clientContext?.get('remote.session') as SessionPathRemote | undefined
+  // No Remote is not "nothing happened": a project whose directory cannot be shown must say
+  // so, and throwing is what routes it into that notice.
+  if (remote === undefined) throw new Error('the session remote is unavailable')
+  const result = await remote.openWorkspacePath({ path, action: 'reveal' })
+  if (!result.ok) throw new Error(result.error?.message ?? 'could not show the directory')
+}
+
 /** @returns the started model, or throws when the Remote namespace is absent. */
 function requireModel(): ProjectModel {
   const live = projectModel()
@@ -440,7 +495,7 @@ export function apply(ctx: Context): void {
       'project-groups: official base probe',
     )
   }
-  applyVendored(
+  const browser = applyVendored(
     ctx, clientGrouping, projectActions, clientExpansions, clientOrders, clientCreateOpensSession,
     {
       perProjectDocSpec: clientPerProjectDocSpec,
@@ -453,6 +508,11 @@ export function apply(ctx: Context): void {
     },
     { validateLinks: clientValidateLinks },
   )
+  // After the browser, because two of the three verbs go through the handle it returns.
+  // The menu is registered regardless: a composition that somehow got here without a
+  // project model still gets a menu whose dialog verbs land on a browser that has no
+  // dialogues to open — and the reveal row, which needs nothing from it, keeps working.
+  registerProjectMenu(ctx, projectMenuActions(browser))
   registerSettingsCard(ctx)
 }
 

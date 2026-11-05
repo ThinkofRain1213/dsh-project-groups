@@ -1,5 +1,5 @@
 /**
- * The 40 `workspace` dictionary keys this plugin adds on top of the official set, plus
+ * The 41 `workspace` dictionary keys this plugin adds on top of the official set, plus
  * the registration entry point that merges them into the namespace.
  *
  * ## Why these keys live here and not in `src/vendored/client/locales.ts`
@@ -11,7 +11,7 @@
  *
  * ## Why six languages fall back to English for this copy
  *
- * Upstream ships 8 languages. These 40 keys exist in `zh` and `en` only; `ja`, `es`, `fr`,
+ * Upstream ships 8 languages. These 41 keys exist in `zh` and `en` only; `ja`, `es`, `fr`,
  * `de`, `ru` and `pt` do not translate them, so the locale service's per-key fallback
  * chain resolves them to English. That is a **known, accepted degradation** — recorded in
  * the plan's spec as B-2b and in the CHANGELOG — not a defect. Translating them into six
@@ -33,7 +33,7 @@
  *
  * `src/vendored/client/locales.ts` exports `WorkspaceKey = keyof typeof zh` — upstream's
  * 119 keys, byte-identical to upstream. This file exports a **wider** `WorkspaceKey`
- * (119 ∪ 40 = 159) because `src/vendored/client/index.ts`'s `LocaleNamespaceMap` block
+ * (119 ∪ 41 = 160) because `src/vendored/client/index.ts`'s `LocaleNamespaceMap` block
  * (upstream's, left verbatim) types the `workspace` namespace with it, and the 60-odd
  * `t('project.*')` call sites must type-check against the wider set.
  *
@@ -66,13 +66,17 @@ export const PROJECT_LOCALE_KEYS = [
   'baseMissing.rebuild', 'baseMissing.respecify', 'baseMissing.confirmTitle',
   'baseMissing.confirmBody', 'baseMissing.confirmAction', 'baseMissing.confirmBusy',
   'baseMissing.confirmBack', 'actions.project.aria',
+  // The project row menu's own reveal row. Upstream keeps its equivalent in
+  // `ui-open-in-app`'s `open-in-app` namespace, which this plugin does not inject; this
+  // dictionary is the namespace the project menu is bound to, so the copy lives here.
+  'menu.reveal',
 ] as const
 
-/** The key union of the 40 project-owned entries. */
+/** The key union of the 41 project-owned entries. */
 export type ProjectWorkspaceKey = typeof PROJECT_LOCALE_KEYS[number]
 
 /**
- * The namespace's complete key union: upstream's 119 plus this plugin's 40.
+ * The namespace's complete key union: upstream's 119 plus this plugin's 41.
  *
  * This is what `LocaleNamespaceMap.workspace` must name, because that declaration types the
  * framework-injected `t` seat. Naming only {@link UpstreamWorkspaceKey} would make every
@@ -160,6 +164,9 @@ export const PROJECT_LOCALE_ZH = {
   'baseMissing.confirmBusy': '正在重建…',
   'baseMissing.confirmBack': '返回',
   'actions.project.aria': '项目“{name}”的操作',
+  // Same wording the official `ui-open-in-app` uses in its own namespace, so a user who
+  // has both menus open does not read two different names for one action.
+  'menu.reveal': '在文件夹中显示',
 } as const satisfies Record<ProjectWorkspaceKey, string>
 
 /** English project copy, checked complete against the zh key set. */
@@ -206,14 +213,15 @@ export const PROJECT_LOCALE_EN = {
   'baseMissing.confirmBusy': 'Re-creating…',
   'baseMissing.confirmBack': 'Back',
   'actions.project.aria': 'Project actions for {name}',
+  'menu.reveal': 'Show in folder',
 } as const satisfies Record<ProjectWorkspaceKey, string>
 
 /**
  * The eight `workspace` dictionaries in the shape
  * `ctx.locale.register('workspace', …)` accepts.
  *
- * `zh` and `en` carry all 159 keys; the six rc.1 languages are upstream's dictionaries
- * untouched — 119 keys each, no project copy — and resolve the 40 through the fallback
+ * `zh` and `en` carry all 160 keys; the six rc.1 languages are upstream's dictionaries
+ * untouched — 119 keys each, no project copy — and resolve the 41 through the fallback
  * chain to English. See the module doc for why that is safe.
  *
  * The return type is asserted through `unknown` because the six really are incomplete and
@@ -226,7 +234,7 @@ export const PROJECT_LOCALE_EN = {
 export function workspaceDictionaries(): Record<'zh' | 'en', Record<WorkspaceKey, string>>
   & Record<string, Record<WorkspaceKey, string>> {
   const merged = {
-    // Upstream's text wins on a collision. There is none today — the 40 keys were chosen to
+    // Upstream's text wins on a collision. There is none today — the 41 keys were chosen to
     // be absent from upstream — and if a future upstream key ever lands on one of ours, its
     // wording is the one that should ship.
     zh: { ...PROJECT_LOCALE_ZH, ...upstreamZh },

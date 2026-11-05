@@ -1,4 +1,4 @@
-import { IconEditOutlineRegular, IconTrashOutlineRegular, IconPinFillRegular, IconPinOutlineRegular, IconUnarchiveOutlineRegular, IconArchiveOutlineRegular, IconBranchOutlineRegular, IconCopyOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconEditOutlineRegular, IconTrashOutlineRegular, IconPinFillRegular, IconPinOutlineRegular, IconUnarchiveOutlineRegular, IconArchiveOutlineRegular, IconBranchOutlineRegular, IconCopyOutlineRegular, IconFolderOpenRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { SessionMenu } from './session-actions/SessionMenu.tsx'
 import type {} from '@deepseek-ai/dsh-client-ui-context-menu/client'
 /**
@@ -46,6 +46,7 @@ import {
   type SessionArchiveConfirmInjected, type SessionArchiveConfirmRequest,
   type RenameSessionInjected, type RowToast, type RowToastInjected, type RowToastState, type SessionRenameDialogInjected,
   type WorkspaceActionRequest, type SessionIdInjected, type WorkspaceBrowserInjected, type WorkspacePickerInjected,
+  type ProjectMenuRequest,
 } from './contract/slots.ts'
 import { createWorkspaceShortcutControls, installWorkspaceShortcuts } from './shortcuts.ts'
 import { UiWorkspaceService } from './navigation.ts'
@@ -304,6 +305,28 @@ export interface UnscopedPlacement {
 }
 
 /**
+ * What the caller needs back from {@link apply} to drive the project menu.
+ *
+ * Returned rather than reached through a module-level variable: the browser half is
+ * instantiated per `apply`, and a module-level store would be shared across two plugin
+ * instances (HMR, or a second composition) and let one window's menu open the other's
+ * dialog. It is one member today, and its own interface so a second one cannot ride in
+ * untyped.
+ */
+export interface VendoredBrowserHandles {
+  /**
+   * Ask the browser to open its own project edit or delete dialog.
+   *
+   * The project menu's `rename` and `remove` verbs land here. They cannot call the Remote
+   * writes directly: deleting a project has a confirmation naming it, and editing one
+   * seeds directory, link and doc-spec drafts only this component holds.
+   * @param action - which dialog to open.
+   * @param projectId - the project, which is also its group key.
+   */
+  requestProjectMenu: (action: ProjectMenuRequest['action'], projectId: string) => void
+}
+
+/**
  * Register the browser and picker once their slot declarations are on the
  * ledger. Inject factories return plain callbacks; data reads use the
  * framework's global hooks.
@@ -347,7 +370,7 @@ export function apply(
   createOpensSessionOverride?: HostObservable<boolean>,
   docSpecHooks?: DocSpecHooks,
   linkHooks?: LinkHooks,
-): void {
+): VendoredBrowserHandles {
   const sessions = ctx.get('sessions') as ISessions
   const workspaces = ctx.get('workspaces') as IWorkspaces
   // One viewing-store instance, created here as ui-layout does for its layout
@@ -649,12 +672,31 @@ export function apply(
     if (workspace === undefined || !ctx.remoteAccess.source('workspace', workspaceId, `workspace/${action}`).getSnapshot()) return
     workspaceActionRequest.set({ action, workspaceId, displayTitle, storedTitle: workspace.title })
   }
+  /**
+   * The project dialog bridge: a menu verb raises a request here, the browser consumes it.
+   *
+   * The direction is the mirror image of `workspaceActionRequest` above. That one exists
+   * because a row raises a request the *shared menu layer* then honours; this one exists
+   * because the shared menu layer raises a request only the *browser component* can honour —
+   * the project edit and delete dialogs, with their directory, link and doc-spec drafts, are
+   * that component's own `useState`, and `src/client/project-menu.ts` runs outside it.
+   *
+   * Deliberately not a re-route through `deleteProject` directly: deleting a project has a
+   * confirmation that names it and explains where its Sessions go, and a menu row that
+   * skipped straight to the write would remove a record the user never confirmed.
+   */
+  const projectMenuRequest = createSnapshotStore<ProjectMenuRequest | null>(null)
   ctx.slots.inject('contextMenu.icon', function* () {
     for (const [key, Icon] of Object.entries({
       'workspace.rename': IconEditOutlineRegular, 'workspace.delete': IconTrashOutlineRegular,
       'workspace.pin': IconPinOutlineRegular, 'workspace.unpin': IconPinFillRegular,
       'workspace.archive': IconArchiveOutlineRegular, 'workspace.unarchive': IconUnarchiveOutlineRegular,
       'workspace.fork': IconBranchOutlineRegular, 'workspace.copy': IconCopyOutlineRegular,
+      // The project family's reveal row. Registered here rather than beside
+      // `registerProjectMenu` in `src/client/` because this seat is the one every other
+      // icon key already uses, and it is a `keyed` slot: a second registration of the same
+      // key would throw, so there must be exactly one owner for the whole registry.
+      'project.reveal': IconFolderOpenRegular,
     })) yield ctx.slots.register({ name: 'contextMenu.icon', key }, Icon)
   })
   ctx.effect(() => ctx.contextMenus.register({
@@ -675,6 +717,15 @@ export function apply(
       else ctx.contextMenus.open({ kind: 'workspace', value: { workspaceId, path, displayTitle } }, point)
     },
     settleWorkspaceAction: () => { workspaceActionRequest.set(null) },
+    openProjectMenu: (projectId, title, directories, point, mode) => {
+      const target = ctx.contextMenus.active.getSnapshot()
+      if (mode === 'toggle' && target?.kind === 'project' && target.value.projectId === projectId) ctx.contextMenus.close()
+      // The directories are captured with the target, not looked up at resolve time: a menu
+      // that re-read them would disagree with the row the user right-clicked if a directory
+      // were added or removed while it was open.
+      else ctx.contextMenus.open({ kind: 'project', value: { projectId, title, directories } }, point)
+    },
+    settleProjectMenu: () => { projectMenuRequest.set(null) },
     openSessionMenu: (sessionId, displayTitle, point, mode) => {
       const target = ctx.contextMenus.active.getSnapshot()
       if (mode === 'toggle' && target?.kind === 'session' && target.value.sessionId === sessionId) ctx.contextMenus.close()
@@ -728,6 +779,12 @@ export function apply(
       // rc.1 additions: the Workspace rename/delete requests now travel through the
       // shared context-menu layer rather than a dialog owned by the browser.
       workspaceActionRequest,
+      /**
+       * The reverse direction for project rows: the shared menu layer raises this, and the
+       * browser's own edit/delete dialogs honour it. See `src/client/project-menu.ts` for
+       * why a project cannot use `workspaceActionRequest`.
+       */
+      projectMenuRequest,
       contextMenuTarget: ctx.contextMenus.active,
       directoryFlow: browserFlowSource,
       hostInfo,
@@ -823,6 +880,12 @@ export function apply(
     },
     WorkspacePicker,
   ))
+  return {
+    // The project menu's two dialog verbs, routed to the browser's own dialogs through the
+    // store the browser already reads. See `VendoredBrowserHandles` for why this is returned
+    // instead of published on a module-level variable.
+    requestProjectMenu: (action, projectId) => { projectMenuRequest.set({ action, projectId }) },
+  }
 }
 
 /**

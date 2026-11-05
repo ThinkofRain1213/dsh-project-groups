@@ -318,6 +318,17 @@ interface WorkspaceDragState {
 /**
  * One group row requesting a dialog. A project row is not a Workspace, so the
  * request names which kind it is and lets the owner pick the right subject.
+ *
+ * **No producer and no consumer left in this composition.** Both group headers reach their
+ * dialogs through `ctx.contextMenus` now — the Workspace family for a Workspace row, this
+ * plugin's `project` family for a project row — so the `onRenameRequest` / `onDeleteRequest`
+ * props that carried this used to be the only things reading or writing it.
+ *
+ * Kept exported rather than deleted for one reason: `src/vendored/README.md`'s re-sync table
+ * names `RowRequest` in five patch rows (the `kind` tag, the optional `directories`,
+ * `docSpec` and links fields, and the edit-dialog seeding), so deleting the type here would
+ * silently falsify that table — and the table is what a future re-sync re-applies. Removing
+ * both together is one edit for whoever next touches this file; see the note there.
  */
 export type RowRequest =
   | { readonly kind: 'workspace'; readonly id: WorkspaceId; readonly title: string }
@@ -1248,7 +1259,8 @@ function DocSpecRow({
 
 type SessionTreeProps = Pick<
   WorkspaceBrowserProps,
-  'useSessionStatus' | 'startSession' | 'open' | 'openSessionMenu' | 'openWorkspaceMenu' | 'useContextMenuTarget' | 'useContextMenu'
+  'useSessionStatus' | 'startSession' | 'open' | 'openSessionMenu' | 'openWorkspaceMenu' | 'openProjectMenu'
+  | 'useContextMenuTarget' | 'useContextMenu'
   | 'insertWorkspaceBefore' | 't' | 'usePanelInfo'
   | 'useRemoteAccess' | 'useSessionAccess' | 'useWorkspaceAccess'
 > & PropsRenderSlots<
@@ -1298,10 +1310,6 @@ type SessionTreeProps = Pick<
   rowState: SessionRowState
   /** Switch the archived filter back to the default hide-archived view. */
   onLeaveArchivedOnly: () => void
-  /** Open the browser-owned rename dialog for a group row. */
-  onRenameRequest: (row: RowRequest) => void
-  /** Open the browser-owned delete-confirmation dialog for a group row. */
-  onDeleteRequest: (row: RowRequest) => void
   /**
    * Move one caller-supplied project before another; absent anchor appends.
    * Absent entirely without a project model, in which case project rows are
@@ -1362,12 +1370,12 @@ function SessionTree({
   list, useSessionStatus, startSession, open, workspaces, groupingOverride, ungroupedSessionIds,
   rowState, onLeaveArchivedOnly,
   workspaceReady, animationResetKey, usePanelInfo, useRemoteAccess, useSessionAccess, useWorkspaceAccess,
-  onRenameRequest, onDeleteRequest, onSessionRenameRequest,
+  onSessionRenameRequest,
   reorderProject,
   assignSession,
   unassignSession,
   orderBy,
-  renderSlot, openSessionMenu, openWorkspaceMenu, useContextMenuTarget, useContextMenu,
+  renderSlot, openSessionMenu, openWorkspaceMenu, openProjectMenu, useContextMenuTarget, useContextMenu,
   insertWorkspaceBefore,
   nestWorkspaces, groupExpansion, setGroupExpanded,
   projectExpansion, setProjectExpanded,
@@ -1957,33 +1965,17 @@ function SessionTree({
             canCreate={group.kind === 'project' ? true : ungroupedCanCreate}
             drag={workspaceDragProps}
             groupDrop={groupDrop}
-            actions={group.kind === 'project'
-              ? {
-                rename: () => {
-                  onRenameRequest({
-                    kind: 'project',
-                    id: group.key,
-                    title: group.label,
-                    // Resolved from the override by key rather than carried on the
-                    // node: the derived tree is presentation, and a directory list
-                    // is not something it renders. `?? []` because a consumer
-                    // grouping by something else supplies none.
-                    directories: groupingOverride?.find(source => source.key === group.key)?.directories ?? [],
-                    // Same lookup, same reason as the directories above.
-                    links: groupingOverride?.find(source => source.key === group.key)?.links ?? [],
-                    // Same lookup, same reason: the spec override is data, not
-                    // presentation, so it stays on the source rather than the node.
-                    ...(() => {
-                      const stored = groupingOverride?.find(source => source.key === group.key)?.docSpec
-                      return stored === undefined ? {} : { docSpec: stored }
-                    })(),
-                  })
-                },
-                delete: () => { onDeleteRequest({ kind: 'project', id: group.key, title: group.label }) },
-              }
-              // The Ungrouped bucket is no one's record: no rename, no delete, and — as
-              // upstream — no Workspace menu.
+            // Resolved from the override by key rather than carried on the node: the derived
+            // tree is presentation, and a directory list is not something it renders. The menu
+            // needs it, because a project may hold **0, 1 or N** directories and the reveal row
+            // has a different shape for each. `undefined` for the Ungrouped bucket, which is no
+            // one's record and therefore opens no menu.
+            directories={group.kind === 'project'
+              ? groupingOverride?.find(source => source.key === group.key)?.directories
               : undefined}
+            openProjectMenu={openProjectMenu}
+            useContextMenuTarget={useContextMenuTarget}
+            useContextMenu={useContextMenu}
           />
         ) : (
           <ProjectRowItem
@@ -2371,6 +2363,7 @@ export function WorkspaceBrowser({
   requestSessionRename,
   notifyArchivedNotOpenable,
   renameWorkspace, useWorkspaceActionRequest, settleWorkspaceAction,
+  useProjectMenuRequest, settleProjectMenu,
   deleteWorkspace,
   insertWorkspaceBefore,
   unarchiveSession,
@@ -2403,7 +2396,7 @@ export function WorkspaceBrowser({
   useInjectProjectDoc,
   useSpecs,
   useValidateLinks,
-  renderSlot, openSessionMenu, openWorkspaceMenu, useContextMenuTarget, useContextMenu,
+  renderSlot, openSessionMenu, openWorkspaceMenu, openProjectMenu, useContextMenuTarget, useContextMenu,
   t,
 }: WorkspaceBrowserProps) {
   const home = useHostInfo(info => info.home)
@@ -2719,6 +2712,16 @@ export function WorkspaceBrowser({
   // for both would let either one's composition block the other's Enter key.
   const composingRef = useRef(false)
   const workspaceActionRequest = useWorkspaceActionRequest(value => value)
+  /**
+   * The project dialog request a project menu verb raised.
+   *
+   * The mirror image of `workspaceActionRequest` above: that one travels *out* of this
+   * component to the shared menu layer, this one travels *in* from it. Consumed by the
+   * effect below, which seeds and opens this component's own edit or delete dialog — those
+   * dialogs carry directory, link and doc-spec drafts that no external contribution could
+   * reconstruct, which is why the request names only the project and the action.
+   */
+  const projectMenuRequest = useProjectMenuRequest(value => value)
 
   const openSearchResult = (sessionId: SessionId): void => {
     if (archivedSessionIds.includes(sessionId)) {
@@ -3042,6 +3045,54 @@ export function WorkspaceBrowser({
 
   // The search results' restore button; the row actions own the rest of the
   // Session verbs as slot entries.
+  /**
+   * One project's stored record out of the grouping override, by group key.
+   *
+   * A project's title, directories, links and doc-spec override are **data**, not
+   * presentation, so the derived tree never carries them — every consumer resolves them
+   * from the override by key. One function rather than a `.find` at each site: three
+   * separate lookups is what the inline `actions.rename` callback used to have, and the
+   * dialog-seeding paths now share this one.
+   * @param projectId - the project, which is also its group key.
+   * @returns the source, or `undefined` for a key this override does not name.
+   */
+  const projectSource = (projectId: string): GroupSource | undefined =>
+    groupingOverride?.find(row => row.key === projectId)
+
+  /**
+   * Open the project **edit** dialog for one project.
+   *
+   * The body moved here from the inline arrow that used to hang off `SessionTree`'s
+   * `onRenameRequest`; that prop is gone, and the request arrives from the project menu's
+   * `rename` verb now (see {@link ProjectMenuRequest}). The drafts, the dirty-check
+   * baselines and the reset of last open's directory list are the same body, unchanged.
+   * @param projectId - the project to edit; its group key.
+   * @param title - the title the row displays, used to seed the draft.
+   */
+  const openProjectEdit = (projectId: string, title: string): void => {
+    const source = projectSource(projectId)
+    setRenameTarget({
+      kind: 'project',
+      id: projectId,
+      storedTitle: title,
+      // A consumer grouping by something other than a project supplies no lists; the dialog
+      // then starts from empty rather than failing, which is what `?? []` is for.
+      storedDirectories: source?.directories ?? [],
+      storedLinks: source?.links ?? [],
+      // `undefined` on the wire means "inherit", which the dropdown can only express as its
+      // own `null` — an absent key and "no override" are the same state, but the draft needs
+      // a value to compare.
+      storedDocSpec: source?.docSpec ?? null,
+    })
+    setRenameDraft(title)
+    // Reset per open, exactly like `openCreate` resets its list: a directory set left from
+    // the previous edit would otherwise leak into this one.
+    setRenameDirectories([...(source?.directories ?? [])])
+    setRenameRows((source?.links ?? []).map(url => newLinkRow(url)))
+    setRenameDocSpec(source?.docSpec ?? null)
+    setRenameError(null)
+  }
+
   const onSessionUnarchive = (sessionId: SessionNode['id']) => {
     unarchiveSession(sessionId).catch((reason: unknown) => {
       console.warn('session unarchive rejected:', reason)
@@ -3104,6 +3155,36 @@ export function WorkspaceBrowser({
       setDeleteError(reason instanceof Error ? reason.message : String(reason))
     })
   }
+
+  /**
+   * Honour a project menu verb: open the edit or delete dialog it names.
+   *
+   * The request is settled **immediately**, not when the dialog closes. The dialogs already
+   * own their open state (`renameTarget` / `deleteTarget`), and the request exists only to
+   * get from the menu into this component: leaving it set would re-seed the dialog on the
+   * next render, discarding whatever the user had typed into it.
+   *
+   * The title is resolved here rather than carried on the request, because the menu already
+   * captured one and the dialog needs the one the row shows now: a request raised before a
+   * rename elsewhere landed must not seed a stale title.
+   */
+  useEffect(() => {
+    if (projectMenuRequest === null) return
+    const { action, projectId } = projectMenuRequest
+    settleProjectMenu()
+    // Falls back to the id for the delete confirmation's copy: a project the override no
+    // longer names is one a concurrent delete already removed, and naming it by id is more
+    // honest than inventing a title.
+    const title = projectSource(projectId)?.label ?? projectId
+    if (action === 'rename') {
+      openProjectEdit(projectId, title)
+      return
+    }
+    setDeleteTarget({ kind: 'project', id: projectId, title })
+    setDeleteError(null)
+    // The effect re-runs on a new grouping snapshot too: a request that arrives in the same
+    // commit as a new label must seed the fresh one, not the one the closure captured.
+  }, [projectMenuRequest, groupingOverride, settleProjectMenu])
 
   return (
     <div className={clsx(css.root, !wide && css.rail)}>
@@ -3323,6 +3404,7 @@ export function WorkspaceBrowser({
                 assignSession={assignSession}
                 openSessionMenu={openSessionMenu} useContextMenu={useContextMenu}
                 openWorkspaceMenu={openWorkspaceMenu}
+                openProjectMenu={openProjectMenu}
                 useContextMenuTarget={useContextMenuTarget}
                 workspaces={orderedWorkspaces}
                 groupingOverride={orderedProjects}
@@ -3348,41 +3430,6 @@ export function WorkspaceBrowser({
                 onEnteringKeysDrawn={releaseLanded}
                 home={home}
                 t={t}
-                onRenameRequest={(row) => {
-                  setRenameTarget(row.kind === 'project'
-                    ? {
-                      kind: 'project',
-                      id: row.id,
-                      storedTitle: row.title,
-                      // `?? []` because the field is optional on the shared request
-                      // type — the delete dialog has no directories to carry.
-                      storedDirectories: row.directories ?? [],
-                      // Same `?? []`: this field is optional on the shared request type.
-                      storedLinks: row.links ?? [],
-                      // `undefined` on the wire means "inherit", which the
-                      // dropdown can only express as its own `null` — an absent
-                      // key and "no override" are the same state, but the draft
-                      // needs a value to compare.
-                      storedDocSpec: row.docSpec ?? null,
-                    }
-                    : {
-                      kind: 'workspace',
-                      id: row.id,
-                      storedTitle: storedWorkspaces.find(w => w.workspaceId === row.id)?.title ?? row.title,
-                    })
-                  setRenameDraft(row.title)
-                  // Reset per open, exactly like `openCreate` resets its list: a
-                  // directory set left from the previous edit would otherwise leak
-                  // into this one.
-                  setRenameDirectories(row.kind === 'project' ? [...(row.directories ?? [])] : [])
-                  setRenameRows(row.kind === 'project' ? (row.links ?? []).map(url => newLinkRow(url)) : [])
-                  setRenameDocSpec(row.kind === 'project' ? row.docSpec ?? null : null)
-                  setRenameError(null)
-                }}
-                onDeleteRequest={(row) => {
-                  setDeleteTarget({ ...row })
-                  setDeleteError(null)
-                }}
               />
             ))}
       </div>

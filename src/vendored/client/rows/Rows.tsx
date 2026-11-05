@@ -32,10 +32,10 @@
  * - {@link ProjectRowItem} / {@link UngroupedProjectRow} / {@link WorkspaceProjectRow}
  *   — upstream's meaning, kept 1:1 so future upstream merges stay cheap. Its row menu is
  *   a `ctx.contextMenus` contribution gated on the row having a Workspace id and a path.
- * - {@link ProjectGroupRowItem} — this fork's project header. Its rename/delete menu is a
- *   private `Menu` here, because a project is not a menu target family yet; moving it onto
- *   `ctx.contextMenus` under a `project` target is a separate change, and until then the
- *   private menu is what keeps that red line intact.
+ * - {@link ProjectGroupRowItem} — this fork's project header. Its menu is a
+ *   `ctx.contextMenus` contribution too, but over this plugin's own `project` target family
+ *   (`src/client/project-menu.ts`): a project has no Workspace id and no path, and it may
+ *   hold any number of directories, so upstream's `workspace` family cannot serve it.
  *
  * `WorkspaceBrowser` picks between them on `group.kind === 'project'` **or** a row with no
  * `workspaceId`. That second arm is the Ungrouped bucket: upstream's `UngroupedProjectRow`
@@ -49,17 +49,15 @@
  * `WorkspaceBrowser` reads the same Hook and passes the answer down. Keeping the upstream
  * component intact is what makes the next three-way merge cheap; it is not dead logic to prune.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import type { PointerEvent, RefObject } from 'react'
 import clsx from 'clsx'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   HoverCard, IconArchiveOutlineRegular,
-  IconEditOutlineRegular,
   IconEllipsisOutlineRegular, IconFolderCloseRegular, IconFolderOpenRegular,
   IconNewChatOutlineRegular, IconPinFillRegular,
-  IconTrashOutlineRegular,
-  IconTriangleRightFillRegular, IconUnarchiveOutlineRegular, Menu, relativeTime, StateDot, Tooltip, useRowDragPreview,
+  IconTriangleRightFillRegular, IconUnarchiveOutlineRegular, relativeTime, StateDot, Tooltip, useRowDragPreview,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ShortcutCatalogEntry } from '@deepseek-ai/dsh-client-shortcuts/client'
 import type { StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -474,19 +472,20 @@ function ProjectRow({
  * This fork's **project** header row — NOT upstream's `ProjectRowItem` above.
  *
  * A project is a caller-supplied label with no `workspaceId` and no `cwd`, so upstream's
- * menu trigger (`workspaceMenuTarget`, which needs both) is always undefined for it and
- * its rename/delete affordances would disappear. That is why this row keeps a private
- * {@link Menu} instead of a `ctx.contextMenus` contribution: the project target family
- * does not exist yet, and losing the menu would break "项目增删改排".
+ * menu trigger (`workspaceMenuTarget`, which needs both) is always undefined for it. This
+ * row therefore binds the **project target family** (`src/client/project-menu.ts`) instead —
+ * a `ctx.contextMenus` contribution, like every other row menu in rc.1, so it renders in the
+ * same popup and picks up other plugins' project actions. That family exists precisely
+ * because a project may hold **0, 1 or N** directories and upstream's `workspace` family
+ * reads only one path.
  *
- * `groupDrop` makes the header the drop target for a Session dragged out of another
- * group; `actions` carries the caller-owned rename/delete verbs (absent for the
- * Ungrouped bucket, which has no record to edit).
+ * `groupDrop` makes the header the drop target for a Session dragged out of another group.
  * @param props.group - derived group node for this project.
  * @param props.containsCurrentDescendant - highlight an ancestor even when its subtree is collapsed.
  * @param props.onToggle - expand/collapse the group.
  * @param props.onCreate - start a frontend Session filed under this project.
- * @param props.actions - caller-supplied rename/delete; absent when the row has no record.
+ * @param props.directories - the project's associated directories; absent means none, and a
+ * row that is not a project (the Ungrouped bucket) never opens a menu at all.
  * @param props.canCreate - whether the caller's access snapshot allows starting a Session here;
  * defaults to `true`. The Ungrouped bucket passes its `useRemoteAccess('session/create')` answer,
  * because it has no Workspace resource to ask and this composition replaced upstream's
@@ -495,19 +494,32 @@ function ProjectRow({
  * @param props.groupDrop - present only when a Session from another group can be dropped here.
  * @param props.home - host account home for POSIX hover-path abbreviation.
  * @param props.t - the browser root's locale seat.
+ * @param props.openProjectMenu - open (or toggle) this project's shared popup.
+ * @param props.useContextMenuTarget - selector over the popup's captured target, for `menuOpen`.
+ * @param props.useContextMenu - the global menu bindings, for the row's right-click trigger.
  * @returns the row element.
  */
 export function ProjectGroupRowItem({
-  group, containsCurrentDescendant = false, onToggle, onCreate, actions, canCreate = true, drag, groupDrop, home,
-  newShortcut, t,
+  group, containsCurrentDescendant = false, onToggle, onCreate, directories, canCreate = true, drag, groupDrop, home,
+  newShortcut, t, openProjectMenu, useContextMenuTarget, useContextMenu,
 }: {
   group: GroupNode
   newShortcut?: ShortcutCatalogEntry | undefined
   containsCurrentDescendant?: boolean
   onToggle: () => void
   onCreate: () => void
-  /** Real-Workspace actions; absent for the ungrouped bucket (no menu shown). */
-  actions?: { rename: () => void; delete: () => void } | undefined
+  /**
+   * The project's associated directories, in display order.
+   *
+   * Arrives as a prop rather than on {@link GroupNode} because it is a **data** fact from
+   * the caller's own model, not something the derived tree renders: the node carries what a
+   * row shows, and the hover card already abbreviates a single `cwd` from it. The menu needs
+   * the whole list — any number, including none — to build its reveal row.
+   *
+   * Absent means "no directories": the region supplies it only for a real project row
+   * (`group.kind === 'project'`), and the Ungrouped bucket has none to give.
+   */
+  directories?: readonly string[] | undefined
   /** Whether starting a Session here is allowed; absent means `true`. */
   canCreate?: boolean | undefined
   /** Present only for real Workspace rows in the grouped view. */
@@ -517,7 +529,7 @@ export function ProjectGroupRowItem({
   /** Host account home; POSIX home-rooted hover paths display as `~`. */
   home?: string | undefined
   t: RowTranslate
-}) {
+} & Pick<WorkspaceBrowserProps, 'openProjectMenu' | 'useContextMenuTarget' | 'useContextMenu'>) {
   const row = group
   // The ungrouped bucket is the one group the derivation builds with an empty
   // label (every real group carries a Workspace title or a caller-supplied
@@ -526,19 +538,14 @@ export function ProjectGroupRowItem({
   // Workspace id, but they do have a label of their own.
   const label = row.label === '' ? t('group.ungrouped') : row.label
   const active = containsCurrentDescendant || (group.expanded && group.containsCurrent)
-  const [menuOpen, setMenuOpen] = useState(false)
-  // A project row's delete removes a caller-supplied record, not a registry
-  // entry, so the copy names the project.
-  const deleteLabel = group.kind === 'project' ? t('delete.project') : t('delete.workspace')
-  // A project row opens the *edit* dialog: it has a title and associated
-  // directories to change, where a Workspace row has only a title. The menu id
-  // stays `rename` because it is the dispatch key shared with the caller's
-  // `actions.rename`; only the visible label follows the row kind.
-  const renameLabel = group.kind === 'project' ? t('edit.project') : t('rename')
-  const workspaceMenuItems = [
-    { id: 'rename', label: renameLabel, icon: <IconEditOutlineRegular /> },
-    { id: 'delete', label: deleteLabel, icon: <IconTrashOutlineRegular />, danger: true },
-  ]
+  const { getTriggerProps } = useContextMenu()
+  const menuOpen = useContextMenuTarget(target => target?.kind === 'project' && target.value.projectId === group.key)
+  // A project row with no record behind it gets no menu at all, exactly as upstream gates a
+  // Workspace row on having both an id and a path: the Ungrouped bucket is no one's record,
+  // so `directories` is the caller's own signal that this row has verbs behind it.
+  const menuTarget = row.kind === 'project'
+    ? { projectId: group.key, title: label, directories: directories ?? [] }
+    : undefined
   const ownRow = (
     <div
       className={clsx(css.projectRow, menuOpen && css.menuOpen)}
@@ -546,6 +553,10 @@ export function ProjectGroupRowItem({
       role="treeitem"
       aria-expanded={row.expanded}
       onClick={onToggle}
+      // Right-click (and Shift+F10) opens the same menu the "..." button does, through the
+      // project target family. Bound to the row and not only the button, matching upstream's
+      // Workspace header — a right-click anywhere on a project row has to work.
+      {...getTriggerProps(menuTarget === undefined ? undefined : { kind: 'project', value: menuTarget })}
       draggable={drag !== undefined}
       onDragStart={drag === undefined
         ? undefined
@@ -598,36 +609,21 @@ export function ProjectGroupRowItem({
         <span className={css.title}>{label}</span>
       </span>
       <span className={css.rowActions}>
-        {actions !== undefined && (
-          <Menu
-            open={menuOpen}
-            onClose={() => { setMenuOpen(false) }}
-            items={workspaceMenuItems}
-            onSelect={(id) => {
-              setMenuOpen(false)
-              // Unknown ids leave before the dispatch: a future menu row must
-              // not inherit the destructive branch as an else fallback.
-              /* v8 ignore next -- Menu can emit only the rename and delete rows supplied above. */
-              if (id !== 'rename' && id !== 'delete') return
-              if (id === 'rename') actions.rename()
-              else actions.delete()
-            }}
-            portal
-            closeOnPointerLeave
-            anchor={(
-              <button
-                type="button"
-                className={css.iconButton}
-                aria-label={t(
-                  group.kind === 'project' ? 'actions.project.aria' : 'actions.workspace.aria',
-                  { name: label },
-                )}
-                onClick={(e) => { e.stopPropagation(); setMenuOpen(v => !v) }}
-              >
-                <IconEllipsisOutlineRegular />
-              </button>
-            )}
-          />
+        {/* The same shape upstream's `ProjectRow` uses: a `data-context-menu-trigger` button
+            that opens the shared popup itself, so the menu is keyboard-reachable from the
+            button as well as from the row's right-click. `openProjectMenu` toggles, so a
+            second click on the open menu's button closes it — which is what the private
+            `Menu` this replaced did with its `setMenuOpen(v => !v)`. */}
+        {menuTarget !== undefined && (
+          <button type="button" className={css.iconButton} data-context-menu-trigger
+            aria-label={t('actions.project.aria', { name: label })} aria-haspopup="menu" aria-expanded={menuOpen}
+            onClick={(event) => {
+              event.stopPropagation()
+              const rect = event.currentTarget.getBoundingClientRect()
+              openProjectMenu(menuTarget.projectId, menuTarget.title, menuTarget.directories,
+                { x: rect.left, y: rect.bottom }, 'toggle')
+            }}><IconEllipsisOutlineRegular />
+          </button>
         )}
         {/* The same gate upstream's `ProjectRow` puts on this button, kept here because
             the Ungrouped bucket renders this component instead of `UngroupedProjectRow`. */}
