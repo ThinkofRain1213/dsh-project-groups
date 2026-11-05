@@ -28,6 +28,18 @@
  * Real completeness is proven where it matters: {@link ProjectWorkspaceKey} makes the two
  * dictionaries `satisfies Record<ProjectWorkspaceKey, string>`, so a key present in one
  * and not the other is a compile error.
+ *
+ * ## Two `WorkspaceKey` types, and which one to import
+ *
+ * `src/vendored/client/locales.ts` exports `WorkspaceKey = keyof typeof zh` — upstream's
+ * 119 keys, byte-identical to upstream. This file exports a **wider** `WorkspaceKey`
+ * (119 ∪ 40 = 159) because `src/vendored/client/index.ts`'s `LocaleNamespaceMap` block
+ * (upstream's, left verbatim) types the `workspace` namespace with it, and the 60-odd
+ * `t('project.*')` call sites must type-check against the wider set.
+ *
+ * The two are not interchangeable: import upstream's when you need the official key set,
+ * this one when you are typing `t()`. The vendored copy is never edited to widen it —
+ * that would break the byte-identical rule this split exists to preserve.
  */
 
 import {
