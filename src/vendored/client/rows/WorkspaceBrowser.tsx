@@ -1373,6 +1373,13 @@ function SessionTree({
   revealSessionId, onSessionRevealed, shortcuts, enteringKeys, onEnteringKeysDrawn,
 }: SessionTreeProps) {
   const panelActive = usePanelInfo(info => info.activePanelId !== null)
+  // The Ungrouped bucket's create gate. Upstream asks this inside `UngroupedProjectRow`,
+  // because a row with no Workspace resource has to fall back to the global one. That
+  // component is unreachable in this composition (the bucket renders this fork's
+  // `ProjectGroupRowItem`, which owns the group drop), so the same answer is taken here
+  // and handed down as `canCreate` — a component-level Hook either way, since
+  // `renderGroup` below is a plain function and may not call one per group.
+  const ungroupedCanCreate = useRemoteAccess('session/create')
   const statuses = useSessionStatus(s => s)
   const current = panelActive
     ? undefined
@@ -1927,6 +1934,12 @@ function SessionTree({
           project-group actions — `canReceiveDrag(UNGROUPED_KEY)` returns true as soon as
           `unassignSession` exists, so routing this row to upstream's component would show
           a drop highlight on a header that has no drop handler.
+
+          Because that leaves upstream's `UngroupedProjectRow` (and its
+          `useRemoteAccess('session/create')` gate) unreachable, the same gate is passed
+          down as `canCreate` for the bucket only. `UngroupedProjectRow` stays in Rows.tsx
+          as upstream's definition: it is what `ProjectRowItem` falls back to, and deleting
+          it would fork that file further than this composition needs.
         */}
         {group.kind === 'project' || group.workspaceId === undefined ? (
           <ProjectGroupRowItem
@@ -1937,6 +1950,9 @@ function SessionTree({
             t={t}
             onToggle={onToggleGroup}
             onCreate={onCreateInGroup}
+            // A project's Sessions are filed by its own record and need no Workspace
+            // verb; the Ungrouped bucket is the one that asks the global resource.
+            canCreate={group.kind === 'project' ? true : ungroupedCanCreate}
             drag={workspaceDragProps}
             groupDrop={groupDrop}
             actions={group.kind === 'project'

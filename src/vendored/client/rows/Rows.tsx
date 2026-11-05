@@ -40,6 +40,12 @@
  * carries no `groupDrop`, and dropping a Session back into Ungrouped is one of the
  * project-group actions, so the fork's component owns that header too. Only real Workspace
  * rows reach {@link ProjectRowItem}.
+ *
+ * That routing leaves upstream's {@link UngroupedProjectRow} unreachable at runtime, and its
+ * one behaviour worth keeping was the `useRemoteAccess('session/create')` gate on the header's
+ * create button. {@link ProjectGroupRowItem} therefore takes a `canCreate` prop for it, and
+ * `WorkspaceBrowser` reads the same Hook and passes the answer down. Keeping the upstream
+ * component intact is what makes the next three-way merge cheap; it is not dead logic to prune.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent, RefObject } from 'react'
@@ -345,7 +351,15 @@ export function ProjectRowItem(props: ProjectRowItemProps) {
     : <WorkspaceProjectRow {...props} workspaceId={workspaceId} />
 }
 
-/** The ungrouped bucket's header: no Workspace resource, so starting a Session there asks the global resource. */
+/**
+ * The ungrouped bucket's header: no Workspace resource, so starting a Session there asks the global resource.
+ *
+ * Kept as upstream wrote it. In *this* composition the bucket renders {@link ProjectGroupRowItem}
+ * instead (it is the header that owns the group drop), so this component is reached only through
+ * {@link ProjectRowItem} — i.e. never, because `WorkspaceBrowser` sends the bucket to the fork's
+ * row. The create gate it carries is therefore mirrored by `ProjectGroupRowItem`'s `canCreate`;
+ * see the note at the top of this file.
+ */
 function UngroupedProjectRow(props: ProjectRowItemProps) {
   const create = props.useRemoteAccess('session/create')
   return <ProjectRow {...props} access={{ create, reorder: false }} />
@@ -471,6 +485,10 @@ function ProjectRow({
  * @param props.onToggle - expand/collapse the group.
  * @param props.onCreate - start a frontend Session filed under this project.
  * @param props.actions - caller-supplied rename/delete; absent when the row has no record.
+ * @param props.canCreate - whether the caller's access snapshot allows starting a Session here;
+ * defaults to `true`. The Ungrouped bucket passes its `useRemoteAccess('session/create')` answer,
+ * because it has no Workspace resource to ask and this composition replaced upstream's
+ * `UngroupedProjectRow` (the component that carried that check) with this one.
  * @param props.drag - optional project-row drag wiring (reorder among projects).
  * @param props.groupDrop - present only when a Session from another group can be dropped here.
  * @param props.home - host account home for POSIX hover-path abbreviation.
@@ -478,7 +496,8 @@ function ProjectRow({
  * @returns the row element.
  */
 export function ProjectGroupRowItem({
-  group, containsCurrentDescendant = false, onToggle, onCreate, actions, drag, groupDrop, home, newShortcut, t,
+  group, containsCurrentDescendant = false, onToggle, onCreate, actions, canCreate = true, drag, groupDrop, home,
+  newShortcut, t,
 }: {
   group: GroupNode
   newShortcut?: ShortcutCatalogEntry | undefined
@@ -487,6 +506,8 @@ export function ProjectGroupRowItem({
   onCreate: () => void
   /** Real-Workspace actions; absent for the ungrouped bucket (no menu shown). */
   actions?: { rename: () => void; delete: () => void } | undefined
+  /** Whether starting a Session here is allowed; absent means `true`. */
+  canCreate?: boolean | undefined
   /** Present only for real Workspace rows in the grouped view. */
   drag?: WorkspaceRowDragProps | undefined
   /** Present only when a Session from another group can be dropped into this one. */
@@ -606,17 +627,21 @@ export function ProjectGroupRowItem({
             )}
           />
         )}
-        <Tooltip label={t('actions.newSession')} shortcutKeys={newShortcut?.keys} side="bottom" align="end" delayMs={500} portal>
-          <button
-            type="button"
-            className={css.iconButton}
-            aria-keyshortcuts={newShortcut?.aria}
-            aria-label={t('actions.newSession.aria', { name: label })}
-            onClick={(e) => { e.stopPropagation(); onCreate() }}
-          >
-            <IconNewChatOutlineRegular />
-          </button>
-        </Tooltip>
+        {/* The same gate upstream's `ProjectRow` puts on this button, kept here because
+            the Ungrouped bucket renders this component instead of `UngroupedProjectRow`. */}
+        {canCreate && (
+          <Tooltip label={t('actions.newSession')} shortcutKeys={newShortcut?.keys} side="bottom" align="end" delayMs={500} portal>
+            <button
+              type="button"
+              className={css.iconButton}
+              aria-keyshortcuts={newShortcut?.aria}
+              aria-label={t('actions.newSession.aria', { name: label })}
+              onClick={(e) => { e.stopPropagation(); onCreate() }}
+            >
+              <IconNewChatOutlineRegular />
+            </button>
+          </Tooltip>
+        )}
       </span>
     </div>
   )
