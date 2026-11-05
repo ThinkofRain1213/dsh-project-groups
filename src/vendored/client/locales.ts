@@ -2,53 +2,7 @@
  * `workspace` namespace dictionaries: the browsing region (section header,
  * search, tree rows, dialogs) and the pick/add flow. Runtime failure
  * messages (wire error strings) pass through untranslated by policy.
- *
- * ## Why `zh` and `en` carry more keys than the other six
- *
- * Upstream rc.1 ships 8 languages × 119 keys, with the type relations
- * `en satisfies Record<WorkspaceKey, string>` (`WorkspaceKey = keyof typeof zh`) and
- * `ja/es/fr/de/ru/pt satisfies Record<UpstreamWorkspaceKey, string>`.
- *
- * This fork adds 40 keys of its own (`project.*`, `field.directories`, `field.links`,
- * `link.*`, `baseMissing.*`, `directory.*`, `create`, `save`, `edit.project*`,
- * `delete.project*`, `conflict.projectNamed`, `actions.project.aria`). They exist in
- * `zh` and `en` only.
- *
- * TODO(rc1-resync Task 4): move those 40 keys out of this file into
- * `src/client/locales-project.ts` and register them through the locale service's
- * single-locale overload, so this file becomes byte-identical to upstream again. The
- * six new languages will then satisfy their constraint with no help, and the temporary
- * relaxation below goes away with them. Until that lands, the six languages fall back
- * to English for project copy through the locale service's fallback chain.
- *
- * Temporary measure — see {@link NEW_LANGUAGE_KEYS}. It narrows the check from
- * `Record<keyof typeof en, string>` to "every upstream key", so a *new* upstream key
- * still has to be translated in all eight, while this fork's extra keys do not.
  */
-
-/**
- * TODO(rc1-resync Task 4): delete with the 40-key split.
- *
- * The six rc.1 languages are checked against the upstream key set instead of
- * `keyof typeof en`, which currently includes this fork's 40 project keys they do not
- * (and should not yet) carry. Keying the constraint off `zh` minus the fork's own
- * additions would need the same list twice, so it is spelled once here.
- */
-type UpstreamWorkspaceKey = Exclude<WorkspaceKey, ForkOwnedWorkspaceKey>
-
-/** The keys this fork adds on top of upstream's 119; see the module doc. */
-type ForkOwnedWorkspaceKey =
-  | 'project.add' | 'project.create.title' | 'project.create.placeholder' | 'field.projectName'
-  | 'create' | 'rename.project.title' | 'edit.project' | 'edit.project.title' | 'save'
-  | 'field.directories' | 'field.links' | 'field.docSpec'
-  | 'docSpec.followGlobal' | 'docSpec.none' | 'docSpec.default'
-  | 'directory.add' | 'directory.none' | 'directory.remove'
-  | 'link.add' | 'link.none' | 'link.remove' | 'link.invalid' | 'link.countInvalid' | 'link.countBlank'
-  | 'delete.project' | 'delete.project.desc' | 'delete.project.pending' | 'conflict.projectNamed'
-  | 'baseMissing.title' | 'baseMissing.body' | 'baseMissing.path' | 'baseMissing.pathUnknown'
-  | 'baseMissing.rebuild' | 'baseMissing.respecify' | 'baseMissing.confirmTitle'
-  | 'baseMissing.confirmBody' | 'baseMissing.confirmAction' | 'baseMissing.confirmBusy'
-  | 'baseMissing.confirmBack' | 'actions.project.aria'
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
@@ -84,82 +38,6 @@ export const zh = {
   'empty.viewOthers': '查看其他会话',
   'empty.noMatches': '无匹配结果',
   'workspace.add': '添加工作区',
-  // Project copy. A project is a caller-supplied grouping, not a Workspace:
-  // it has a title and a document, and no directory to pick.
-  'project.add': '新建项目',
-  'project.create.title': '新建项目',
-  'project.create.placeholder': '项目名称',
-  'field.projectName': '项目名称',
-  'create': '创建',
-  'rename.project.title': '重命名项目',
-  // Project edit copy. The menu entry and the dialog title read 编辑项目 rather
-  // than 重命名 because the dialog now commits a title *and* a directory list;
-  // `save` labels its button for the same reason. `rename.project.title` stays
-  // for the Workspace-side dictionary symmetry.
-  'edit.project': '编辑项目',
-  'edit.project.title': '编辑项目',
-  'save': '保存',
-  // Associated directories: the directories a project is linked to. Kept in the
-  // project block because nothing else in this dictionary has the concept.
-  // 「关联」rather than 「源」: the field records what a project is tied to, not
-  // where anything is read from.
-  // 关联目录：项目所绑定的目录。**用「目录」而不是「文件夹」** —— 设置卡里的
-  // `injectInfoDesc` 早就写作「关联目录」，只有这个对话框用「文件夹」，
-  // 同一样东西两个词会让用户以为它们是两回事。英文同理，统一到 `directory`。
-  'field.directories': '关联目录',
-  // Associated links: URLs a project is tied to, typically its upstream repository. Sibling
-  // of the directories field above, and worded the same way for the same reason.
-  'field.links': '关联链接',
-  'field.docSpec': '文档规范',
-  // The spec dropdown. 跟随全局 is its own first row rather than a marker spread
-  // across the other entries: with a global choice of 自定义-but-empty there is no
-  // single entry that could carry "this is the global one" without either lying
-  // about the choice or merging 自定义 into the 无 row.
-  'docSpec.followGlobal': '跟随全局',
-  'docSpec.none': '无',
-  'docSpec.default': '默认',
-  'directory.add': '添加目录',
-  'directory.none': '未添加关联目录',
-  'directory.remove': '移除 {path}',
-  // The link list. Its own keys rather than reusing the directory ones: the two lists sit
-  // side by side in the same dialog, so a shared "添加" would leave two identical buttons
-  // with no way to tell which list each one feeds.
-  'link.add': '添加链接',
-  'link.none': '未添加关联链接',
-  'link.remove': '移除 {url}',
-  // The amber ⓘ tooltip — the only place the rule itself is stated, since the mark alone
-  // does not say what failed.
-  'link.invalid': '需以 http:// 或 https:// 开头',
-  // The header's summary, right of the label. 「条」 rather than 「行」: the counter's unit is
-  // a link, not a line of text.
-  'link.countInvalid': '{n} 条链接未通过校验',
-  // The blank-row notice: rows the user visited and left empty. Dimmed rather than amber,
-  // so it reads as "nothing to do" beside the invalid count's "fix this". Worded as the
-  // behaviour the user will observe ("ignored on save"), not as our internal data handling.
-  'link.countBlank': '{n} 行为空，保存时忽略',
-  'delete.project': '删除项目',
-  'delete.project.desc': '将删除项目“{name}”。其中的会话不会被删除，会回到“未分组”。',
-  'delete.project.pending': '正在删除项目…',
-  // A title another project already holds. Its own key rather than the shipped
-  // `conflict.named`, whose wording says 工作区: to the user a project and a Workspace are
-  // different things, so the message names the one they were actually editing.
-  'conflict.projectNamed': '已存在名为“{name}”的项目。',
-  // The missing-底层工作区 dialog. Its own keys rather than a rewrite of any shipped
-  // one: the vendored dictionary stays upstream's copy for re-sync, and the additions
-  // live in one contiguous block so a re-sync can re-add them mechanically.
-  'baseMissing.title': '底层工作区缺失',
-  'baseMissing.body': '它是本插件所有会话的落脚点，缺失时无法新建会话。',
-  'baseMissing.path': '缺失：{path}',
-  'baseMissing.pathUnknown': '缺失：默认工作区（路径未知）',
-  'baseMissing.rebuild': '重建该工作区',
-  'baseMissing.respecify': '重新指定底层工作区',
-  // The confirmation stage. Its own keys rather than reusing `create`/`cancel`, because the
-  // wording carries the reassurance that matters here: an existing directory is not touched.
-  'baseMissing.confirmTitle': '确认重建',
-  'baseMissing.confirmBody': '将在该路径创建目录并注册为工作区。若该目录已存在，其内容不会被修改。',
-  'baseMissing.confirmAction': '确认重建',
-  'baseMissing.confirmBusy': '正在重建…',
-  'baseMissing.confirmBack': '返回',
   'search.sessions.aria': '搜索会话',
   'search.placeholder': '搜索会话名称',
   'search.clear': '清除搜索',
@@ -219,7 +97,6 @@ export const zh = {
   'sessions.count.one': '{n} 个会话',
   'sessions.count.other': '{n} 个会话',
   'actions.workspace.aria': '工作区“{name}”的操作',
-  'actions.project.aria': '项目“{name}”的操作',
   'actions.session.aria': '会话“{name}”的操作',
   'actions.archive': '归档会话',
   'actions.unarchive': '取消归档',
@@ -287,47 +164,6 @@ export const en = {
   'empty.viewOthers': 'View other sessions',
   'empty.noMatches': 'No matches',
   'workspace.add': 'Add workspace',
-  'project.add': 'New project',
-  'project.create.title': 'New project',
-  'project.create.placeholder': 'Project name',
-  'field.projectName': 'Project name',
-  'create': 'Create',
-  'rename.project.title': 'Rename project',
-  'edit.project': 'Edit project',
-  'edit.project.title': 'Edit project',
-  'save': 'Save',
-  'field.directories': 'Associated directories',
-  'field.links': 'Associated links',
-  'field.docSpec': 'Document spec',
-  'docSpec.followGlobal': 'Follow global',
-  'docSpec.none': 'None',
-  'docSpec.default': 'Default',
-  'directory.add': 'Add directory',
-  'directory.none': 'No associated directories',
-  'directory.remove': 'Remove {path}',
-  'link.add': 'Add link',
-  'link.none': 'No associated links',
-  'link.remove': 'Remove {url}',
-  'link.invalid': 'Must start with http:// or https://',
-  'link.countInvalid': '{n} links failed validation',
-  // "row(s)" is deliberate: `verify-locales` checks key and placeholder parity, not English
-  // grammar, so avoiding a plural branch costs nothing and saves a second key.
-  'link.countBlank': '{n} empty row(s) ignored on save',
-  'delete.project': 'Delete project',
-  'delete.project.desc': 'This deletes the project “{name}”. Its sessions are not deleted; they return to Ungrouped.',
-  'delete.project.pending': 'Deleting project…',
-  'conflict.projectNamed': 'A project named “{name}” already exists.',
-  'baseMissing.title': 'Base workspace missing',
-  'baseMissing.body': 'It is where every session this plugin creates lands; without it, no session can be started.',
-  'baseMissing.path': 'Missing: {path}',
-  'baseMissing.pathUnknown': 'Missing: the default workspace (path unknown)',
-  'baseMissing.rebuild': 'Re-create this workspace',
-  'baseMissing.respecify': 'Choose another base workspace',
-  'baseMissing.confirmTitle': 'Confirm re-creation',
-  'baseMissing.confirmBody': 'This creates the directory at that path and registers it as a workspace. If it already exists, its contents are left untouched.',
-  'baseMissing.confirmAction': 'Re-create',
-  'baseMissing.confirmBusy': 'Re-creating…',
-  'baseMissing.confirmBack': 'Back',
   'search.sessions.aria': 'Search sessions',
   'search.placeholder': 'Search session names',
   'search.clear': 'Clear search',
@@ -387,7 +223,6 @@ export const en = {
   'sessions.count.one': '{n} session',
   'sessions.count.other': '{n} sessions',
   'actions.workspace.aria': 'Workspace actions for {name}',
-  'actions.project.aria': 'Project actions for {name}',
   'actions.session.aria': 'Session actions for {name}',
   'actions.archive': 'Archive',
   'actions.unarchive': 'Unarchive',
@@ -417,55 +252,6 @@ export const en = {
   'time.years': '{n}y',
   'time.ago': '{t} ago',
 } satisfies Record<WorkspaceKey, string>
-
-/**
- * Every `workspace` key this fork adds on top of upstream's 119.
- * TODO(rc1-resync Task 4): delete with the rest of this block.
- */
-const FORK_OWNED_KEY_LIST = [
-  'project.add', 'project.create.title', 'project.create.placeholder', 'field.projectName',
-  'create', 'rename.project.title', 'edit.project', 'edit.project.title', 'save',
-  'field.directories', 'field.links', 'field.docSpec',
-  'docSpec.followGlobal', 'docSpec.none', 'docSpec.default',
-  'directory.add', 'directory.none', 'directory.remove',
-  'link.add', 'link.none', 'link.remove', 'link.invalid', 'link.countInvalid', 'link.countBlank',
-  'delete.project', 'delete.project.desc', 'delete.project.pending', 'conflict.projectNamed',
-  'baseMissing.title', 'baseMissing.body', 'baseMissing.path', 'baseMissing.pathUnknown',
-  'baseMissing.rebuild', 'baseMissing.respecify', 'baseMissing.confirmTitle',
-  'baseMissing.confirmBody', 'baseMissing.confirmAction', 'baseMissing.confirmBusy',
-  'baseMissing.confirmBack', 'actions.project.aria',
-] as const satisfies readonly ForkOwnedWorkspaceKey[]
-
-/**
- * TODO(rc1-resync Task 4): delete this whole block with the 40-key split.
- *
- * Hand the locale service a dictionary set it can accept while this fork's 40 project
- * keys still live in `zh` / `en` but not in the six rc.1 languages.
- *
- * `ctx.locale.register('workspace', ...)` demands `Record<BuiltInLocaleId, LocaleDictOf<...>>
- * & Record<LocaleId, LocaleDictOf<...>>`, i.e. every language must carry every `workspace`
- * key — including the project text only two of the eight translate. Filling the six from
- * English matches what the fallback chain would show anyway, so nothing user-visible
- * changes: non-English users already read project copy in English.
- *
- * The cast is the minimum the type system allows here: the returned object really does
- * carry every key, so `as` only bridges the compiler's view, while the six dictionaries'
- * own `satisfies Record<UpstreamWorkspaceKey, string>` above still proves upstream parity.
- * @returns all eight `workspace` dictionaries, each complete for the namespace.
- */
-export function workspaceDictionaries(): Record<'zh' | 'en', Record<WorkspaceKey, string>>
-  & Record<string, Record<WorkspaceKey, string>> {
-  const filled = Object.fromEntries((['ja', 'es', 'fr', 'de', 'ru', 'pt'] as const).map(
-    id => [id, { ...forkProjectCopy(), ...{ ja, es, fr, de, ru, pt }[id] }],
-  ))
-  return { zh, en, ...filled }
-}
-
-/** This fork's project copy, read straight off `en` so the two cannot drift. */
-function forkProjectCopy(): Record<ForkOwnedWorkspaceKey, string> {
-  return Object.fromEntries(FORK_OWNED_KEY_LIST.map(key => [key, en[key]])) as
-    Record<ForkOwnedWorkspaceKey, string>
-}
 
 /** Japanese copy, checked against the English keys. */
 export const ja = {
@@ -588,7 +374,7 @@ export const ja = {
   'time.months': '{n}か月',
   'time.years': '{n}年',
   'time.ago': '{t}前',
-} satisfies Record<UpstreamWorkspaceKey, string>
+} satisfies Record<keyof typeof en, string>
 
 /** Spanish dictionary, checked against the English keys. */
 export const es = {
@@ -711,7 +497,7 @@ export const es = {
   'time.months': '{n}mo',
   'time.years': '{n}y',
   'time.ago': 'Hace {t}',
-} satisfies Record<UpstreamWorkspaceKey, string>
+} satisfies Record<keyof typeof en, string>
 
 /** French dictionary, checked against the English keys. */
 export const fr = {
@@ -834,7 +620,7 @@ export const fr = {
   'time.months': '{n}mo',
   'time.years': '{n}y',
   'time.ago': 'Il y a {t}',
-} satisfies Record<UpstreamWorkspaceKey, string>
+} satisfies Record<keyof typeof en, string>
 
 /** German dictionary, checked against the English keys. */
 export const de = {
@@ -957,7 +743,7 @@ export const de = {
   'time.months': '{n}mo',
   'time.years': '{n}y',
   'time.ago': 'Vor {t}',
-} satisfies Record<UpstreamWorkspaceKey, string>
+} satisfies Record<keyof typeof en, string>
 
 /** Russian dictionary, checked against the English keys. */
 export const ru = {
@@ -1080,7 +866,7 @@ export const ru = {
   'time.months': '{n}mo',
   'time.years': '{n}y',
   'time.ago': '{t} назад',
-} satisfies Record<UpstreamWorkspaceKey, string>
+} satisfies Record<keyof typeof en, string>
 
 /** Portuguese dictionary, checked against the English keys. */
 export const pt = {
@@ -1203,4 +989,4 @@ export const pt = {
   'time.months': '{n} mês',
   'time.years': '{n}s',
   'time.ago': '{t} atrás',
-} satisfies Record<UpstreamWorkspaceKey, string>
+} satisfies Record<keyof typeof en, string>

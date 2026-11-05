@@ -61,7 +61,7 @@ import { SessionRenameDialog } from './session-actions/RenameSession.tsx'
 import { RowActionToast } from './session-actions/RowActionToast.tsx'
 import { registerToasts } from './toast/register.ts'
 import { WorkspacePicker } from './WorkspacePicker.tsx'
-import { workspaceDictionaries, zh, type WorkspaceKey } from './locales.ts'
+import { workspaceDictionaries, type WorkspaceKey } from '../../client/locales-project.ts'
 
 export type { StartSessionOptions, UiWorkspace } from './navigation.ts'
 export type { GroupSource } from './tree.ts'
@@ -73,7 +73,7 @@ export type {
   WorkspaceBrowserProps,
   WorkspacePickerInjected, WorkspacePickerProps,
 } from './contract/slots.ts'
-export type { WorkspaceKey } from './locales.ts'
+export type { WorkspaceKey } from '../../client/locales-project.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface GlobalStandardProps {
@@ -432,8 +432,10 @@ export function apply(
         : ctx.remoteAccess.source('workspace', workspaceId, action),
     },
   })
-  // rc.1 ships eight languages. `workspaceDictionaries()` fills this fork's 40 project
-  // keys into the six that do not translate them, from English — see the TODO there.
+  // One registration, all eight languages: the namespace's single occupant. `zh`/`en` carry
+  // this fork's 40 project keys on top of upstream's 119 (see `client/locales-project.ts`); the
+  // six rc.1 languages are upstream's dictionaries and resolve those 40 through the locale
+  // service's per-key fallback to English.
   ctx.effect(() => ctx.locale.register(NS, workspaceDictionaries()), 'ui-workspace: dictionaries')
   const shortcutControls = createWorkspaceShortcutControls()
 
