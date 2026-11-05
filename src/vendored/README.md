@@ -10,10 +10,10 @@ official UI 1:1.
 |---|---|
 | Upstream | `deepseek-ai/deepseek-harness` |
 | Path | `packages/client/ui-workspace/src/` |
-| Version | **0.2.1-rc.3** |
-| Commit | `1f81c047fc` (`dsh-v0.2.1-rc.3`) |
-| Re-synced | 2026-10-24 (from `687f282e86` / `dsh-v0.2.1-rc.2`, itself from `1600d8a1e1` / `dsh-v0.2.1-rc.1`, itself from `639ed01539` / `dsh-v0.2.0-rc.2`, itself re-synced 2026-09-30 from `477b4f420` / `dsh-v0.1.7-rc.2`) |
-| Patch footprint | **10 files / 108 edits / 200 hunks / +4011 −192** against the upstream tag, plus one file upstream does not have (`client/session-actions/BaseWorkspaceMissing.tsx`) |
+| Version | **0.2.2-rc.1** |
+| Commit | `dsh-v0.2.2-rc.1` |
+| Re-synced | 2026-11-05 (from `dsh-v0.2.1-rc.3` / `1f81c047fc`, itself from the rc.2/rc.1/rc.0 lines recorded in git history) |
+| Patch footprint | **11 files / 200 hunks / +4538 −198** against the upstream tag — of which **3 files are documentation-only** (see the table) — plus **three** files upstream does not have (`client/rows/AnimatedRows.tsx` + `.module.css`, `client/session-actions/BaseWorkspaceMissing.tsx`) |
 
 ### The 0.2.1-rc.2 → 0.2.1-rc.3 step
 
@@ -46,6 +46,10 @@ Two upstream behaviour changes arrived with this step and are now live:
 Everything else in `ui-workspace/src` — 27 of the 28 files — is byte-identical to
 rc.2. That is why `Added` is unchanged at 4011 while `Removed` drops from 194 to 192:
 upstream's own edit removed two lines this tree had already deleted differently.
+(**Those are the `dsh-v0.2.1-rc.3` figures.** The 0.2.2-rc.1 re-sync re-measured the
+whole table, and `Added` is now 4538 / `Removed` 198 — see *Patches inside this
+directory* below. This paragraph is kept as the historical record of that step, not as
+the current baseline.)
 
 ### The 0.2.1-rc.1 → 0.2.1-rc.2 step
 
@@ -302,10 +306,14 @@ this tree will not notice.**
   and the call sites moved back to `ui-primitives` — that is the direction that reduces work,
   and keeping the fork's copy past that point would be drift for its own sake.
 
-> The numeric baseline table below still carries an `AnimatedRows.tsx` row, because it was
-> measured against `dsh-v0.2.1-rc.3`, when the file *was* an upstream file this tree patched.
-> Against 0.2.2-rc.1 there is nothing to patch, so that row's meaning changes rather than its
-> numbers — see the re-measurement in Task 7 Step 5.
+> **The numeric baseline table still lists `AnimatedRows` — but not as a patch, and not with
+> its old numbers.** At `dsh-v0.2.1-rc.3` the file *was* an upstream file this tree patched
+> (`4 edits / 6 hunks / +39 −1`). Against 0.2.2-rc.1 there is nothing to patch, so it is
+> re-measured as what it now is: a **locally retained copy** of 230 lines with no upstream
+> counterpart in this directory. It sits in the second table (files upstream does not have)
+> with a line count rather than a diff, and the `4 / 6 / +39 −1` figures are retired. Nobody
+> should read its presence there as "still patched", nor infer that the patch footprint grew
+> because it is listed.
 
 ## Why vendored
 
@@ -344,43 +352,78 @@ Most adaptation still lives *outside* this directory:
 Kept minimal and listed here so a re-sync is mechanical. Each is marked in the
 source with a comment naming the seam.
 
-**Measured footprint after the 0.2.1-rc.3 re-sync** (diffed against `dsh-v0.2.1-rc.3`,
+**Measured footprint after the 0.2.2-rc.1 re-sync** (diffed against `dsh-v0.2.2-rc.1`,
 per file, with `git diff --no-index -U0`):
 
-| File | Edits | Hunks | Added | Removed |
-|---|---:|---:|---:|---:|
-| `client/rows/WorkspaceBrowser.tsx` | 48 | 114 | 2097 | 135 |
-| `client/index.ts` | 12 | 17 | 426 | 7 |
-| `client/tree.ts` | 12 | 16 | 220 | 6 |
-| `client/rows/Rows.tsx` | 11 | 15 | 121 | 8 |
-| `client/navigation.ts` | 8 | 14 | 238 | 30 |
-| `client/locales.ts` | 4 | 4 | 119 | 0 |
-| `client/contract/slots.ts` | 4 | 6 | 314 | 4 |
-| `client/rows/AnimatedRows.tsx` | 4 | 6 | 39 | 1 |
-| `client/shortcuts.ts` | 3 | 4 | 11 | 1 |
-| `client/rows/WorkspaceBrowser.module.css` | 2 | 4 | 426 | 0 |
-| **Total** | **108** | **200** | **4011** | **192** |
+| File | Hunks | Added | Removed | Kind |
+|---|---:|---:|---:|---|
+| `client/rows/WorkspaceBrowser.tsx` | 99 | 2349 | 119 | behavioural |
+| `client/index.ts` | 29 | 523 | 12 | behavioural |
+| `client/rows/Rows.tsx` | 13 | 321 | 10 | behavioural |
+| `client/contract/slots.ts` | 11 | 367 | 4 | behavioural |
+| `client/tree.ts` | 16 | 220 | 6 | behavioural |
+| `client/navigation.ts` | 15 | 275 | 32 | behavioural |
+| `client/rows/WorkspaceBrowser.module.css` | 4 | 426 | 0 | behavioural |
+| `client/shortcuts.ts` | 4 | 11 | 1 | behavioural |
+| `client/session-actions/PinSession.tsx` | 6 | 28 | 9 | **comments only** |
+| `client/session-actions/ArchiveSession.tsx` | 2 | 12 | 4 | **comments only** |
+| `client/session-actions/RenameSession.tsx` | 1 | 6 | 1 | **comments only** |
+| **Total** | **200** | **4538** | **198** | |
 
-> **`Edits` and `Hunks` are two counts of the same diff, and the table needs both.**
-> `Edits` counts semantic edit points — what this table has always meant. `Hunks` is what
-> `git diff -U0` emits, and it is higher because two adjacent insertions are one edit but
-> two hunks: `WorkspaceBrowser.tsx` is 48 edits and 114 hunks. `Added`/`Removed` are exact
-> under both readings and are what a re-sync should reproduce. Before rc.3 only `Edits`
-> was recorded, under the column name `Hunks`; both are now stated so neither number can
-> be mistaken for the other again.
->
-> Neither total equals the number of rows in the patch list below: that list is
-> **82 rows** describing intents, and one row routinely covers several edits. The 108 is
-> a diff measurement, the 82 is a seam inventory. They are not meant to match.
->
-> `navigation.ts` moved from 7 to 8 edits and from −32 to −30 removed because rc.3
-> rewrote the `startSession` body in a way that deletes two fewer lines.
+Plus the files with **no upstream counterpart**, which are not patches and must be
+reproduced by copying, not by diffing:
 
-The count grew from 75 to 108 edits not because features were added but because
-upstream **rewrote** the regions this tree patches: `WorkspaceBrowser.tsx` alone went from a
-handful of edits to 48 once the watermark model and `HoverCardGroup` landed inside the
-same functions. The table below still describes **intent** — one row per seam — and is what a
-re-sync re-applies; the counts above are what a re-sync should reproduce.
+| File | Lines | Why it exists |
+|---|---:|---|
+| `client/rows/AnimatedRows.tsx` | 230 | **locally retained copy** — upstream moved it to `ui-primitives`; see *Locally retained: `AnimatedRows`* above |
+| `client/rows/AnimatedRows.module.css` | 7 | same |
+| `client/session-actions/BaseWorkspaceMissing.tsx` | 273 | this plugin's own feature |
+
+> **What this table replaced, and what it deliberately drops.** The rc.3 table
+> reported `10 files / 108 edits / 200 hunks / +4011 −192`. Two of those four
+> numbers survive re-measurement, one grew, and **one column was removed**:
+>
+> | | rc.3 table | rc.1 table | why |
+> |---|---|---|---|
+> | Files | 10 | 11 patched + 3 own | the three `session-actions` files became patches of their own |
+> | Hunks | 200 | 200 | coincidence — the totals match while no per-file number does |
+> | Added | 4011 | 4538 | `WorkspaceBrowser.tsx` and `index.ts` grew |
+> | Removed | 192 | 198 | |
+> | **Edits** | **108** | **dropped** | see below |
+>
+> **`Edits` was removed rather than re-estimated, because it was never reproducible.**
+> It counted "semantic edit points", a judgement made by reading the diff. It cannot be
+> recovered mechanically now: over the rc.3 data, no hunk-merge threshold reproduces the
+> published per-file values — the best any threshold does is 6 of 10 files, and the
+> thresholds that fit one file break another (`WorkspaceBrowser.tsx` needs ≈5 while
+> `Rows.tsx` needs ≈6 and `locales.ts` needs any). Re-publishing a number that a
+> re-sync cannot check is worse than dropping it, so the column is gone and `Hunks` is
+> the count of record. **Hunks, Added and Removed are exact and are what a re-sync
+> should reproduce.**
+>
+> Neither total equals the number of rows in the patch list below: that list is a
+> **seam inventory by intent**, and one row routinely covers several hunks. They are
+> not meant to match.
+>
+> `navigation.ts` is 15 hunks / −32 here but was recorded as 14 / −30 at rc.3. That is
+> the same edit set; rc.3's own rewrite of the `startSession` body is what moved the
+> numbers, exactly as the previous revision of this table noted.
+>
+> **The three `session-actions` rows are documentation-only diffs.** Measured hunk by
+> hunk: the changes are rewritten file-header and `@param` doc comments, plus one
+> rename of an unused destructured parameter in `PinSession.tsx` (`set` → `pinned`).
+> **No behaviour changes**, so a re-sync can reproduce them by copying upstream's file
+> and re-applying a comment block, or can drop them entirely. They are listed apart
+> (the `Kind` column) so the next re-sync does not spend review time looking for a
+> behaviour it will not find. If they are dropped, the total becomes **191 hunks /
+> +4492 / −184 over 8 files** — that is the number to expect from a re-sync that
+> re-applies only behaviour.
+
+The count went from 108 to 200 hunks not because features were added but because
+upstream **rewrote the regions this tree patches**: `index.ts` alone went from 17 to 29
+hunks once the menu registration block moved out of the Slot and into
+`ctx.contextMenus`. The table below still describes **intent** — one row per seam — and
+is what a re-sync re-applies; the counts above are what a re-sync should reproduce.
 
 | File | Patch | Re-sync action |
 |---|---|---|
