@@ -489,13 +489,40 @@ git commit -m "chore(vendored): 保留 AnimatedRows 本地副本以维持新会�
 ## Task 7: 全量校验与基线更新
 
 **Files:**
+- Modify: `scripts/verify-release.mjs`
 - Modify: `src/vendored/README.md`
 - Modify: `CHANGELOG.md`
 - Modify: `README.md`（若安装说明涉及版本）
+- Rebuild: `lib/`（`pnpm build` 产物）
 
 **Interfaces:**
 - Consumes: Task 1–6 的全部产出
 - Produces: 可发布的 0.4.0
+
+- [ ] **Step 0: 修正 `scripts/verify-release.mjs` 第 8 节的过时断言**
+
+该脚本第 8 节硬编码了 rc.3 时期的前提，与新 `engines.dsh` 范围直接冲突：
+
+```js
+// 现状（过时）
+expectCompat('区间下限覆盖 DSH 0.2.1-rc.2（当前唯一验证过的运行时）', '0.2.1-rc.2', true)
+expectCompat('拒绝 0.2.1-rc.1（未验证的旧版本）', '0.2.1-rc.1', false)
+expectCompat('拒绝 0.2.2（未验证的新版本，re-sync 前不该放行）', '0.2.2', false)
+expectCompat('拒绝 0.3.0（下一个次版本）', '0.3.0', false)
+```
+
+改为针对新范围 `>=0.2.2-rc.1 <0.2.3`：
+
+```js
+expectCompat('区间下限覆盖 DSH 0.2.2-rc.1（当前唯一验证过的运行时）', '0.2.2-rc.1', true)
+expectCompat('拒绝 0.2.1-rc.3（旧版本，本轮已放弃支持）', '0.2.1-rc.3', false)
+expectCompat('拒绝 0.2.2（未验证的正式版，rc 线不自动放行）', '0.2.2', false)
+expectCompat('拒绝 0.3.0（下一个次版本）', '0.3.0', false)
+```
+
+**注意**：`0.2.2` 必须仍然拒绝——`>=0.2.2-rc.1 <0.2.3` 在语义化版本下**不含** `0.2.2`（预发布段与会话），此断言验证的正是这一点。
+
+验证：`pnpm verify:release` 全绿（CHANGELOG 段落此时可能仍红，见 Step 4）。
 
 - [ ] **Step 1: 跑通 `pnpm check`**
 
@@ -505,14 +532,37 @@ pnpm check
 
 Expected: 全部 PASS。该链条为 `typecheck` → `build` → **16 个 `verify:*`** →
 `verify:host-import` → `pnpm probe`（7 个脚本）。
-（仓库共定义 17 个 `verify:*`，其中 `verify:bundles` 不在 `check` 链内，另跑。）
+（仓库共定义 17 个 `verify:*`，其中 `verify:bundles` 不在 `check` 链内，见 Step 2。）
 
-- [ ] **Step 2: 红线逐条实测**
+- [ ] **Step 2: 跑 `verify:bundles`（不在 check 链内，但 CI 会跑）**
+
+```bash
+pnpm verify:bundles
+```
+
+Expected: PASS。**此步必须在 Step 3 重建 `lib/` 之后才能通过**——依赖升级改变了
+`.pnpm` 虚拟目录哈希，已提交的 `lib/` 里内联着旧哈希路径串，`pnpm build` 会重写它们。
+
+CI（`.github/workflows/validate.yml:94`、`publish.yml:146`）会跑这条断言，
+不通过则发布被拦。
+
+- [ ] **Step 3: 重建 `lib/` 并提交**
+
+```bash
+pnpm build
+git add lib/
+git commit -m "chore(build): 依赖升级后重建 lib 产物"
+```
+
+**顺序要求**：必须在 Task 2–6 的全部源码改动完成后执行，否则会被后续源码改动再次弄脏。
+`lib/` 是 git 追踪的构建产物，`verify:bundles` 断言它与其 source 同步。
+
+- [ ] **Step 4: 红线逐条实测**
 
 按 spec 第 2 节列出的七项最低集 + 六项附加行为，在运行中的 rc.1 上逐条验证。
 对每一条记录：操作步骤、预期、实际。**任何一条不通过都不得发布。**
 
-- [ ] **Step 3: 重新测量补丁基线**
+- [ ] **Step 5: 重新测量补丁基线**
 
 ```bash
 # 对每个 patched 文件统计 edits / hunks / added / removed
@@ -524,7 +574,7 @@ diff -U0 /tmp/theirs-rc1/packages/client/ui-workspace/src/client/<file> \
 「10 文件 / 108 编辑 / 200 hunk / +4011 −192」。`AnimatedRows.*` 作为
 「本地保留副本」单独成行并注明漂移风险。
 
-- [ ] **Step 4: 更新 CHANGELOG**
+- [ ] **Step 6: 更新 CHANGELOG**
 
 新增 `## [0.4.0] — 2026-11-05` 段，必须包含：
 
@@ -534,7 +584,7 @@ diff -U0 /tmp/theirs-rc1/packages/client/ui-workspace/src/client/<file> \
 - **变更**：Session 行菜单改由 `ctx.contextMenus` 提供
 - **已知退化**：`ja/es/fr/de/ru/pt` 下项目文案回退英文
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
 git add src/vendored/README.md CHANGELOG.md README.md
