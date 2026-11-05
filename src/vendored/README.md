@@ -107,8 +107,11 @@ through the global toast), and `collapsedSessionRows` / `COLLAPSED_SESSION_LIMIT
 `SESSION_WATERMARK_BASE`, `SESSION_WATERMARK_AUTO_MAX`). Every reference in the
 patched regions moved with them.
 
-**Four files upstream added** and this tree now carries: `client/contract/toast.ts`,
-`client/toast/Toast.tsx`, `client/toast/register.ts`, `client/session-actions/SessionId.tsx`.
+**Three files upstream added** and this tree now carries: `client/contract/toast.ts`,
+`client/toast/Toast.tsx`, `client/toast/register.ts`.
+(`client/session-actions/SessionId.tsx` was one of them as of 0.2.1-rc.3, but 0.2.2-rc.1
+folded it — and `ForkSession.tsx` — into `session-actions/context-menus.tsx`, so this
+tree carries that instead; see the 0.2.2-rc.1 note below.)
 The tree deliberately does **not** carry upstream's top-level `src/index.ts`: that file
 is the plugin's empty node half, and this plugin's own `src/index.ts` is the real Host
 half, so copying it would shadow ours.
