@@ -17,8 +17,8 @@ virtualStoreDirMaxLength: 60
 # to the exact prerelease `0.2.2-rc.1` — there is no older, "safer" version of any of them to
 # wait for.
 #
-# The five non-`dsh-` entries (`@deepseek-ai/cordis`, `cordis-plugin-group`,
-# `cordis-plugin-loader`, `cosmokit`, `schemastery`) are a different reason: DSH 0.2.2 requires
+# The six non-`dsh-` entries (`@deepseek-ai/cordis`, `cordis-plugin-group`,
+# `cordis-plugin-loader`, `cordis-plugin-include`, `cosmokit`, `schemastery`) are a different reason: DSH 0.2.2 requires
 # `cordis ~4.1.0`, and those releases are newer than the age gate allows. Measured on pnpm
 # 12.4.1: a missing exemption is **not** silently re-appended — the install fails with
 # `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION` and names the offending package, so a dropped entry is
@@ -29,7 +29,7 @@ virtualStoreDirMaxLength: 60
 # (`'@deepseek-ai/cosmokit@1.8.6 || 1.9.0'`) is how pnpm merges two rows for the same package,
 # and `verify:release` compares the exempt version as a string against the lockfile's, so a range
 # reads as a mismatch. Only the versions the age gate actually rejects belong here: measured on
-# this tree, 82 of the 208 lockfile entries fail without an exemption and every one of them is
+# this tree, 83 of the 207 lockfile entries fail without an exemption and every one of them is
 # in this list.
 #
 # ⚠️ **Coupled to the lockfile.** Every entry hard-codes its resolved version, so bumping the DSH
