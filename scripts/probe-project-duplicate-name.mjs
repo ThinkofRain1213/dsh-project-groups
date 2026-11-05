@@ -197,6 +197,13 @@ const openRenameDialog = async (title) => {
 }
 
 try {
+  // Boot first and take the URL it prints. The `child` was spawned at module scope, and
+  // `bootUrl` is what drains its stdout until the `dsh web: …?token=…` line appears.
+  // This call used to be missing entirely: `page.goto(url, …)` below then navigated to an
+  // identifier that was never assigned, so the probe threw before its first assertion and
+  // left the spawned child holding the port. The call cannot be hoisted above `spawn`,
+  // because it is a listener on that child's streams.
+  const url = await bootUrl()
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage()
   page.on('pageerror', (error) => console.log(`pageerror: ${error.message}`))
