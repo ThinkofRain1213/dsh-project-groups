@@ -36,6 +36,11 @@
  *   order, labelled with the raw path. The parent carries **no** `run`: the layer never
  *   calls one on a parent, and a `run` there would be a lie in the type.
  *
+ * `reveal` is also the only row that can reject — the other two only post a request to a
+ * dialog this module does not own — so every row built from it carries a `failureLabel`.
+ * Without one the layer reports its generic `t('failed')`, discarding the reason the
+ * `reveal` verb went to the trouble of producing.
+ *
  * ## Why the pure function is separate from the registration
  *
  * `projectMenuActions` takes the captured target, the caller's verbs and a translator, and
@@ -90,6 +95,10 @@ export interface ProjectMenuActions {
   remove(id: string): void
   /**
    * Show one directory in the Host's file manager.
+   *
+   * This is the only verb of the three that can reject — the other two hand a request to the
+   * browser's dialogs and return — so the row built from it carries a `failureLabel` and the
+   * rejection is deliberately not caught here.
    * @param path - absolute host path, as stored on the project.
    * @returns resolves once the Host accepted the launch; rejects to surface a failure in
    * the shared menu's own notice.
@@ -97,13 +106,21 @@ export interface ProjectMenuActions {
   reveal(path: string): Promise<void>
 }
 
-/** The locale keys this family reads; all three live in the `workspace` namespace. */
-type ProjectMenuKey = 'edit.project' | 'delete.project' | 'menu.reveal'
+/** The locale keys this family reads; all four live in the `workspace` namespace. */
+type ProjectMenuKey = 'edit.project' | 'delete.project' | 'menu.reveal' | 'menu.reveal.failed'
 
 /** A translator bound to the `workspace` namespace. */
 type ProjectMenuTranslate = (key: ProjectMenuKey) => string
 
-/** Icon key registered by the browser half's `contextMenu.icon` seat. */
+/**
+ * Icon key registered by the browser half's `contextMenu.icon` seat.
+ *
+ * **Coupled to `'project.reveal'` in `src/vendored/client/index.ts`'s icon table — rename
+ * one and both must change.** `ui-context-menu` renders an icon through
+ * `renderSlot('contextMenu.icon', …, { entryKey: action.icon.key })`, and a keyed slot
+ * returns nothing for an unregistered key: the row would render with an empty icon slot
+ * and no error anywhere, which is why this is written down rather than inferred.
+ */
 const REVEAL_ICON = 'project.reveal'
 
 /**
@@ -126,11 +143,24 @@ function revealActions(
   // row. Returning a disabled row instead would suggest the project is misconfigured.
   if (directories.length === 0) return []
   const icon = { key: REVEAL_ICON }
+  // `reveal` is the only verb here that can reject: `rename` / `remove` only post a request
+  // to the browser's own dialogs, while this one awaits a Host Remote call. Without a
+  // `failureLabel` the menu layer falls back to its generic "operation failed, try again"
+  // (`notify(message ?? t('failed'))`), which drops the one thing the user needs — that the
+  // directory itself is gone. The string is a whole sentence because the layer appends
+  // nothing to it.
+  const failureLabel = t('menu.reveal.failed')
   if (directories.length === 1) {
     // No `children`, even of length one: the shared popup skips a row that carries
     // children, so a single-element submenu would be a row that does nothing on click.
     const path = directories[0] as string
-    return [{ id: 'reveal', label: t('menu.reveal'), icon, run: () => actions.reveal(path) }]
+    return [{
+      id: 'reveal',
+      label: t('menu.reveal'),
+      icon,
+      failureLabel,
+      run: () => actions.reveal(path),
+    }]
   }
   return [{
     id: 'reveal',
@@ -143,6 +173,10 @@ function revealActions(
       // The raw path, not a basename: two projects often hold sibling directories whose
       // basenames collide, and the full path is what tells them apart.
       label: path,
+      // Each child is its own leaf with its own `run`, so each needs its own
+      // `failureLabel`: the layer reads it off the row that was selected, not off the
+      // parent it was reached through.
+      failureLabel,
       run: () => actions.reveal(path),
     })),
   }]

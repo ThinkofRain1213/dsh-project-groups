@@ -387,8 +387,12 @@ interface SessionPathRemote {
  * contribution to another plugin's menu is data, not a shared function, and importing it
  * would pull a second copy of its controller into this bundle.
  *
- * The rejection is **not** swallowed: the context-menu layer catches it and reports through
- * its own localized failure notice, which is the one surface that outlives the closed menu.
+ * The rejection is **not** swallowed. `ui-context-menu` catches it and calls
+ * `notify(failureLabel ?? t('failed'))`; with no `failureLabel` on the row that would be
+ * the generic "operation failed, try again", so `project-menu.ts` puts `menu.reveal.failed`
+ * on every reveal row. The layer's catch takes no error argument, so `result.error.message`
+ * below never reaches the UI — the thrown value is only what makes the row fail rather than
+ * look successful. Wording the user reads lives in the dictionary, not here.
  * @param path - absolute host path, as stored on the project.
  */
 async function revealInFileManager(path: string): Promise<void> {

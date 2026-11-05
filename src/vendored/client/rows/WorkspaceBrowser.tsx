@@ -325,10 +325,12 @@ interface WorkspaceDragState {
  * props that carried this used to be the only things reading or writing it.
  *
  * Kept exported rather than deleted for one reason: `src/vendored/README.md`'s re-sync table
- * names `RowRequest` in five patch rows (the `kind` tag, the optional `directories`,
- * `docSpec` and links fields, and the edit-dialog seeding), so deleting the type here would
- * silently falsify that table — and the table is what a future re-sync re-applies. Removing
- * both together is one edit for whoever next touches this file; see the note there.
+ * names `RowRequest` in six patch rows (299 — the `kind` tag; 333 and 335 — the
+ * `directories` field and the edit-dialog seeding; 342 — `docSpec`; 349 — `links`; 362 —
+ * "stays exported"). Rows 342 and 349 also name `RenameTarget`, which used to be the fifth
+ * mention only if the two were conflated. Deleting the type here would silently falsify
+ * that table — and the table is what a future re-sync re-applies. Removing both together is
+ * one edit for whoever next touches this file; see the note there.
  */
 export type RowRequest =
   | { readonly kind: 'workspace'; readonly id: WorkspaceId; readonly title: string }

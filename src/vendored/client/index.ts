@@ -456,8 +456,8 @@ export function apply(
     },
   })
   // One registration, all eight languages: the namespace's single occupant. `zh`/`en` carry
-  // this fork's 40 project keys on top of upstream's 119 (see `client/locales-project.ts`); the
-  // six rc.1 languages are upstream's dictionaries and resolve those 40 through the locale
+  // this fork's 42 project keys on top of upstream's 119 (see `client/locales-project.ts`); the
+  // six rc.1 languages are upstream's dictionaries and resolve those 42 through the locale
   // service's per-key fallback to English.
   ctx.effect(() => ctx.locale.register(NS, workspaceDictionaries()), 'ui-workspace: dictionaries')
   const shortcutControls = createWorkspaceShortcutControls()
@@ -696,6 +696,10 @@ export function apply(
       // `registerProjectMenu` in `src/client/` because this seat is the one every other
       // icon key already uses, and it is a `keyed` slot: a second registration of the same
       // key would throw, so there must be exactly one owner for the whole registry.
+      //
+      // **The key is a literal shared with `REVEAL_ICON` in `src/client/project-menu.ts`;
+      // rename one and both must change.** A miss is silent — the keyed slot returns
+      // undefined for an unregistered key, so the row simply renders no glyph.
       'project.reveal': IconFolderOpenRegular,
     })) yield ctx.slots.register({ name: 'contextMenu.icon', key }, Icon)
   })

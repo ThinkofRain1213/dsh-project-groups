@@ -108,6 +108,12 @@ console.log('=== 2. 单目录：直接可用，且不可有 children ===')
   // The row must actually be selectable: the context-menu layer skips a row that carries
   // `children`, so a single directory with an (empty) children array would be dead.
   check('有 run 回调', typeof one?.run === 'function')
+  // `reveal` is the only verb that can reject, and the menu layer reports a rejection as
+  // `notify(failureLabel ?? t('failed'))`. Without this field the user would read the
+  // generic "operation failed, try again" instead of the copy naming the likely cause, so
+  // the field is load-bearing rather than decorative.
+  check('带 failureLabel（reject 时不落回通用文案）', one?.failureLabel === 'menu.reveal.failed',
+    String(one?.failureLabel))
   calls.length = 0
   await one?.run?.()
   check('run 收到那个目录', JSON.stringify(calls) === JSON.stringify([['reveal', 'C:/a']]), JSON.stringify(calls))
@@ -128,6 +134,12 @@ console.log('=== 3. 多目录：children 数量与顺序都与 directories 一�
   // A parent that also carries `run` is a contradiction: the layer never calls it, so the
   // click would look like it did nothing. Absent is the only honest shape.
   check('父项没有 run（只能展开，不能被选中）', many?.run === undefined, String(typeof many?.run))
+  // The layer reads `failureLabel` off the **selected leaf**, not off the parent it was
+  // reached through, so a parent-only label would still leave every child falling back to
+  // the generic notice.
+  check('每个子项都带 failureLabel',
+    (many?.children ?? []).every(child => child.failureLabel === 'menu.reveal.failed'),
+    JSON.stringify((many?.children ?? []).map(child => child.failureLabel)))
 
   calls.length = 0
   for (const child of many?.children ?? []) await child.run?.()
@@ -179,7 +191,7 @@ console.log('=== 6. 目录数据形状未被改动 ===')
     JSON.stringify(target.directories) === JSON.stringify(['C:/x', 'C:/y']), JSON.stringify(target.directories))
   check('children 只是目录的映射，没有附加字段',
     (actions.find(a => a.id === 'reveal')?.children ?? []).every(child =>
-      JSON.stringify(Object.keys(child).sort()) === JSON.stringify(['id', 'label', 'run'])),
+      JSON.stringify(Object.keys(child).sort()) === JSON.stringify(['failureLabel', 'id', 'label', 'run'])),
     JSON.stringify((actions.find(a => a.id === 'reveal')?.children ?? []).map(child => Object.keys(child).sort())))
 }
 
