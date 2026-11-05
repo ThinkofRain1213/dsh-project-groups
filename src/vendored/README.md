@@ -295,6 +295,12 @@ this tree will not notice.**
   depends on nothing else in `ui-primitives`. A re-sync therefore only has to diff it against
   `packages/client/ui-primitives/src/AnimatedRows.tsx` **once per upgrade** and record the
   result here, the way the table above does for rc.1.
+- **Watch for upstream growing this feature itself.** The component now lives in a shared
+  package and already has a second consumer (`ui-settings-models`'s `DeepSeekModelsEditor`), so
+  an "announce these keys as arrivals" prop is a natural addition upstream. If upstream ever
+  gains an equivalent of `enteringKeys` / `onEnteringKeysDrawn`, this copy should be **deleted**
+  and the call sites moved back to `ui-primitives` — that is the direction that reduces work,
+  and keeping the fork's copy past that point would be drift for its own sake.
 
 > The numeric baseline table below still carries an `AnimatedRows.tsx` row, because it was
 > measured against `dsh-v0.2.1-rc.3`, when the file *was* an upstream file this tree patched.
