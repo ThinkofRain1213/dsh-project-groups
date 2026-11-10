@@ -22,22 +22,21 @@
  * and a hole has exactly one declaring entry — they carry the same owner
  * contract and the same occupant.
  *
- * WorkspaceBrowser also declares the two **Session row action lists**: every
- * row of a Session's "..." menu is an entry of
- * `sidebar.workspaces.session.menu.item`, and every hover button at the row's
- * end is an entry of `sidebar.workspaces.session.row.action`. The shipped
- * actions — pin, rename, fork, archive, copy ID — are ordinary entries
- * registered from `apply`, each carrying its own behavior in its own inject
- * face and reading its own Host state through hooks that face injects, so a
- * client plugin's action lands beside them by `order` and needs nothing from
- * the browser beyond the row identity.
+ * WorkspaceBrowser declares the Session hover-button list. Its built-in
+ * pin and archive entries share callbacks with the structured ctx.contextMenus
+ * contributions. The Session menu adapter owns the legacy
+ * `sidebar.workspaces.session.menu.item` Slot for external React entries;
+ * they receive the captured row identity and render together before Archive.
+ * This package's own verbs no longer register into that legacy list — they are
+ * `ctx.contextMenus` contributions (`session-actions/context-menus.tsx`).
  *
- * The browser entry additionally declares two `list` seats per Session row
- * (`sidebar.session.row.leading` / `sidebar.session.row.hover`) for ambient
- * row decorations. Both take the row's Session identity and nothing else: a
- * session-scoped seat would force a Session binding, which would activate and
- * retain every listed Session.
+ * The browser entry additionally declares `list` seats per Session row
+ * (`sidebar.session.row.leading`, `sidebar.session.row.trailing`, and
+ * `sidebar.session.row.hover`) for ambient row decorations. They receive only
+ * the row's Session identity; a Session binding would activate and retain
+ * every listed Session.
  */
+import type { ContextMenuTarget } from '@deepseek-ai/dsh-client-ui-context-menu/client'
 import type {
   HostObservable, InjectFace, PropsHooks, PropsLocale, PropsRenderSlots, PropsRuntime, PropsStore, SlotHookFactory,
 } from '@deepseek-ai/dsh-client-ui-slots'
@@ -56,6 +55,41 @@ import type { StartSessionOptions } from '../navigation.ts'
 import type { GroupSource } from '../tree.ts'
 import type {} from './toast.ts'
 import type { createWorkspaceViewStore } from '../stores.ts'
+
+declare module '@deepseek-ai/dsh-client-ui-context-menu/client' {
+  interface ContextMenuTargetMap {
+    /** Registered Workspace header; path and title belong to the clicked row. */
+    workspace: { readonly workspaceId: WorkspaceId; readonly path: string; readonly displayTitle: string }
+  }
+}
+
+/** One request for the existing Workspace rename or delete dialog. */
+export type WorkspaceActionRequest = {
+  readonly action: 'rename' | 'delete'
+  readonly workspaceId: WorkspaceId
+  readonly displayTitle: string
+  readonly storedTitle: string
+}
+
+/**
+ * One request for the **project** edit or delete dialog.
+ *
+ * A sibling of {@link WorkspaceActionRequest} rather than a widening of it: the two name
+ * different resources with different identities (`WorkspaceId` vs a project id), and the
+ * dialogs they open commit through different verbs (`renameWorkspace` / `deleteWorkspace`
+ * vs `updateProject` / `deleteProject`). Folding them would force every consumer to
+ * discriminate on a union it does not need.
+ *
+ * It exists because the project row's menu is a `ctx.contextMenus` contribution now — see
+ * `src/client/project-menu.ts` — and a contribution runs outside this browser component,
+ * while the dialogs it must open are this component's own `useState`. The store is the same
+ * bridge upstream already uses for the Workspace row, pointed the other way.
+ */
+export type ProjectMenuRequest = {
+  readonly action: 'rename' | 'delete'
+  /** The project's id, which is also its group key. */
+  readonly projectId: string
+}
 
 /**
  * Owner share of the directory-flow holes: the complete conversation between
@@ -114,6 +148,12 @@ export interface SessionRowScheduleOwnerProps {
   readonly sessionId: SessionId
 }
 
+/** Owner share of the trailing icon list; rendering does not bind the Session. */
+export interface SessionRowTrailingOwnerProps {
+  /** Session this row shows. */
+  readonly sessionId: SessionId
+}
+
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
     /** Directory-flow hole under the conversation empty-state picker (declared by the WorkspacePicker entry). */
@@ -129,24 +169,28 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * An archived row keeps that cell blank — neither its status dot nor this
      * seat renders there, and its live status appears on the hover card only.
      */
-    'sidebar.session.row.leading': { kind: 'list'; scope: 'root'; owner: SessionRowScheduleOwnerProps }
+    'sidebar.session.row.leading': { kind: 'list'; scope: 'root'; inline: true; owner: SessionRowScheduleOwnerProps }
+    /**
+     * Non-interactive icons after the row's time label, before its pin marker,
+     * in ascending `order`. On hover-capable devices, hidden while the row is
+     * hovered, has keyboard focus on itself or its actions, or has an open menu.
+     * Hoverless devices keep the icons beside the menu trigger. Blank Sessions
+     * omit the slot. Occupants address their own data by Session id; they must not
+     * bind or retain the Session.
+     */
+    'sidebar.session.row.trailing': { kind: 'list'; scope: 'root'; inline: true; owner: SessionRowTrailingOwnerProps }
     /**
      * Section of the Session row's hover card between its relative time and
      * its trailing status line. Mounted only while that card is open.
      */
     'sidebar.session.row.hover': { kind: 'list'; scope: 'root'; owner: SessionRowScheduleOwnerProps }
     /**
-     * The rows of one Session's "..." menu, in ascending `order`. ui-workspace
-     * registers the shipped rows here — `pin` (100), `rename` (200), `fork`
-     * (300), `archive` (400), and `session-id` (450) — so a plugin row is placed
-     * by its own `order` among them. Use a package-namespaced `id`; reusing a shipped id at
-     * another `priority` shadows that row. Each entry renders one
-     * `role="menuitem"` `<button>` (the shipped rows use ui-primitives'
-     * `MenuItemButton`, which adds the host styling and `separatorBefore`),
-     * decides its own visibility from its own state, and dismisses the menu
-     * through the injected `useMenuOpenState` hook after acting; the list's
-     * keyboard walk and focus return read the DOM, so any such button joins
-     * them. Labels come from the contributing package's locale namespace.
+     * Legacy external Session menu rows, in ascending `order`, rendered
+     * together before the built-in Archive action. Built-in actions use
+     * ctx.contextMenus; Slot priority cannot replace them. Each entry renders a
+     * `role="menuitem"` button, owns its visibility and localized label,
+     * and dismisses through `useMenuOpenState`. The shared menu supplies
+     * keyboard navigation and focus return.
      * @example
      * return {
      *   inject: ['slots'],
@@ -185,7 +229,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * `pin` (200) here. An entry renders one icon button (or nothing, when its
      * action does not apply to the row) and owns the action it performs. Clicks
      * inside the strip stay in the strip, so the button needs no propagation
-     * handling to keep the row from opening.
+     * handling to keep the row from opening. Hoverless devices hide this slot;
+     * contribute the action to the menu list as well for touch access.
      */
     'sidebar.workspaces.session.row.action': { kind: 'list'; scope: 'root'; owner: SessionRowOwnerProps }
   }
@@ -219,7 +264,46 @@ export type DirectoryPickingHooks = PropsHooks<DirectoryPickingInjected['hooks']
  * browsing region drives.
  */
 export type WorkspaceBrowserInjected = {
+  /** Open the registered Workspace actions without changing expansion or selection. */
+  openWorkspaceMenu: (workspaceId: WorkspaceId, path: string, displayTitle: string, point: { x: number; y: number }, mode?: 'toggle') => void
+  /**
+   * Open one project's `ctx.contextMenus` menu without changing expansion or selection.
+   *
+   * The project target family, contributed by this plugin rather than upstream — see
+   * `src/client/project-menu.ts`. `directories` rides on the captured target because a
+   * project may hold any number of them (including none), which is why the Workspace family
+   * cannot serve it.
+   */
+  openProjectMenu: (
+    projectId: string,
+    title: string,
+    directories: readonly string[],
+    point: { x: number; y: number },
+    mode?: 'toggle',
+  ) => void
+  /** Dismiss the settled Workspace dialog. */
+  settleWorkspaceAction: () => void
+  /**
+   * Consume the settled **project** dialog request.
+   *
+   * The project menu's rename/remove verbs raise {@link ProjectMenuRequest} rather than
+   * opening anything themselves, and this is how the browser clears it once the dialog it
+   * drove has closed — the same lifecycle as {@link settleWorkspaceAction}.
+   */
+  settleProjectMenu: () => void
+  /** Open actions for the clicked Session without selecting it. */
+  openSessionMenu: (sessionId: SessionId, displayTitle: string, point: { x: number; y: number }, mode?: 'toggle') => void
   hooks: DirectoryPickingInjected['hooks'] & {
+    workspaceActionRequest: HostObservable<WorkspaceActionRequest | null>
+    /**
+     * The project dialog request a menu verb raised, until the browser consumes it.
+     *
+     * Mandatory like the other hooks: the renderer binds hooks from the observable's
+     * identity, so a composition without this feature supplies an observable answering
+     * `null`, which reads as "no request".
+     */
+    projectMenuRequest: HostObservable<ProjectMenuRequest | null>
+    contextMenuTarget: HostObservable<ContextMenuTarget | null>
     /**
      * Fixed Host facts, reached through a hook rather than injected as values:
      * the renderer memoizes an entry's inject result for the registration's
@@ -494,7 +578,7 @@ export type WorkspaceBrowserInjected = {
 /** The browser's declared viewing store handle, shared with the row actions that write view state. */
 export type WorkspaceViewStoreHandle = ReturnType<typeof createWorkspaceViewStore>
 
-/** Props of one shipped row-menu entry: owner share + locale seat + the entry's own injected share. */
+/** Props of one legacy row-menu entry: owner share + locale seat + the entry's own injected share. */
 export type SessionMenuItemProps<Injected extends object = object> =
   PropsRuntime<'sidebar.workspaces.session.menu.item'>
   & PropsLocale<'workspace'>
@@ -779,8 +863,8 @@ export type WorkspaceBrowserProps =
   PropsRuntime<'sidebar.workspaces'>
   & PropsRenderSlots<
     | 'sidebar.workspaces.directoryFlow'
-    | 'sidebar.workspaces.session.menu.item'
     | 'sidebar.workspaces.session.row.action'
+    | 'sidebar.session.row.trailing'
     | 'sidebar.session.row.leading'
     | 'sidebar.session.row.hover'
   >

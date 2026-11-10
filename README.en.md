@@ -3,7 +3,7 @@
 **[中文](README.md) | English**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![DSH](https://img.shields.io/badge/DSH-0.2.0--rc.2-5965d8)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH](https://img.shields.io/badge/DSH-0.2.2--rc.1-5965d8)](https://github.com/deepseek-ai/deepseek-harness)
 
 A [DSH](https://github.com/deepseek-ai/deepseek-harness) plugin that does four things:
 
@@ -108,13 +108,17 @@ See [`DESIGN.md` §26](DESIGN.md) (Chinese). The built-in spec is
 
 ## Install
 
-Requires DSH **`>=0.2.1-rc.2 <0.2.2`** (the 0.2.1 line). The plugin runs on the 0.2.1 shell with
-vendored source taken from **0.2.1-rc.3** (the upstream sync process is L4.5 in
+Requires DSH **`>=0.2.2-rc.1 <0.2.3`** (the 0.2.2 line). The plugin runs on the 0.2.2 shell with
+vendored source taken from **0.2.2-rc.1** (the upstream sync process is L4.5 in
 [`DESIGN.md` §5](DESIGN.md), Chinese).
+
+> **On 0.2.1-rc.x the plugin is refused load with an explicit message** (the plugin row shows
+> incompatible) rather than installing and then silently misbehaving. That is the breaking change
+> in 0.4.0: the `ctx.contextMenus` service it calls only exists from 0.2.2.
 
 That range is declared as `engines.dsh` — and once it is present, **DSH decides compatibility by that
 range alone and ignores `peerDependencies` entirely** (upstream's rule, not our choice). The upper
-bound deliberately stops at `<0.2.2`: only versions actually re-synced and verified are let through.
+bound deliberately stops at `<0.2.3`: only versions actually re-synced and verified are let through.
 
 ```bash
 dsh plugin add dsh-project-groups
@@ -197,7 +201,7 @@ Source layout:
 | `src/spec.ts` | Domain schema: the project record, global settings, the three state values |
 | `src/client/index.ts` | Browser entry: the grouping injection, the settings card, the dialogs |
 | `src/client/spec-picker.tsx` | The spec choose / upload / delete dialog |
-| `src/vendored/` | Copy of the official client source + **108 semantic edits (200 diff hunks) across 10 files** (see its [README](src/vendored/README.md)) |
+| `src/vendored/` | Copy of the official client source + **11 files / 200 hunks / +4538 −198** (see its [README](src/vendored/README.md)) |
 | `scripts/` | Probes and verification; `DESIGN.md` explains what each proves |
 | `scripts/lib/boot-dsh.mjs` | Shared starting point for the real-DSH probes: profile bootstrap + first-run overlay dismissal |
 | `CHANGELOG.md` | What changed in each release, as users see it |
@@ -277,8 +281,9 @@ check and `verify:release` itself, and `validate.yml` runs every remaining scrip
 
 `src/vendored/` **started** as a byte-identical copy of upstream
 `packages/client/ui-workspace/src/` at `dsh-v0.1.7-rc.2`, but is **no longer byte-identical**:
-project grouping needed a grouping seam, and there are now **75 structural patches across 12 files**.
-The current source version is **0.2.1-rc.3**. The tree carries **107 semantic edits (200 diff hunks) across 10 files**, plus one file upstream does not have.
+project grouping needed a grouping seam, and there are now **11 files / 200 hunks / +4538 −198**
+(measured against the upstream tag; plus **three** files upstream does not have).
+The current source version is **0.2.2-rc.1**.
 
 Every one satisfies the same invariant — **omitted means upstream behaviour** — and all are listed
 in the patch table in [`src/vendored/README.md`](src/vendored/README.md). **That table is the only

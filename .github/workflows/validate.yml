@@ -2,12 +2,22 @@ name: Validate
 
 # A build and contract gate rather than a behavioural one.
 #
-# `pnpm check` is the full gate, and CI runs all of it **except `verify:bundle`**:
-# that one reads the locally installed DSH's `app.asar` to compare the bundle's
-# resolved externals, so it only runs on a machine with DSH — which is also where
-# a release is cut. Everything else in the gate is pure Node, including the
-# browser probes: they stand up their own fake environment rather than driving a
-# live DSH, so they are safe to run here.
+# `pnpm check` is the full gate, and CI runs **almost** all of it. Two members are absent for
+# environmental reasons rather than by intent, and both are stated here so the next reader
+# does not have to diff the step list against `scripts.check` by hand — which is how
+# `verify:client-seats` and `verify:host-import` previously ran on no runner at all while
+# this header promised they did:
+#
+#   - `verify:bundle` reads the locally installed DSH's `app.asar` to compare the bundle's
+#     resolved externals, so it only runs on a machine with DSH — which is also where a
+#     release is cut.
+#   - `verify:css-isolation` needs a *built* sibling plugin to compare class hashes against,
+#     which a clean checkout does not have; it reports SKIP rather than a false PASS.
+#
+# Everything else in the gate is pure Node, including the browser probes: they stand up their
+# own fake environment rather than driving a live DSH, so they are safe to run here.
+# `verify:settings-rhythm` belongs in the runnable set too and is simply not wired up yet —
+# it is pure Node and passes unchanged when invoked by hand.
 #
 # The probes that DO drive a live instance (`probe:settings-card`,
 # `probe:cross-group`, `probe:row-key-motion` and friends) are not in `pnpm check`
@@ -35,7 +45,7 @@ jobs:
   validate:
     name: Node ${{ matrix.node }} · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # Install, typecheck, build, thirteen verify scripts and the probe bundle, across six
+    # Install, typecheck, build, fifteen `verify` steps and the probe bundle, across six
     # legs with `fail-fast: false`. Several probes stand up fake environments or wait on IPC,
     # so a hung one would otherwise occupy runners until GitHub's 6-hour default cap — and with
     # fail-fast off, all six legs would hang in parallel.
@@ -129,6 +139,20 @@ jobs:
       - name: Verify the locale dictionaries
         # zh/en key parity, placeholder parity, and no unreferenced key.
         run: pnpm run verify:locales
+      - name: Verify the project row menu
+        # The three-state reveal rule — 0 directories produces no row, 1 produces a row with
+        # no `children`, N produces a submenu — is the whole invariant behind `target:
+        # 'project'`, and it is the kind of logic that reads as obviously correct and then
+        # quietly loses a directory: `children` built with `slice(1)`, or a parent row that
+        # also carries `run`, both survive review. `scripts/verify-project-menu.mjs` asserts
+        # all three states against the real module under Node's type stripping.
+        #
+        # It sat outside every gate until now — no npm script, so neither `pnpm check` nor
+        # this workflow could invoke it, and the only way to run it was to remember the path.
+        # A behaviour gate nobody runs is the same as no gate. It is listed right after the
+        # locale check because the menu's `failureLabel` is a locale key; the two fail for
+        # related reasons.
+        run: pnpm run verify:project-menu
       - name: Verify the release facts
         # Version agreement across package.json / CHANGELOG / tarball name,
         # locale descriptions matching the feature set, the two READMEs staying

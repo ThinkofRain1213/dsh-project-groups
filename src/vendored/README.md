@@ -10,10 +10,10 @@ official UI 1:1.
 |---|---|
 | Upstream | `deepseek-ai/deepseek-harness` |
 | Path | `packages/client/ui-workspace/src/` |
-| Version | **0.2.1-rc.3** |
-| Commit | `1f81c047fc` (`dsh-v0.2.1-rc.3`) |
-| Re-synced | 2026-10-24 (from `687f282e86` / `dsh-v0.2.1-rc.2`, itself from `1600d8a1e1` / `dsh-v0.2.1-rc.1`, itself from `639ed01539` / `dsh-v0.2.0-rc.2`, itself re-synced 2026-09-30 from `477b4f420` / `dsh-v0.1.7-rc.2`) |
-| Patch footprint | **10 files / 108 edits / 200 hunks / +4011 −192** against the upstream tag, plus one file upstream does not have (`client/session-actions/BaseWorkspaceMissing.tsx`) |
+| Version | **0.2.2-rc.1** |
+| Commit | `dsh-v0.2.2-rc.1` |
+| Re-synced | 2026-11-05 (from `dsh-v0.2.1-rc.3` / `1f81c047fc`, itself from the rc.2/rc.1/rc.0 lines recorded in git history) |
+| Patch footprint | **11 files / 200 hunks / +4538 −198** against the upstream tag — of which **3 files are documentation-only** (see the table) — plus **three** files upstream does not have (`client/rows/AnimatedRows.tsx` + `.module.css`, `client/session-actions/BaseWorkspaceMissing.tsx`) |
 
 ### The 0.2.1-rc.2 → 0.2.1-rc.3 step
 
@@ -46,6 +46,10 @@ Two upstream behaviour changes arrived with this step and are now live:
 Everything else in `ui-workspace/src` — 27 of the 28 files — is byte-identical to
 rc.2. That is why `Added` is unchanged at 4011 while `Removed` drops from 194 to 192:
 upstream's own edit removed two lines this tree had already deleted differently.
+(**Those are the `dsh-v0.2.1-rc.3` figures.** The 0.2.2-rc.1 re-sync re-measured the
+whole table, and `Added` is now 4538 / `Removed` 198 — see *Patches inside this
+directory* below. This paragraph is kept as the historical record of that step, not as
+the current baseline.)
 
 ### The 0.2.1-rc.1 → 0.2.1-rc.2 step
 
@@ -107,8 +111,11 @@ through the global toast), and `collapsedSessionRows` / `COLLAPSED_SESSION_LIMIT
 `SESSION_WATERMARK_BASE`, `SESSION_WATERMARK_AUTO_MAX`). Every reference in the
 patched regions moved with them.
 
-**Four files upstream added** and this tree now carries: `client/contract/toast.ts`,
-`client/toast/Toast.tsx`, `client/toast/register.ts`, `client/session-actions/SessionId.tsx`.
+**Three files upstream added** and this tree now carries: `client/contract/toast.ts`,
+`client/toast/Toast.tsx`, `client/toast/register.ts`.
+(`client/session-actions/SessionId.tsx` was one of them as of 0.2.1-rc.3, but 0.2.2-rc.1
+folded it — and `ForkSession.tsx` — into `session-actions/context-menus.tsx`, so this
+tree carries that instead; see the 0.2.2-rc.1 note below.)
 The tree deliberately does **not** carry upstream's top-level `src/index.ts`: that file
 is the plugin's empty node half, and this plugin's own `src/index.ts` is the real Host
 half, so copying it would shadow ours.
@@ -150,7 +157,7 @@ confirms the produced externals still match the installed official bundle name f
 > not with a caret. `cordis` had to move `4.0.1 → 4.0.5` in the same pass, because 0.2.1's packages
 > peer on `~4.0.5`.
 
-Copied files (27 — upstream's 28 minus its top-level `index.ts`, which this plugin supplies itself):
+Copied files (upstream's set minus its top-level `index.ts`, which this plugin supplies itself):
 
 ```
 client/index.ts
@@ -159,6 +166,7 @@ client/shortcuts.ts
 client/stores.ts
 client/tree.ts
 client/pin-order.ts
+client/path-suffix.ts
 client/locales.ts
 client/contract/slots.ts
 client/contract/toast.ts
@@ -166,25 +174,146 @@ client/toast/Toast.tsx
 client/toast/register.ts
 client/rows/Rows.tsx
 client/rows/Rows.module.css
-client/rows/AnimatedRows.tsx
-client/rows/AnimatedRows.module.css
 client/rows/WorkspaceBrowser.tsx
 client/rows/WorkspaceBrowser.module.css
+client/rows/WorkspaceDialogs.tsx
 client/session-actions/ArchiveSession.tsx
-client/session-actions/ForkSession.tsx
 client/session-actions/PinSession.tsx
 client/session-actions/RenameSession.tsx
 client/session-actions/RowActionToast.tsx
-client/session-actions/SessionId.tsx
+client/session-actions/SessionMenu.tsx
+client/session-actions/context-menus.tsx
 client/session-actions/derived.ts
 client/WorkspacePicker.tsx
 client/WorkspacePicker.module.css
 css-modules.d.ts
 ```
 
+Locally retained — **not** in upstream's set any more, so a re-sync has nothing to copy here
+(see *Locally retained: `AnimatedRows`* below):
+
+```
+client/rows/AnimatedRows.tsx
+client/rows/AnimatedRows.module.css
+```
+
+> As of 0.2.2-rc.1 upstream moved `AnimatedRows` into `ui-primitives` and deleted the
+> `ui-workspace` copy; this fork keeps its own because it needs two props the shared package
+> does not have. Both files are listed apart so a future re-sync does not mistake them for
+> upstream files that disappeared by accident — and, just as importantly, does not copy the
+> `ui-primitives` version over them.
+>
+> `session-actions/ForkSession.tsx` and `session-actions/SessionId.tsx` are **gone** as of
+> 0.2.2-rc.1: upstream folded both verbs into `session-actions/context-menus.tsx`, which
+> registers every built-in Session menu action through `ctx.contextMenus` instead of the
+> legacy `sidebar.workspaces.session.menu.item` Slot. This tree followed, so nothing
+> registers into that Slot any more — it stays declared only for external plugins.
+
 Plus one file upstream does not have — `client/session-actions/BaseWorkspaceMissing.tsx`, the
 dialog a click opens when the configured base Workspace is gone. It is this plugin's own, not a
 patch, so a re-sync copies nothing over it.
+
+### Locally retained: `AnimatedRows`
+
+`client/rows/AnimatedRows.tsx` and its `.module.css` are the only two files here that are **not
+derived from `ui-workspace` at all**. 0.2.2-rc.1 moved the component out of this package into
+`packages/client/ui-primitives/src/AnimatedRows.tsx` (`5d3ea87d286`, *refactor(web): share
+workspace drag behavior with model lists*) and deleted the `ui-workspace` copy. This tree keeps
+its own, so **a re-sync must never overwrite or delete them**, and the upstream side to compare
+against is `ui-primitives`, not `ui-workspace`.
+
+#### Why it is not followed
+
+Two hard constraints, both read from the installed packages rather than assumed:
+
+1. **`ui-primitives` is external.** It sits in `tsdown.config.ts`'s `PLATFORM_MODULES`, so the
+   shell supplies it at runtime; a plugin cannot add a prop to it.
+2. **Its members are private.** `armed` / `list` / `overlay` / `movements` / `exits` /
+   `readPositions` / `move` are all `private` in the published
+   `lib/types/AnimatedRows.d.ts`, so a subclass cannot reach the state the two props need.
+
+The two props are the point of the copy, not a nicety. `enteringKeys` states which rows are
+arrivals, and `onEnteringKeysDrawn` releases that announcement once the commit that drew it has
+run; together they are deliberate behaviour deviation 6 below. Without them a New Session that
+**reuses the blank Session** keeps its row key and glides from its old group instead of
+arriving — a feature loss, which is the line this whole re-sync must not cross.
+
+#### What upstream rc.1 has and this copy does not
+
+Complete list, in file order. Rows 1–5 are 0.2.2-rc.1's own generalization of the component for
+a shared package; rows 6–7 are this fork's. Each was judged separately:
+
+| # | Upstream `ui-primitives` at rc.1 | This copy | Follow? |
+|---:|---|---|---|
+| 1 | file header and class doc say "keyed rows" (the package is generic) | both say "the sidebar's keyed rows" | no — comment only |
+| 2 | `export interface AnimatedRowsProps`, re-exported as a type from `index.ts` | the interface is module-private | no — nothing here imports the type |
+| 3 | `label?: string` (optional) | `label: string` (required) | no — both call sites pass it |
+| 4 | `role?: AriaRole`, rendered as `role={this.props.role}` | `role?: AriaRole`, rendered as `role={this.props.role ?? 'tree'}` | **no** — both call sites pass `role="tree"`, so the rendered attribute is identical; the default only restores rc.3's hard-coded value for a caller that omits it |
+| 5 | the exit clone copies the row's computed `paddingInlineStart` | the exit clone copies the `--dsh-workspace-indent` custom property | **no** — see below |
+| 6 | — | `enteringKeys` | this is the copy's reason to exist |
+| 7 | — | `onEnteringKeysDrawn`, its two `release()` call sites, and the `arriving.has(key)` branch | same |
+
+**Item 5 is required by this tree's markup, not a stale leftover.** The exit clone is appended
+to `.exits`, which `AnimatedRows` renders as a **sibling** of `.list` (see its `render`), so the
+clone sits beside the group section rather than inside it. The section is what sets
+`--dsh-workspace-indent` per depth (`WorkspaceBrowser.tsx`, `style={{ '--dsh-workspace-indent':
+… }}`), and the row stylesheets consume it —
+`Rows.module.css` (`padding-inline-start: calc(… + var(--dsh-workspace-indent, 0px))`) and
+`WorkspaceBrowser.module.css` (the session-overflow row). A clone that did not carry the value
+would therefore fall back to `0px` and the fading copy would jump left by its indentation. Both
+forms solve that — upstream's computed `paddingInlineStart` bakes the whole sum into the clone,
+this copy's custom property reproduces the one term the clone cannot inherit — and they render
+identically, because the property is set from the same row's computed value. rc.1 moved to the
+computed form because a **shared** package cannot know about a sidebar-only variable; the same
+commit moved `useRowDragPreview` the same way, and this tree's `Rows.tsx` did follow that half
+(it passes `DRAG_PREVIEW_PROPERTIES` for the three sidebar variables, exactly as upstream).
+
+**Judgement: nothing in rows 1–5 needs to be carried.** rc.1's version contains no behavioural
+improvement this copy lacks. The whole upstream-side diff is one generalization forced by
+relocation (item 5) plus two optionality changes and a comment rewrite; of those, only item 4
+changes behaviour, and only for a caller that omits `role` — which both of this tree's call
+sites pin to `"tree"`.
+
+#### Drift risk
+
+The risk is asymmetric, and worth stating precisely: **upstream can change this component and
+this tree will not notice.**
+
+- This file is a **whole copy**, not a patch. A re-sync three-way merges the other
+  `ui-workspace` files; these two are not in that set, so an upstream rewrite of the animator
+  produces no conflict at all — the fork would simply keep running the rc.1-era implementation.
+- What upstream could change without this tree following: the two durations (`100` / `200` ms),
+  the `armed` rule (motion starts only after local pointer or keyboard input), the
+  reduced-motion check, the viewport/intersects filtering, the exit-overlay protocol (the
+  `data-row-key` clone, `inert`, the indentation capture), the interruption semantics
+  (`readPositions` reading a live opacity, `cancelMovements`), and the per-commit
+  `sameRows` / `resetKey` / `ready` gating. Any of them moving upstream means the two sidebars
+  animate differently.
+- **Nothing else in this repo would catch that**: no unit test imports this copy — it is driven
+  only through a live instance by `scripts/probe-row-key-motion.mjs` (a New Session fades, a
+  re-filed Session glides, a blank becoming real does **not** animate) and
+  `scripts/probe-new-session-motion.mjs`, both outside `pnpm check` because each spawns a
+  server.
+- The counterweight, and why this is acceptable: the component is called from exactly **two**
+  places (`WorkspaceBrowser.tsx`, the grouped and the flat list), both in this tree, and it
+  depends on nothing else in `ui-primitives`. A re-sync therefore only has to diff it against
+  `packages/client/ui-primitives/src/AnimatedRows.tsx` **once per upgrade** and record the
+  result here, the way the table above does for rc.1.
+- **Watch for upstream growing this feature itself.** The component now lives in a shared
+  package and already has a second consumer (`ui-settings-models`'s `DeepSeekModelsEditor`), so
+  an "announce these keys as arrivals" prop is a natural addition upstream. If upstream ever
+  gains an equivalent of `enteringKeys` / `onEnteringKeysDrawn`, this copy should be **deleted**
+  and the call sites moved back to `ui-primitives` — that is the direction that reduces work,
+  and keeping the fork's copy past that point would be drift for its own sake.
+
+> **The numeric baseline table still lists `AnimatedRows` — but not as a patch, and not with
+> its old numbers.** At `dsh-v0.2.1-rc.3` the file *was* an upstream file this tree patched
+> (`4 edits / 6 hunks / +39 −1`). Against 0.2.2-rc.1 there is nothing to patch, so it is
+> re-measured as what it now is: a **locally retained copy** of 230 lines with no upstream
+> counterpart in this directory. It sits in the second table (files upstream does not have)
+> with a line count rather than a diff, and the `4 / 6 / +39 −1` figures are retired. Nobody
+> should read its presence there as "still patched", nor infer that the patch footprint grew
+> because it is listed.
 
 ## Why vendored
 
@@ -223,43 +352,78 @@ Most adaptation still lives *outside* this directory:
 Kept minimal and listed here so a re-sync is mechanical. Each is marked in the
 source with a comment naming the seam.
 
-**Measured footprint after the 0.2.1-rc.3 re-sync** (diffed against `dsh-v0.2.1-rc.3`,
+**Measured footprint after the 0.2.2-rc.1 re-sync** (diffed against `dsh-v0.2.2-rc.1`,
 per file, with `git diff --no-index -U0`):
 
-| File | Edits | Hunks | Added | Removed |
-|---|---:|---:|---:|---:|
-| `client/rows/WorkspaceBrowser.tsx` | 48 | 114 | 2097 | 135 |
-| `client/index.ts` | 12 | 17 | 426 | 7 |
-| `client/tree.ts` | 12 | 16 | 220 | 6 |
-| `client/rows/Rows.tsx` | 11 | 15 | 121 | 8 |
-| `client/navigation.ts` | 8 | 14 | 238 | 30 |
-| `client/locales.ts` | 4 | 4 | 119 | 0 |
-| `client/contract/slots.ts` | 4 | 6 | 314 | 4 |
-| `client/rows/AnimatedRows.tsx` | 4 | 6 | 39 | 1 |
-| `client/shortcuts.ts` | 3 | 4 | 11 | 1 |
-| `client/rows/WorkspaceBrowser.module.css` | 2 | 4 | 426 | 0 |
-| **Total** | **108** | **200** | **4011** | **192** |
+| File | Hunks | Added | Removed | Kind |
+|---|---:|---:|---:|---|
+| `client/rows/WorkspaceBrowser.tsx` | 99 | 2349 | 119 | behavioural |
+| `client/index.ts` | 29 | 523 | 12 | behavioural |
+| `client/rows/Rows.tsx` | 13 | 321 | 10 | behavioural |
+| `client/contract/slots.ts` | 11 | 367 | 4 | behavioural |
+| `client/tree.ts` | 16 | 220 | 6 | behavioural |
+| `client/navigation.ts` | 15 | 275 | 32 | behavioural |
+| `client/rows/WorkspaceBrowser.module.css` | 4 | 426 | 0 | behavioural |
+| `client/shortcuts.ts` | 4 | 11 | 1 | behavioural |
+| `client/session-actions/PinSession.tsx` | 6 | 28 | 9 | **comments only** |
+| `client/session-actions/ArchiveSession.tsx` | 2 | 12 | 4 | **comments only** |
+| `client/session-actions/RenameSession.tsx` | 1 | 6 | 1 | **comments only** |
+| **Total** | **200** | **4538** | **198** | |
 
-> **`Edits` and `Hunks` are two counts of the same diff, and the table needs both.**
-> `Edits` counts semantic edit points — what this table has always meant. `Hunks` is what
-> `git diff -U0` emits, and it is higher because two adjacent insertions are one edit but
-> two hunks: `WorkspaceBrowser.tsx` is 48 edits and 114 hunks. `Added`/`Removed` are exact
-> under both readings and are what a re-sync should reproduce. Before rc.3 only `Edits`
-> was recorded, under the column name `Hunks`; both are now stated so neither number can
-> be mistaken for the other again.
->
-> Neither total equals the number of rows in the patch list below: that list is
-> **76 rows** describing intents, and one row routinely covers several edits. The 108 is
-> a diff measurement, the 76 is a seam inventory. They are not meant to match.
->
-> `navigation.ts` moved from 7 to 8 edits and from −32 to −30 removed because rc.3
-> rewrote the `startSession` body in a way that deletes two fewer lines.
+Plus the files with **no upstream counterpart**, which are not patches and must be
+reproduced by copying, not by diffing:
 
-The count grew from 75 to 108 edits not because features were added but because
-upstream **rewrote** the regions this tree patches: `WorkspaceBrowser.tsx` alone went from a
-handful of edits to 48 once the watermark model and `HoverCardGroup` landed inside the
-same functions. The table below still describes **intent** — one row per seam — and is what a
-re-sync re-applies; the counts above are what a re-sync should reproduce.
+| File | Lines | Why it exists |
+|---|---:|---|
+| `client/rows/AnimatedRows.tsx` | 230 | **locally retained copy** — upstream moved it to `ui-primitives`; see *Locally retained: `AnimatedRows`* above |
+| `client/rows/AnimatedRows.module.css` | 7 | same |
+| `client/session-actions/BaseWorkspaceMissing.tsx` | 273 | this plugin's own feature |
+
+> **What this table replaced, and what it deliberately drops.** The rc.3 table
+> reported `10 files / 108 edits / 200 hunks / +4011 −192`. Two of those four
+> numbers survive re-measurement, one grew, and **one column was removed**:
+>
+> | | rc.3 table | rc.1 table | why |
+> |---|---|---|---|
+> | Files | 10 | 11 patched + 3 own | the three `session-actions` files became patches of their own |
+> | Hunks | 200 | 200 | coincidence — the totals match while no per-file number does |
+> | Added | 4011 | 4538 | `WorkspaceBrowser.tsx` and `index.ts` grew |
+> | Removed | 192 | 198 | |
+> | **Edits** | **108** | **dropped** | see below |
+>
+> **`Edits` was removed rather than re-estimated, because it was never reproducible.**
+> It counted "semantic edit points", a judgement made by reading the diff. It cannot be
+> recovered mechanically now: over the rc.3 data, no hunk-merge threshold reproduces the
+> published per-file values — the best any threshold does is 6 of 10 files, and the
+> thresholds that fit one file break another (`WorkspaceBrowser.tsx` needs ≈5 while
+> `Rows.tsx` needs ≈6 and `locales.ts` needs any). Re-publishing a number that a
+> re-sync cannot check is worse than dropping it, so the column is gone and `Hunks` is
+> the count of record. **Hunks, Added and Removed are exact and are what a re-sync
+> should reproduce.**
+>
+> Neither total equals the number of rows in the patch list below: that list is a
+> **seam inventory by intent**, and one row routinely covers several hunks. They are
+> not meant to match.
+>
+> `navigation.ts` is 15 hunks / −32 here but was recorded as 14 / −30 at rc.3. That is
+> the same edit set; rc.3's own rewrite of the `startSession` body is what moved the
+> numbers, exactly as the previous revision of this table noted.
+>
+> **The three `session-actions` rows are documentation-only diffs.** Measured hunk by
+> hunk: the changes are rewritten file-header and `@param` doc comments, plus one
+> rename of an unused destructured parameter in `PinSession.tsx` (`set` → `pinned`).
+> **No behaviour changes**, so a re-sync can reproduce them by copying upstream's file
+> and re-applying a comment block, or can drop them entirely. They are listed apart
+> (the `Kind` column) so the next re-sync does not spend review time looking for a
+> behaviour it will not find. If they are dropped, the total becomes **191 hunks /
+> +4492 / −184 over 8 files** — that is the number to expect from a re-sync that
+> re-applies only behaviour.
+
+The count went from 108 to 200 hunks not because features were added but because
+upstream **rewrote the regions this tree patches**: `index.ts` alone went from 17 to 29
+hunks once the menu registration block moved out of the Slot and into
+`ctx.contextMenus`. The table below still describes **intent** — one row per seam — and
+is what a re-sync re-applies; the counts above are what a re-sync should reproduce.
 
 | File | Patch | Re-sync action |
 |---|---|---|
@@ -276,30 +440,33 @@ re-sync re-applies; the counts above are what a re-sync should reproduce.
 | `rows/WorkspaceBrowser.tsx` | expansion is routed by key ownership: caller-supplied keys go through `setProjectExpanded` / `projectExpansion`, every other key through the view store (see below) | re-apply `isCallerOwned` / `recordExpansion` / `hasExpansion` and the merge in `expandedGroups` |
 | `rows/WorkspaceBrowser.tsx` | caller-supplied groups get the same two-mode member ordering the Workspace rows get, from `orderedProjects` + the `orders` hook; `commitSessionDrag` resolves a caller key after the Workspace lookup; `saveSessionOrder` and the order menu dispatch by key ownership (see below) | re-apply `orderedProjects` / `allProjectOrders`, the `?? groupingOverride?.find(...)` in `commitSessionDrag`, and the two dispatches |
 | `rows/WorkspaceBrowser.tsx` | a Session can be dragged **between** groups: `DragState.overGroupKey` names the target, a row drop is positional and a header drop is not, and `commitCrossGroupDrag` files it through `assignSession` / `unassignSession` before writing the order (see below) | re-apply `overGroupKey`, `canReceiveDrag`, `insertIntoTargetOrder`, `commitCrossGroupDrag`, and the `groupDrop` wiring |
-| `rows/Rows.tsx` | a Session row's `dragover` / `drop` call `stopPropagation`, so the row is the target rather than the enclosing group section; `ProjectRowItem` takes an optional `groupDrop` that makes the **header row** — not the section — the cross-group hit target (the highlight stays on the section, painted by the region) | re-add the two calls and the `groupDrop` prop and handlers |
+| `rows/Rows.tsx` | a Session row's `dragover` / `drop` call `stopPropagation`, so the row is the target rather than the enclosing group section; `ProjectGroupRowItem` takes an optional `groupDrop` that makes the **header row** — not the section — the cross-group hit target (the highlight stays on the section, painted by the region) | re-add the two calls and the `groupDrop` prop and handlers |
+| `rows/Rows.tsx` + `rows/WorkspaceBrowser.tsx` | **the Ungrouped bucket's create gate moved one level up, and that move is the only reason it still exists.** Upstream asks `useRemoteAccess('session/create')` inside `UngroupedProjectRow` (`Rows.tsx:363`). This composition routes the bucket to `ProjectGroupRowItem` (`WorkspaceBrowser.tsx:1956`), so upstream's component is unreachable at runtime and its gate would go with it. `SessionTree` therefore reads the same Hook once (`ungroupedCanCreate`, `WorkspaceBrowser.tsx:1394`, next to the comment that explains why it cannot live in the row) and passes the answer down as `canCreate` — on the bucket only; project rows pass `true` (`WorkspaceBrowser.tsx:1967`). A component-level Hook in the tree root either way, because `renderGroup` is a plain function and may not call one per group. `ProjectGroupRowItem` defaults `canCreate` to `true` and renders its ＋ only while it holds (`Rows.tsx:630`) | re-add the `canCreate` prop and its `= true` default, the `{canCreate && …}` guard on the ＋, the `ungroupedCanCreate` read in `SessionTree`, and the `group.kind === 'project' ? true : ungroupedCanCreate` argument at the call site. **Dropping this fails silently**: no type error, and an unauthorised peer just sees a ＋ that cannot succeed |
+| `rows/Rows.tsx` | **our project header is named `ProjectGroupRowItem`; upstream's `ProjectRowItem` is a different row.** Upstream's `ProjectRowItem` means a **Workspace** header, split into `UngroupedProjectRow` / `WorkspaceProjectRow`. This fork's project is a label with no `workspaceId`, no `cwd` and no registry entry, and its header used to carry the same name here. The two were given different names on purpose, because a three-way merge matches **symbols by name**: a shared name would accept either definition whole, leaving project rows rendering Workspace-row behaviour — or, since upstream routes any row without both a `workspaceId` and a `cwd` past its menu, no menu at all | keep both definitions and keep the names apart: `ProjectRowItem` / `UngroupedProjectRow` / `WorkspaceProjectRow` stay 1:1 with upstream (only real Workspace rows reach `ProjectRowItem`), and the fork's header stays `ProjectGroupRowItem`. **`ProjectRowItem` appearing in a sentence about a *project* row is the symptom of a merge that took the wrong side** |
+| `rows/WorkspaceBrowser.tsx` | **two Workspace dialog families coexist, and only one of them is live.** rc.1 moved the Workspace rename/delete dialogs into `WorkspaceDialogs` (`:3662`), driven by the `workspaceActionRequest` hook, and that path is kept for **Workspace** rows only. This component's own `renameTarget` / `deleteTarget` dialogs still carry both arms (`:2918-2919`, `:3150`) but now serve **projects**: every non-null write to those two states is hard-coded `kind: 'project'` (`openProjectEdit` at `:3076`, the `projectMenuRequest` effect at `:3185`), so the `kind: 'workspace'` arms are unreachable — a project is not a registry entry, cannot go through `renameWorkspace` / `deleteWorkspace`, and routing it there would drop the directory / link / doc-spec editing | keep **both** families and keep the split: `WorkspaceDialogs` for a real Workspace, the local dialogs for a project. A re-sync that "consolidates" them onto one path loses either project editing or the Workspace dialogs; deleting the local `kind: 'workspace'` arms is safe, but only after re-checking that no producer of that kind appeared |
 | `tree.ts` | under a grouping override the Ungrouped bucket always renders, empty included — it is the drop target that takes a Session back out of a caller-supplied group (see below) | re-apply the `archivedFilter !== 'only'` alternative |
 | `navigation.ts` | `startSession`'s **second parameter is a union**: a `beforeOpen` callback, or upstream's `StartSessionOptions`. Upstream's second slot is the options object and two callers use it (`ui-agent-preset` since 0.2.1-rc.1, `ui-entry-customization` added in 0.2.1-rc.3); this fork needed the same slot for `beforeOpen`, so the implementation dispatches on `typeof … === 'function'`. A re-sync that restores a plain `beforeOpen` parameter re-breaks every upstream caller — silently, because the Session is created first and the throw comes after | re-add the `StartSessionSecondParameter` union, the dispatch, and assertion 12/13 in `scripts/verify-new-session.mjs` |
 | `navigation.ts` | **the `startSession` body composes upstream's draft preparation with this tree's three callbacks.** rc.3 changed the `initializeDraft` expression to honour `whenDraftExists`; this tree keeps that expression verbatim and wraps `openWorkspace`'s single `beforeOpen` so `announce` / `beforeOpen` / `draftPreparation` all run. A re-sync must merge these two, not pick one: taking upstream's 26-line conflict block drops `resolveBaseWorkspace` and `placeUnscoped`; taking this tree's body unchanged loses rc.3's draft semantics | re-apply the composition **and** keep upstream's `initializeDraft`, then re-check that `recentWorkspace` / `currentWorkspaceId` / `draft.workspaceRequired` did not come in with it |
-| `rows/WorkspaceBrowser.tsx` | rename/delete dialogs and the group drag take a `kind`-tagged row (`RowRequest`), so a caller-supplied project row drives the same affordances as a Workspace row; the header's add control runs `createProject` when the composition supplies one, and the dialog titles/labels switch on that kind | re-apply the dispatch, the two dialog blocks, and the drag wiring |
+| `rows/WorkspaceBrowser.tsx` | the project dialogs take their target as a `kind`-tagged value seeded from `projectSource()`, so a caller-supplied project row drives the same affordances as a Workspace row; the header's add control runs `createProject` when the composition supplies one, and the dialog titles/labels switch on that kind | re-apply the dispatch, the two dialog blocks, and the drag wiring |
 | `rows/WorkspaceBrowser.tsx` | a **project** drop resolves its anchor against `groupingOverride`'s order and honours the side the marker showed, so the landed position equals the line the user saw (see below) | re-apply the `projectIds` lookup, the `half` from `activeDrag.over`, and the next-sibling anchor |
 | `rows/WorkspaceBrowser.tsx` | a **project title is unique**: the create dialog blocks a name another project holds, the rename dialog does too, and the rename alert names the row kind it is warning about (see below) | re-apply `createDuplicate`, the `kind === 'project'` arm of `renameDuplicate`, and the `conflict.projectNamed` dispatch |
-| `locales.ts` | `conflict.projectNamed` in both dictionaries | add the key |
+| ~~`locales.ts`~~ → `src/client/locales-project.ts` | `conflict.projectNamed` in both dictionaries | **not a patch on this file any more** — 0.2.2-rc.1 moved all project copy out; `locales.ts` is byte-identical to upstream and must stay that way. Add the key to `locales-project.ts` |
 | `rows/Rows.tsx` | labels the Ungrouped bucket by **empty label** rather than missing `workspaceId` | one-line change; a caller-supplied group has no Workspace id but does have a label |
-| `rows/Rows.tsx` | the row menu's delete label and the menu's aria-label follow `group.kind` | small change; a project's delete removes a record, not a registry entry |
-| `locales.ts` | project copy (`project.add`, `project.create.*`, `rename.project.title`, `delete.project*`, `field.projectName`, `create`, `actions.project.aria`) in both dictionaries | add the keys |
+| `rows/Rows.tsx` | the project row's menu **aria-label** is `actions.project.aria` rather than the Workspace one, so a screen reader names the verbs after the row kind. The delete/rename **labels** this row used to own are gone — see the `project-menu.ts` row below, which is where they live now | re-apply the one `t()` call; there is no label dispatch left to copy |
+| ~~`locales.ts`~~ → `src/client/locales-project.ts` | project copy (`project.add`, `project.create.*`, `rename.project.title`, `delete.project*`, `field.projectName`, `create`, `actions.project.aria`) in both dictionaries | **not a patch on this file any more** — see above. The 42 keys live in `locales-project.ts`, which merges them into the namespace at registration; `ja/es/fr/de/ru/pt` fall back to English by design |
 | `navigation.ts` | `startSession` without a target resolves the Host's default Workspace instead of guessing (**behaviour change**, see below) | restore the shipped guess, or re-apply |
 | `navigation.ts` | the service takes an optional `placeUnscoped` callback, applied only when `beforeOpen` is absent, so the caller can file an unscoped New Session (**behaviour change**, see below) | re-add the parameter and the `beforeOpen ??` composition |
 | `index.ts` | `apply` takes an optional `groupingOverride`, an optional `ProjectActions`, and optional `expansionsOverride` / `ordersOverride`, forwarding all into the inject face | re-add the parameters and the hook/verb fields |
 | `rows/Rows.tsx` | adds `sessionRowKey(id)`: a Session row's animation identity is the Session itself (`session:<id>`), kept as one shared constructor so the ordered `rowKeys` array and the rendered attribute cannot drift | re-add the helper and its doc block |
 | `rows/Rows.tsx` | `SessionNodeItem` takes an optional `rowKey`, and its `data-row-key` is `rowKey ?? sessionRowKey(node.id)` | re-add the prop and the fallback |
 | `rows/WorkspaceBrowser.tsx` | the grouped view passes `sessionRowKey(node.id)` twice — into `rowKeys` and into the row's `rowKey` — in the same order | re-apply both call sites together |
-| `rows/AnimatedRows.tsx` | takes `enteringKeys` / `onEnteringKeysDrawn`: a New Session that **reuses a blank Session** keeps its row key, so its entry fade is announced instead of inferred (**behaviour change**, see below) | drop both props and the `arriving` branch |
+| `rows/AnimatedRows.tsx` | takes `enteringKeys` / `onEnteringKeysDrawn`: a New Session that **reuses a blank Session** keeps its row key, so its entry fade is announced instead of inferred (**behaviour change**, see below). Since 0.2.2-rc.1 upstream no longer ships this file in `ui-workspace`, so there is nothing to re-apply it against: the file is a **locally retained copy** — see *Locally retained: `AnimatedRows`* above | keep both props, and never copy upstream's `ui-primitives` version over the file |
 | `contract/slots.ts` | adds `newSessionLanded` to `WorkspaceBrowserInjected['hooks']`: `{ sessionId, seq } \| null`, the Session every New Session flow landed on, sequenced because the reused blank re-announces one id | drop the field |
 | `navigation.ts` | the service takes an optional `onNewSession` callback, called from `startSession` for every entry, composed with `beforeOpen` rather than replacing it (**behaviour change**, see below). Omitted, the flow is unchanged | re-add the parameter and the two compositions |
 | `contract/slots.ts` | adds `BaseWorkspaceMissingRequest` / `BaseWorkspaceDialogInjected` / `BaseWorkspaceDialogProps`: the report a New Session raises when its 底层工作区 is gone | re-add the three declarations |
 | `navigation.ts` | the service takes an optional `onBaseWorkspaceMissing` callback, raised where `startSessionInDefaultWorkspace` previously returned silently (**behaviour change**, see below). Omitted, the flow is unchanged | re-add the parameter and the one call |
 | `session-actions/BaseWorkspaceMissing.tsx` | **new file**: the `shell.overlay` dialog that reports that case and offers the two repairs | re-add the file and its `shell.overlay` registration |
-| `locales.ts` | six `baseMissing.*` keys in both dictionaries, kept in one contiguous block rather than editing a shipped key | re-add the block |
+| `src/client/locales-project.ts` | six `baseMissing.*` keys in both dictionaries, kept in one contiguous block rather than editing a shipped key | re-add the block |
 | `rows/WorkspaceBrowser.module.css` | `.groupDropTarget`: the cross-group highlight painted on the group **section** while the pointer is on the header row (hit testing and highlight answer different questions; the section is the highlight's, the row is the target's) | re-add the one rule |
 | `rows/WorkspaceBrowser.module.css` | `.baseMissingActions` (the column footer), `.baseMissingBody`, `.baseMissingPath` | re-add the three rules |
 | `contract/slots.ts` | adds `BaseWorkspaceRoute`: which of three outcomes the caller's 底层工作区 setting resolved to | re-add the union |
@@ -308,37 +475,43 @@ re-sync re-applies; the counts above are what a re-sync should reproduce.
 | `session-actions/BaseWorkspaceMissing.tsx` | the 重新指定底层工作区 button now consumes the report and calls `chooseBaseWorkspace`, handing the user to the settings card | re-add the `settle()` before the call |
 | `session-actions/BaseWorkspaceMissing.tsx` | the 重建该工作区 button's action is live (step 3b) | re-add the `run(rebuild)` call |
 | `session-actions/BaseWorkspaceMissing.tsx` | **two stages in one dialog**: pressing 重建该工作区 switches this card to a confirmation stage (warning icon, the path, 确认重建/返回) rather than opening a second `Modal` | re-add the `stage` state, the focus effect, and both footer branches |
-| `locales.ts` | the confirmation's five keys in both dictionaries; the single `baseMissing.rebuildHint` is gone, its sentence having moved into the confirmation | re-add the five keys |
+| `src/client/locales-project.ts` | the confirmation's five keys in both dictionaries; the single `baseMissing.rebuildHint` is gone, its sentence having moved into the confirmation | re-add the five keys |
 | `rows/WorkspaceBrowser.module.css` | `.baseMissingConfirm` / `.baseMissingConfirmIcon` | re-add the two rules |
 | `contract/slots.ts` | `BaseWorkspaceDialogInjected.chooseBaseWorkspace` is documented as wired (step 3a); the type is unchanged | no code change beyond the doc |
 | `tree.ts` | `GroupSource` gains an optional `directories`, and `sameStringList` is exported | re-add the field and the helper |
 | `contract/slots.ts` | `WorkspaceBrowserInjected` gains `updateProject?` and `pickDirectory?`, and `createProject` takes a required `directories`; `renameProject?` is **gone** | re-add the two verbs, change the one signature, drop `renameProject` |
 | `client/index.ts` | `ProjectActions` mirrors the above (`updateProject`, optional `pickDirectory`, `createProject` with `directories`, no `renameProject`), and `browserInjected` forwards them | re-apply the four signature changes and the forwarding block |
-| `rows/WorkspaceBrowser.tsx` | the project rename dialog becomes an **edit** dialog: it seeds a `renameDirectories` draft from `RowRequest.directories`, renders the shared `DirectoryRows` / `DirectoryHeader`, and commits through `updateProject`; `renameBlocked` compares the list as well as the title (**behaviour change**, see below) | re-apply the target field, the two state values, the two helpers, the comparison, and the block |
+| `rows/WorkspaceBrowser.tsx` | the project rename dialog becomes an **edit** dialog: it seeds a `renameDirectories` draft from `projectSource(projectId)` (the derived group, not `RowRequest` — that type has no readers any more, see below), renders the shared `DirectoryRows` / `DirectoryHeader`, and commits through `updateProject`; `renameBlocked` compares the list as well as the title (**behaviour change**, see below) | re-apply the target field, the two state values, the two helpers, the comparison, and the block |
 | `rows/WorkspaceBrowser.tsx` | the create dialog collects source folders: `createDirectories` / `pickingCreateDirectory`, `openCreate` resets the list, and `confirmCreate` sends it | re-apply the two state values, the reset, the helper, the block, and the send |
-| `rows/WorkspaceBrowser.tsx` | `RowRequest`'s project arm gains an optional `directories`, and the group header's rename action resolves it from `groupingOverride` | re-add the field and the lookup |
+| `rows/WorkspaceBrowser.tsx` | a project row's associated directories reach the row as a `directories` prop, resolved from `groupingOverride` **at the `ProjectGroupRowItem` call site**; the project menu reads them from the captured target. `RowRequest`'s project arm keeps its `directories` field but **has neither producer nor reader** — the edit dialog seeds from `projectSource()`; the type stays exported only because this table names it (see the `projectMenuRequest` row below) | re-add the prop at the call site; the old "resolve it in the group header's rename action" lookup is gone |
 | `rows/WorkspaceBrowser.tsx` | adds the `DirectoryRows` / `DirectoryHeader` components and imports `IconCloseOutlineRegular` | re-add both components and the icon import |
-| `rows/Rows.tsx` | the row menu's rename label follows `group.kind` (项目 rows say 编辑项目) while the menu **id** stays `rename` | reuse the label dispatch |
-| `locales.ts` | `edit.project`, `edit.project.title`, `save`, `field.directories`, `directory.add`, `directory.none`, `directory.remove` in both dictionaries | add the keys |
+| `rows/Rows.tsx` | a project row's inline actions are **aria-labelled** by `actions.project.aria`; there is no longer a rename/delete label here to dispatch on `group.kind`, because the row's menu is the shared `project` family now (see the `project-menu.ts` row) | reuse the one label, not a dispatch |
+| `src/client/locales-project.ts` | `edit.project`, `edit.project.title`, `save`, `field.directories`, `directory.add`, `directory.none`, `directory.remove` in both dictionaries | add the keys |
 | `rows/WorkspaceBrowser.module.css` | `.directoryBlock` / `.directoryHeader` / `.directoryLabel` / `.directoryEmpty` / `.directoryList` / `.directoryRow` / `.directoryPath` | re-add the block |
 | `rows/WorkspaceBrowser.module.css` | `.directoryDialog.directoryDialog` widens the project dialogs past the shipped 380px card to **480px** — short of the official directory browser's 680px, which read as loose for a name field plus a few paths — using the same doubled-class specificity trick the official directory browser uses; `.directoryRow` is transparent until hover, matching the official `.row` | re-add the rule and the hover pair |
 | `rows/WorkspaceBrowser.tsx` | both project dialogs pass `className={css.directoryDialog}`; the add control is the shell `Button` (`variant="ghost" size="sm" icon={<IconPlusOutlineRegular/>}`) and the remove control reuses this file's own `css.iconButton` — a bare `<button>` keeps the browser's native chrome | re-apply the two classNames, the `Button`, the `iconButton`, and the `IconPlusOutlineRegular` import |
-| `rows/WorkspaceBrowser.tsx` | a `DocSpecRow` component (the per-project document-spec `Menu`) rendered by both project dialogs only while `perProjectDocSpec && injectProjectDoc && injectProjectInfo` — the same three-way gate the settings card uses; the list is fixed as `跟随全局 / 无 / 默认 / uploaded files…` with 跟随全局 as its own first row (the only row written as `null`), and no divider; `RowRequest` carries an optional `docSpec`, `RenameTarget` a `storedDocSpec`, and both dialogs keep a `renameDocSpec`/`createDocSpec` draft reset on open | re-add the component, the three-way gate, the two fields, and the two drafts |
+| `rows/WorkspaceBrowser.tsx` | a `DocSpecRow` component (the per-project document-spec `Menu`) rendered by both project dialogs only while `perProjectDocSpec && injectProjectDoc && injectProjectInfo` — the same three-way gate the settings card uses; the list is fixed as `跟随全局 / 无 / 默认 / uploaded files…` with 跟随全局 as its own first row (the only row written as `null`), and no divider; `RenameTarget` carries a `storedDocSpec`, and both dialogs keep a `renameDocSpec`/`createDocSpec` draft reset on open | re-add the component, the three-way gate, the field, and the two drafts |
 | `tree.ts` | `GroupSource.docSpec?: string` — the per-project spec override, absent meaning "inherit the global choice" | re-add the field |
 | `contract/slots.ts` | `hooks.perProjectDocSpec`, `hooks.injectProjectInfo`, `hooks.injectProjectDoc`, `hooks.specs`; `createProject` takes `docSpec`; `updateProject` takes a fourth `docSpec` argument; `uploadSpec` / `deleteSpec` / `specsUsedBy` verbs | re-add the four hooks, the extended signatures, and the three verbs |
 | `client/index.ts` | the `DocSpecHooks` bundle threaded into `apply` as one trailing argument, defaulting each observable to the schema's answer (`false` for the two gates, so a composition without the feature hides the row) | re-add the interface, the parameter, and the four defaults |
 | `tree.ts` | `GroupSource.links?: readonly string[]` — the project's associated URLs, absent meaning "none supplied" | re-add the field |
 | `contract/slots.ts` | `hooks.validateLinks`; `createProject` takes `links`; `updateProject` takes a fourth `links` argument (before `docSpec`) | re-add the hook, the field, and the two signatures |
 | `client/index.ts` | the `LinkHooks` bundle threaded into `apply` as a second trailing argument, defaulting `validateLinks` to `false` so a composition without the switch marks nothing | re-add the interface, the parameter, and the default |
-| `rows/WorkspaceBrowser.tsx` | the create and edit dialogs collect a link draft (`createRows` / `renameRows`) as `LinkRowDraft[]` — a row's **id** plus its url, rendered by new `LinkHeader` / `LinkRows` / `LinkRow` components; `RowRequest` and `RenameTarget` each carry the stored list, and `renameBlocked` compares it (**behaviour change**, see below) | re-apply the components, the two state values, the two target fields, the comparison, and both blocks |
+| `rows/WorkspaceBrowser.tsx` | the create and edit dialogs collect a link draft (`createRows` / `renameRows`) as `LinkRowDraft[]` — a row's **id** plus its url, rendered by new `LinkHeader` / `LinkRows` / `LinkRow` components; `RenameTarget` carries the stored list, and `renameBlocked` compares it (**behaviour change**, see below) | re-apply the components, the two state values, the target field, the comparison, and both blocks |
 | `rows/WorkspaceBrowser.tsx` | link rows are keyed by `LinkRowDraft.id`, **not** by index and not by url. The draft carries ids that `linkUrls` drops at the two commit sites, so the protocol and the stored record keep plain strings. Keying by index made a removal hand every later component the next row's value — it re-checked text nobody had touched, and for one frame showed a verdict belonging to another row | re-add `LinkRowDraft`, `newLinkRow`, `linkUrls`, and the `key={row.id}` |
 | `rows/WorkspaceBrowser.tsx` | **the only place this tree runs a debounced check**: `useLinkCheck` marks a row after 0.5s of no typing, showing a spinner while typing, a green check while valid *and* focused, and an amber ⓘ while invalid. Measured against the installed DSH, **no official component does this** — see the deviation note below | re-add `LinkCheck`, `useLinkCheck`, and `countInvalidLinks` |
 | `rows/WorkspaceBrowser.tsx` | a freshly added link row takes focus (`LinkRow`'s `autoFocus` + the parent clearing its marker), and any empty row adds a **quiet** notice to the header (`countBlankLinks`, `.linkBlankCount`). The two are independent: the notice never consults focus, while the auto-focus is there so the user can type straight away | re-add the marker state, the focus effect, and the notice |
 | `rows/WorkspaceBrowser.tsx` | `useSettledUrls` returns the url each row has **concluded on**, keyed by its id, rebuilt wholesale when the interval expires. The failing count counts a row only while `settled.get(id) === row.url`, which is what stops it reporting a value nothing has judged and stops it keeping a failure whose text is gone. The blank count reads the **live** draft instead, because emptiness is a fact and must not wait for a judgement — the two notices are deliberately on different clocks | re-add `useSettledUrls`, both count functions and their `LinkBlock` wiring |
 | `rows/WorkspaceBrowser.tsx` | `LinkBlock` owns the link header, its rows and the state they share, and is mounted **with the dialog** — the official `Modal` returns `null` while closed. That is what keeps the header's settled snapshot from outliving the rows: with the hook at the dialog's top level, reopening a project skipped the wait and opening another showed the **previous** project's count | re-add the component and use it in both dialogs |
 | `rows/WorkspaceBrowser.tsx` | imports `isValidLink` from `../../../protocol.ts` — the rule is shared with the Host half rather than reimplemented here | re-add the import |
-| `locales.ts` | `field.links`, `link.add`, `link.none`, `link.remove`, `link.invalid`, `link.countInvalid`, `link.countBlank` in both dictionaries, in one contiguous block | re-add the block |
+| `src/client/locales-project.ts` | `field.links`, `link.add`, `link.none`, `link.remove`, `link.invalid`, `link.countInvalid`, `link.countBlank` in both dictionaries, in one contiguous block | re-add the block |
 | `rows/WorkspaceBrowser.module.css` | `.linkBlock` / `.linkHeader` / `.linkHeading` / `.linkLabel` / `.linkInvalidCount` / `.linkBlankCount` / `.linkEmpty` / `.linkList` / `.linkRow` / `.linkField` / `.linkInput` / `.linkStatus` / `.linkValid` / `.linkInvalid` — the trailing-status slot the official `Input` does not offer (`position: relative` wrapper + `padding-right`), and the two-notice header whose alignment lives on the container | re-add the block |
+| `src/client/project-menu.ts` | **new file, not a patch**: the `target: 'project'` family. `ui-context-menu`'s `ContextMenuTargetMap` is documented as extensible, and a project has neither `workspaceId` nor `cwd`, so upstream's `workspace` family cannot serve it — its `resolve` reads the single `target.value.path`, and a project may hold **0, 1 or N** directories. Registers `rename` (100) / `reveal` (200) / `remove` (300); `reveal` is absent at 0 directories, a direct `run` at 1 (no `children` — the layer refuses to select a row carrying them), and a `children` submenu at N | nothing to re-apply: the file is outside `src/vendored` and a re-sync never touches it |
+| `contract/slots.ts` | `ProjectMenuRequest` and `hooks.projectMenuRequest`, plus the `openProjectMenu` / `settleProjectMenu` verbs on `WorkspaceBrowserInjected` | re-add the two types, the hook field, and the two verbs |
+| `client/index.ts` | the `projectMenuRequest` store, `openProjectMenu` / `settleProjectMenu`, the `project.reveal` icon key, and `apply` returning `VendoredBrowserHandles` (`requestProjectMenu`) instead of `void` | re-add the store, the two injected verbs, the icon key, and the return value |
+| `rows/Rows.tsx` | `ProjectGroupRowItem` loses its private `Menu` and its `actions` prop: it binds `getTriggerProps({ kind: 'project', … })` on the row and calls `openProjectMenu` from the "..." button, with `menuOpen` read from `useContextMenuTarget` — the same shape upstream's `ProjectRow` uses for the `workspace` family. It gains a `directories` prop, resolved by the parent from `groupingOverride` | re-apply the three props, the trigger spread, the `data-context-menu-trigger` button, and the `menuOpen` selector |
+| `rows/WorkspaceBrowser.tsx` | consumes `projectMenuRequest` in an effect that opens the existing edit or delete dialog (`openProjectEdit` / `setDeleteTarget`) and settles the request immediately — the dialogs already own their open state, so leaving it set would re-seed them mid-typing. `SessionTree`'s `onRenameRequest` / `onDeleteRequest` props and the inline seeding arrow go away with it; `RowRequest` **stays exported** because this table names it | re-apply the effect, `openProjectEdit`, `projectSource`, the `openProjectMenu` threading, and drop the two `SessionTree` props |
+| `src/client/locales-project.ts` | `menu.reveal` and `menu.reveal.failed` in both dictionaries — the project menu's reveal row and the notice its rejection shows. Upstream keeps the first in `ui-open-in-app`'s own namespace, which this plugin does not inject; the second exists because the menu layer's fallback (`t('failed')`) is the generic "operation failed, try again" | add both keys |
 
 Two invariants keep these patches honest:
 
@@ -560,6 +733,11 @@ id twice (the blank is reused); a store compares by value, so without it the sec
 arrival would read as no change. `AnimatedRows` reports back through
 `onEnteringKeysDrawn` once the commit that drew the fade has run, so a later scroll or
 expansion does not re-fade the row.
+
+> Since 0.2.2-rc.1 the component this deviation patches is no longer upstream's: it is the
+> **locally retained copy** described under *Locally retained: `AnimatedRows`* above. When a
+> re-sync updates this deviation, the code to change is in that copy, and the `ui-primitives`
+> version must not be swapped in — it has neither prop.
 
 `blank` is deliberately **not** folded into the key: a blank New Session becoming
 real stays in its group, so its key does not change and the row is patched in place
@@ -984,6 +1162,21 @@ git -C "$H" diff -U0   dsh-v0.1.7-rc.2 dsh-vX.Y.Z-rc.N -- packages/client/ui-wor
 For 0.2.0 this was 145 lines across 7 of our patched files. Cross-check each `@@` hunk against the
 patch table below: a hunk landing in a file the table names is the one that needs a decision, and
 everything else is mechanical.
+
+**Two files are outside this diff and must be diffed separately**: `rows/AnimatedRows.tsx` and its
+`.module.css` are a *locally retained copy* whose upstream counterpart moved to
+`packages/client/ui-primitives/src/` in 0.2.2-rc.1. Diff them against that path — never against
+`ui-workspace`, where they no longer exist — and never let a merge or a copy overwrite them:
+
+```bash
+git -C "$H" diff dsh-v0.2.2-rc.1 dsh-vX.Y.Z-rc.N -- packages/client/ui-primitives/src/AnimatedRows.tsx
+git -C "$H" show dsh-vX.Y.Z-rc.N:packages/client/ui-primitives/src/AnimatedRows.tsx \
+  > /tmp/theirs/rows/AnimatedRows.tsx   # compare by hand; do not copy in
+```
+
+What to do with the result is described under *Locally retained: `AnimatedRows`* above: decide
+per difference whether it is a real improvement worth carrying, then record the decision and the
+new diff there.
 
 ### 3. Three-way merge every patched file
 

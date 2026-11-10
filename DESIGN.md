@@ -2,7 +2,7 @@
 
 > 状态：设计定案（已转向 **fork 官方组件** 路线）
 > 版本：v2.2 · 2026-10-17
-> 适用 DSH：0.2.1-rc.3（壳）· vendor 源 **0.2.1-rc.3**（同步流程见 §5 的 **L4.5**）
+> 适用 DSH：0.2.2-rc.1（壳）· vendor 源 **0.2.2-rc.1**（同步流程见 §5 的 **L4.5**）
 > 定位：可发布的社区插件（`dsh-project-groups`）
 > 交付方式：基础功能分 6 层（L0–L4.5），额外功能见 §24
 
@@ -436,10 +436,10 @@ L4.5 上游同步流程         让 vendor 能跟着 DSH 升级走
 
 | 操作 | 位置 |
 |---|---|
-| 归档 / 取消归档 / 停止并归档 | `session-actions/ArchiveSession.tsx` |
+| 归档 / 取消归档 / 停止并归档 | `session-actions/ArchiveSession.tsx`（行按钮与对话框）；菜单行动作见 `session-actions/context-menus.tsx` |
 | 重命名 + 对话框 | `session-actions/RenameSession.tsx` |
-| 分叉 | `session-actions/ForkSession.tsx` |
-| 置顶 / 取消置顶 | `session-actions/PinSession.tsx` |
+| 分叉 | `session-actions/context-menus.tsx`（0.2.2-rc.1 起；`ForkSession.tsx` 已并入） |
+| 置顶 / 取消置顶 | `session-actions/PinSession.tsx`（行按钮）；菜单行动作见 `session-actions/context-menus.tsx` |
 
 **技术要点**
 

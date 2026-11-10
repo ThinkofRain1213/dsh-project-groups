@@ -1,3 +1,6 @@
+import { IconEditOutlineRegular, IconTrashOutlineRegular, IconPinFillRegular, IconPinOutlineRegular, IconUnarchiveOutlineRegular, IconArchiveOutlineRegular, IconBranchOutlineRegular, IconCopyOutlineRegular, IconFolderOpenRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { SessionMenu } from './session-actions/SessionMenu.tsx'
+import type {} from '@deepseek-ai/dsh-client-ui-context-menu/client'
 /**
  * Workspace plugin, browser half. Two registrations: WorkspaceBrowser fills
  * the sidebar shell's `sidebar.workspaces` hole (the whole browsing region),
@@ -6,10 +9,9 @@
  * Workspaces through the global useWorkspaces hook, and each declares its
  * own `single` directory-flow child hole for the composed picker package's
  * client half. WorkspaceBrowser additionally declares the two Session row
- * action lists, and this apply registers the shipped actions — pin, rename,
- * fork, archive, copy ID — into them the way any client plugin would, each
- * with its own behavior, plus the dialogs and the row-action notice into
- * `shell.overlay` (see the contract module doc). It also declares two
+ * action lists. Built-in Session menu actions contribute structured data to
+ * ctx.contextMenus, while external React entries retain the legacy Slot. Dialogs and
+ * the row-action notice register in `shell.overlay` (see the contract module doc). It also declares two
  * Session-row seats: the leading decoration a row renders only while its own
  * primary state is idle, and the section the row's hover card renders between
  * its relative time and its trailing status line. Export discipline:
@@ -43,24 +45,24 @@ import {
   type ForkSessionInjected, menuOpenStateFactory, type PinSessionInjected,
   type SessionArchiveConfirmInjected, type SessionArchiveConfirmRequest,
   type RenameSessionInjected, type RowToast, type RowToastInjected, type RowToastState, type SessionRenameDialogInjected,
-  type SessionIdInjected, type WorkspaceBrowserInjected, type WorkspacePickerInjected,
+  type WorkspaceActionRequest, type SessionIdInjected, type WorkspaceBrowserInjected, type WorkspacePickerInjected,
+  type ProjectMenuRequest,
 } from './contract/slots.ts'
 import { createWorkspaceShortcutControls, installWorkspaceShortcuts } from './shortcuts.ts'
 import { UiWorkspaceService } from './navigation.ts'
 import { createWorkspaceViewStore } from './stores.ts'
 import type { GroupSource } from './tree.ts'
 import { WorkspaceBrowser } from './rows/WorkspaceBrowser.tsx'
-import { ArchiveSessionMenuItem, ArchiveSessionRowButton, SessionArchiveConfirmDialog } from './session-actions/ArchiveSession.tsx'
+import { ArchiveSessionRowButton, SessionArchiveConfirmDialog } from './session-actions/ArchiveSession.tsx'
 import { BaseWorkspaceMissingDialog } from './session-actions/BaseWorkspaceMissing.tsx'
 import { derive } from './session-actions/derived.ts'
-import { ForkSessionMenuItem } from './session-actions/ForkSession.tsx'
-import { PinSessionMenuItem, PinSessionRowButton } from './session-actions/PinSession.tsx'
-import { RenameSessionMenuItem, SessionRenameDialog } from './session-actions/RenameSession.tsx'
+import { registerSessionMenus } from './session-actions/context-menus.tsx'
+import { PinSessionRowButton } from './session-actions/PinSession.tsx'
+import { SessionRenameDialog } from './session-actions/RenameSession.tsx'
 import { RowActionToast } from './session-actions/RowActionToast.tsx'
 import { registerToasts } from './toast/register.ts'
-import { SessionIdMenuItem } from './session-actions/SessionId.tsx'
 import { WorkspacePicker } from './WorkspacePicker.tsx'
-import { en, zh, type WorkspaceKey } from './locales.ts'
+import { workspaceDictionaries, type WorkspaceKey } from '../../client/locales-project.ts'
 
 export type { StartSessionOptions, UiWorkspace } from './navigation.ts'
 export type { GroupSource } from './tree.ts'
@@ -72,7 +74,7 @@ export type {
   WorkspaceBrowserProps,
   WorkspacePickerInjected, WorkspacePickerProps,
 } from './contract/slots.ts'
-export type { WorkspaceKey } from './locales.ts'
+export type { WorkspaceKey } from '../../client/locales-project.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface GlobalStandardProps {
@@ -105,7 +107,7 @@ const NS = 'workspace'
  * provides a waitable service. apply therefore depends on each slot
  * declaration through `slots.inject()` instead of assuming order.
  */
-export const inject = [
+export const inject = ['contextMenus',
   'slots', 'sessions', 'workspaces', 'locale', 'remote', 'remote.directoryPicker', 'layout', 'shortcuts', 'remoteAccess',
 ]
 
@@ -303,6 +305,28 @@ export interface UnscopedPlacement {
 }
 
 /**
+ * What the caller needs back from {@link apply} to drive the project menu.
+ *
+ * Returned rather than reached through a module-level variable: the browser half is
+ * instantiated per `apply`, and a module-level store would be shared across two plugin
+ * instances (HMR, or a second composition) and let one window's menu open the other's
+ * dialog. It is one member today, and its own interface so a second one cannot ride in
+ * untyped.
+ */
+export interface VendoredBrowserHandles {
+  /**
+   * Ask the browser to open its own project edit or delete dialog.
+   *
+   * The project menu's `rename` and `remove` verbs land here. They cannot call the Remote
+   * writes directly: deleting a project has a confirmation naming it, and editing one
+   * seeds directory, link and doc-spec drafts only this component holds.
+   * @param action - which dialog to open.
+   * @param projectId - the project, which is also its group key.
+   */
+  requestProjectMenu: (action: ProjectMenuRequest['action'], projectId: string) => void
+}
+
+/**
  * Register the browser and picker once their slot declarations are on the
  * ledger. Inject factories return plain callbacks; data reads use the
  * framework's global hooks.
@@ -346,7 +370,7 @@ export function apply(
   createOpensSessionOverride?: HostObservable<boolean>,
   docSpecHooks?: DocSpecHooks,
   linkHooks?: LinkHooks,
-): void {
+): VendoredBrowserHandles {
   const sessions = ctx.get('sessions') as ISessions
   const workspaces = ctx.get('workspaces') as IWorkspaces
   // One viewing-store instance, created here as ui-layout does for its layout
@@ -431,7 +455,11 @@ export function apply(
         : ctx.remoteAccess.source('workspace', workspaceId, action),
     },
   })
-  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-workspace: dictionaries')
+  // One registration, all eight languages: the namespace's single occupant. `zh`/`en` carry
+  // this fork's 42 project keys on top of upstream's 119 (see `client/locales-project.ts`); the
+  // six rc.1 languages are upstream's dictionaries and resolve those 42 through the locale
+  // service's per-key fallback to English.
+  ctx.effect(() => ctx.locale.register(NS, workspaceDictionaries()), 'ui-workspace: dictionaries')
   const shortcutControls = createWorkspaceShortcutControls()
 
   const searchSessions: WorkspaceBrowserInjected['searchSessions'] = async (query, signal) => {
@@ -638,10 +666,82 @@ export function apply(
     hooks: { toast: rowToast },
     dismissToast: () => { rowToast.set(null) },
   })
+  const workspaceActionRequest = createSnapshotStore<WorkspaceActionRequest | null>(null)
+  const requestWorkspaceAction = (workspaceId: WorkspaceId, displayTitle: string, action: 'rename' | 'delete'): void => {
+    const workspace = workspaces.list.getSnapshot().items.find(row => row.workspaceId === workspaceId)
+    if (workspace === undefined || !ctx.remoteAccess.source('workspace', workspaceId, `workspace/${action}`).getSnapshot()) return
+    workspaceActionRequest.set({ action, workspaceId, displayTitle, storedTitle: workspace.title })
+  }
+  /**
+   * The project dialog bridge: a menu verb raises a request here, the browser consumes it.
+   *
+   * The direction is the mirror image of `workspaceActionRequest` above. That one exists
+   * because a row raises a request the *shared menu layer* then honours; this one exists
+   * because the shared menu layer raises a request only the *browser component* can honour —
+   * the project edit and delete dialogs, with their directory, link and doc-spec drafts, are
+   * that component's own `useState`, and `src/client/project-menu.ts` runs outside it.
+   *
+   * Deliberately not a re-route through `deleteProject` directly: deleting a project has a
+   * confirmation that names it and explains where its Sessions go, and a menu row that
+   * skipped straight to the write would remove a record the user never confirmed.
+   */
+  const projectMenuRequest = createSnapshotStore<ProjectMenuRequest | null>(null)
+  ctx.slots.inject('contextMenu.icon', function* () {
+    for (const [key, Icon] of Object.entries({
+      'workspace.rename': IconEditOutlineRegular, 'workspace.delete': IconTrashOutlineRegular,
+      'workspace.pin': IconPinOutlineRegular, 'workspace.unpin': IconPinFillRegular,
+      'workspace.archive': IconArchiveOutlineRegular, 'workspace.unarchive': IconUnarchiveOutlineRegular,
+      'workspace.fork': IconBranchOutlineRegular, 'workspace.copy': IconCopyOutlineRegular,
+      // The project family's reveal row. Registered here rather than beside
+      // `registerProjectMenu` in `src/client/` because this seat is the one every other
+      // icon key already uses, and it is a `keyed` slot: a second registration of the same
+      // key would throw, so there must be exactly one owner for the whole registry.
+      //
+      // **The key is a literal shared with `REVEAL_ICON` in `src/client/project-menu.ts`;
+      // rename one and both must change.** A miss is silent — the keyed slot returns
+      // undefined for an unregistered key, so the row simply renders no glyph.
+      'project.reveal': IconFolderOpenRegular,
+    })) yield ctx.slots.register({ name: 'contextMenu.icon', key }, Icon)
+  })
+  ctx.effect(() => ctx.contextMenus.register({
+    id: 'workspace.rename', target: 'workspace', order: 100,
+    resolve: ({ workspaceId, displayTitle }) => ctx.remoteAccess.source('workspace', workspaceId, 'workspace/rename').getSnapshot()
+      ? [{ id: 'rename', label: ctx.locale.bind(NS)('rename'), icon: { key: 'workspace.rename' }, run: () => { requestWorkspaceAction(workspaceId, displayTitle, 'rename') } }] : [],
+  }), 'workspace: rename menu action')
+  ctx.effect(() => ctx.contextMenus.register({
+    id: 'workspace.delete', target: 'workspace', order: 300,
+    resolve: ({ workspaceId, displayTitle }) => ctx.remoteAccess.source('workspace', workspaceId, 'workspace/delete').getSnapshot()
+      ? [{ id: 'delete', label: ctx.locale.bind(NS)('delete.workspace'), icon: { key: 'workspace.delete' }, danger: true, separatorBefore: true,
+        run: () => { requestWorkspaceAction(workspaceId, displayTitle, 'delete') } }] : [],
+  }), 'workspace: delete menu action')
   const browserInjected = (): WorkspaceBrowserInjected => ({
+    openWorkspaceMenu: (workspaceId, path, displayTitle, point, mode) => {
+      const target = ctx.contextMenus.active.getSnapshot()
+      if (mode === 'toggle' && target?.kind === 'workspace' && target.value.workspaceId === workspaceId) ctx.contextMenus.close()
+      else ctx.contextMenus.open({ kind: 'workspace', value: { workspaceId, path, displayTitle } }, point)
+    },
+    settleWorkspaceAction: () => { workspaceActionRequest.set(null) },
+    openProjectMenu: (projectId, title, directories, point, mode) => {
+      const target = ctx.contextMenus.active.getSnapshot()
+      if (mode === 'toggle' && target?.kind === 'project' && target.value.projectId === projectId) ctx.contextMenus.close()
+      // The directories are captured with the target, not looked up at resolve time: a menu
+      // that re-read them would disagree with the row the user right-clicked if a directory
+      // were added or removed while it was open.
+      else ctx.contextMenus.open({ kind: 'project', value: { projectId, title, directories } }, point)
+    },
+    settleProjectMenu: () => { projectMenuRequest.set(null) },
+    openSessionMenu: (sessionId, displayTitle, point, mode) => {
+      const target = ctx.contextMenus.active.getSnapshot()
+      if (mode === 'toggle' && target?.kind === 'session' && target.value.sessionId === sessionId) ctx.contextMenus.close()
+      else ctx.contextMenus.open({ kind: 'session', value: { sessionId, displayTitle } }, point)
+    },
     // Explicit group actions keep their target; an unscoped New Session goes wherever the
     // caller's base-workspace setting points, falling back to the official default.
-    // `beforeOpen` (this plugin's seam) and `options` (upstream's draft) travel together.
+    // `beforeOpen` (this plugin's seam) and `options` (upstream's draft) travel together:
+    // the navigation service dispatches on shape, so an upstream caller passing `options`
+    // and a project row passing `beforeOpen` both land correctly. Collapsing this back to
+    // upstream's two-parameter form would make `ui-agent-preset` / `ui-entry-customization`
+    // throw **after** the Session already exists.
     startSession: (workspaceId, beforeOpen, options) => {
       uiWorkspace.startSession(workspaceId, beforeOpen, options)
     },
@@ -680,6 +780,16 @@ export function apply(
       setProjectOrders: projectActions.setProjectOrders,
     }),
     hooks: {
+      // rc.1 additions: the Workspace rename/delete requests now travel through the
+      // shared context-menu layer rather than a dialog owned by the browser.
+      workspaceActionRequest,
+      /**
+       * The reverse direction for project rows: the shared menu layer raises this, and the
+       * browser's own edit/delete dialogs honour it. See `src/client/project-menu.ts` for
+       * why a project cannot use `workspaceActionRequest`.
+       */
+      projectMenuRequest,
+      contextMenuTarget: ctx.contextMenus.active,
       directoryFlow: browserFlowSource,
       hostInfo,
       workspaceShortcuts: shortcutControls.state,
@@ -707,14 +817,13 @@ export function apply(
       name: 'sidebar.workspaces',
       children: {
         'sidebar.workspaces.directoryFlow': { kind: 'single', scope: 'root' },
-        // Every row entry reads the menu's open state through a hook bound
-        // from the row's render occurrence (the owner passes the state pair
-        // as hookContext).
-        'sidebar.workspaces.session.menu.item': {
-          kind: 'list', scope: 'root', inject: { hooks: { menuOpenState: menuOpenStateFactory, shortcuts: ctx.shortcuts.catalog } },
-        },
+        // No `sidebar.workspaces.session.menu.item` here any more: rc.1 declares it
+        // under `contextMenu.content` below, where `SessionMenu` renders it. Declaring it
+        // in both places throws `slot "..." is already declared` at registration — a
+        // load-time failure, not a degraded menu — so this list follows rc.1 exactly.
         'sidebar.workspaces.session.row.action': { kind: 'list', scope: 'root' },
-        'sidebar.session.row.leading': { kind: 'list', scope: 'root' },
+        'sidebar.session.row.leading': { kind: 'list', scope: 'root', inline: true },
+        'sidebar.session.row.trailing': { kind: 'list', scope: 'root', inline: true },
         'sidebar.session.row.hover': { kind: 'list', scope: 'root' },
       },
       store: viewStore,
@@ -723,15 +832,24 @@ export function apply(
     },
     WorkspaceBrowser,
   ))
-  // The shipped row actions take the same route as a plugin's: `slots.inject`
-  // waits for the browser registration above to declare each list, and the
-  // entries leave with it. Explicit orders leave room for plugin entries.
-  ctx.slots.inject('sidebar.workspaces.session.menu.item', function* () {
-    yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'pin', order: 100, locale: NS, inject: pinInjected }, PinSessionMenuItem)
-    yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'rename', order: 200, locale: NS, inject: renameInjected }, RenameSessionMenuItem)
-    yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'fork', order: 300, locale: NS, inject: forkInjected }, ForkSessionMenuItem)
-    yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'archive', order: 400, locale: NS, inject: archiveInjected }, ArchiveSessionMenuItem)
-    yield ctx.slots.register({ name: 'sidebar.workspaces.session.menu.item', id: 'session-id', order: 450, locale: NS, inject: sessionIdInjected }, SessionIdMenuItem)
+  // rc.1's Session menu host: the structured `ctx.contextMenus` verbs are its primary
+  // content, and it also owns the legacy `sidebar.workspaces.session.menu.item` Slot that
+  // external React contributions still register into.
+  ctx.slots.inject('contextMenu.content', () => ctx.slots.register({
+    name: 'contextMenu.content', key: 'session',
+    children: { 'sidebar.workspaces.session.menu.item': {
+      kind: 'list', scope: 'root', inject: { hooks: { menuOpenState: menuOpenStateFactory, shortcuts: ctx.shortcuts.catalog } },
+    } },
+  }, SessionMenu))
+  // The built-in actions travel as structured data now, exactly as in rc.1: one
+  // `ctx.contextMenus` contribution per verb, over the same callbacks the row
+  // buttons use, so the popup renders them beside whatever other plugins
+  // contribute to the `session` target (e.g. ui-open-in-app's "show in folder",
+  // order 500). The legacy `sidebar.workspaces.session.menu.item` Slot stays
+  // declared above for *external* React entries, but nothing here registers into
+  // it any more — registering both routes would render every verb twice.
+  registerSessionMenus(ctx, {
+    ...pinInjected(), ...archiveInjected(), ...renameInjected(), ...forkInjected(), ...sessionIdInjected(),
   })
   ctx.slots.inject('sidebar.workspaces.session.row.action', function* () {
     yield ctx.slots.register({ name: 'sidebar.workspaces.session.row.action', id: 'archive', order: 100, locale: NS, inject: archiveInjected }, ArchiveSessionRowButton)
@@ -766,6 +884,12 @@ export function apply(
     },
     WorkspacePicker,
   ))
+  return {
+    // The project menu's two dialog verbs, routed to the browser's own dialogs through the
+    // store the browser already reads. See `VendoredBrowserHandles` for why this is returned
+    // instead of published on a module-level variable.
+    requestProjectMenu: (action, projectId) => { projectMenuRequest.set({ action, projectId }) },
+  }
 }
 
 /**

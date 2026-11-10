@@ -47,6 +47,7 @@ const slotsOf = (text) => new Set([...text.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}
 /** The two dictionaries themselves, which must not be part of their own reference corpus. */
 const DICTIONARIES = [
   join('src', 'client', 'settings-locales.ts'),
+  join('src', 'client', 'locales-project.ts'),
   join('src', 'vendored', 'client', 'locales.ts'),
 ]
 
@@ -97,7 +98,7 @@ const LICENSED_UNREFERENCED = new Map([
   ['sessions.count.one', '官方 bundle 引用 2 次；其消费组件未 vendored'],
   ['sessions.count.other', '官方 bundle 引用 2 次；其消费组件未 vendored'],
   // Measured: 0 occurrences upstream either — this one really is unused, and is kept on purpose.
-  ['rename.project.title', '有意保留：见 locales.ts 中「for the Workspace-side dictionary symmetry」'],
+  ['rename.project.title', '有意保留：见 locales-project.ts 中「for the Workspace-side dictionary symmetry」'],
 ])
 
 /**
@@ -213,6 +214,16 @@ compare({
   file: join('src', 'vendored', 'client', 'locales.ts'),
   zhMarker: 'export const zh',
   enMarker: 'export const en',
+  flat: true,
+})
+// The project copy that used to sit inside the browser dictionary. It is its own file now so
+// that the vendored dictionary stays byte-identical to upstream, which means this pair is
+// otherwise covered by nothing: `compare` above reads only the vendored blocks.
+compare({
+  label: '项目文案',
+  file: join('src', 'client', 'locales-project.ts'),
+  zhMarker: 'export const PROJECT_LOCALE_ZH',
+  enMarker: 'export const PROJECT_LOCALE_EN',
   flat: true,
 })
 
