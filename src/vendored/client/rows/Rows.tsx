@@ -491,14 +491,14 @@ function ProjectRow({
  * @param props.groupDrop - present only when a Session from another group can be dropped here.
  * @param props.home - host account home for POSIX hover-path abbreviation.
  * @param props.t - the browser root's locale seat.
- * @param props.openProjectMenu - open (or toggle) this project's shared popup.
+ * @param props.renderFactorySlot - the shared `contextMenu.button` factory, for the row's trigger.
  * @param props.useContextMenuTarget - selector over the popup's captured target, for `menuOpen`.
  * @param props.useContextMenu - the global menu bindings, for the row's right-click trigger.
  * @returns the row element.
  */
 export function ProjectGroupRowItem({
   group, containsCurrentDescendant = false, onToggle, onCreate, directories, canCreate = true, drag, groupDrop, home,
-  newShortcut, t, openProjectMenu, useContextMenuTarget, useContextMenu,
+  newShortcut, t, renderFactorySlot, useContextMenuTarget, useContextMenu,
 }: {
   group: GroupNode
   newShortcut?: ShortcutCatalogEntry | undefined
@@ -526,7 +526,7 @@ export function ProjectGroupRowItem({
   /** Host account home; POSIX home-rooted hover paths display as `~`. */
   home?: string | undefined
   t: RowTranslate
-} & Pick<WorkspaceBrowserProps, 'openProjectMenu' | 'useContextMenuTarget' | 'useContextMenu'>) {
+} & Pick<WorkspaceBrowserProps, 'renderFactorySlot' | 'useContextMenuTarget' | 'useContextMenu'>) {
   const row = group
   // The ungrouped bucket is the one group the derivation builds with an empty
   // label (every real group carries a Workspace title or a caller-supplied
@@ -606,22 +606,14 @@ export function ProjectGroupRowItem({
         <span className={css.title}>{label}</span>
       </span>
       <span className={css.rowActions}>
-        {/* The same shape upstream's `ProjectRow` uses: a `data-context-menu-trigger` button
-            that opens the shared popup itself, so the menu is keyboard-reachable from the
-            button as well as from the row's right-click. `openProjectMenu` toggles, so a
-            second click on the open menu's button closes it — which is what the private
-            `Menu` this replaced did with its `setMenuOpen(v => !v)`. */}
-        {menuTarget !== undefined && (
-          <button type="button" className={css.iconButton} data-context-menu-trigger
-            aria-label={t('actions.project.aria', { name: label })} aria-haspopup="menu" aria-expanded={menuOpen}
-            onClick={(event) => {
-              event.stopPropagation()
-              const rect = event.currentTarget.getBoundingClientRect()
-              openProjectMenu(menuTarget.projectId, menuTarget.title, menuTarget.directories,
-                { x: rect.left, y: rect.bottom }, 'toggle')
-            }}><IconEllipsisOutlineRegular />
-          </button>
-        )}
+        {/* The shared `contextMenu.button` factory, exactly as upstream renders it on a
+            Workspace row: it owns the trigger, the aria wiring and the toggle-on-repeat
+            gesture, so this row needs no private button and no `open`/`close` plumbing. */}
+        {menuTarget !== undefined && renderFactorySlot('contextMenu.button', {
+          target: { kind: 'project', value: menuTarget },
+          label: t('actions.project.aria', { name: label }),
+          className: css.iconButton,
+        })}
         {/* The same gate upstream's `ProjectRow` puts on this button, kept here because
             the Ungrouped bucket renders this component instead of `UngroupedProjectRow`. */}
         {canCreate && (

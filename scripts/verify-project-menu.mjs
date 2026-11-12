@@ -196,6 +196,23 @@ console.log('=== 6. 目录数据形状未被改动 ===')
 }
 
 console.log('')
+console.log('=== 7. 项目行通过官方 contextMenu.button 工厂触发 ===')
+{
+  // rc.2 moved every row menu trigger onto the shared `contextMenu.button` Factory. The
+  // project row must use the same factory: a private trigger would drift the moment upstream
+  // changes the button's markup or its toggle gesture, and the row would lose the shared
+  // aria/keyboard wiring. This is a static contract check — the factory itself is upstream's.
+  const { readFileSync } = await import('node:fs')
+  const rows = readFileSync(new URL('../src/vendored/client/rows/Rows.tsx', import.meta.url), 'utf8')
+  check("ProjectGroupRowItem 使用 renderFactorySlot('contextMenu.button')",
+    /renderFactorySlot\('contextMenu\.button'/.test(rows))
+  check("项目 target 家族仍为 kind: 'project'",
+    /target:\s*\{\s*kind:\s*'project'/.test(rows))
+  check('自建的 openProjectMenu 管道已删除',
+    !rows.includes('openProjectMenu'))
+}
+
+console.log('')
 if (failures.length === 0) {
   console.log('ALL CHECKS PASSED')
 } else {
