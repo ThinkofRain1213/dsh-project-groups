@@ -117,8 +117,13 @@ const idOf = (src) => src.match(new RegExp(`__ModuleLoader__\\.load\\(\\s*\\{[^}
  * @returns the whitespace-stripped list, or `undefined`.
  */
 const injectOf = (src) => {
+  // Compare the list's *values*, not its source spelling: the official bundle's minifier
+  // switched from `"a","b"` to `` `a`,`b` `` in DSH 0.2.2-rc.2, and a quote-sensitive
+  // comparison then reported two identical service lists as different. Whitespace and all
+  // three quote characters are presentation, not content.
+  const norm = (list) => list.replace(/[\s`"']/g, '')
   const inline = /exports\.inject\s*=\s*\[([^\]]*)\]/.exec(src)?.[1]
-  if (inline !== undefined) return inline.replace(/\s/g, '')
+  if (inline !== undefined) return norm(inline)
   const name = /exports\.inject\s*=\s*([A-Za-z_$][\w$]*)\s*;/.exec(src)?.[1]
   if (name === undefined) return undefined
   const escaped = name.replace(/\$/g, '\\$')
@@ -130,7 +135,7 @@ const injectOf = (src) => {
       const chain = alias.replace(/\$/g, '\\$')
       return new RegExp(`(?:const|var|let)\\s+${chain}\\s*=\\s*\\[([^\\]]*)\\]`).exec(src)?.[1]
     })()
-  return def === undefined ? undefined : def.replace(/\s/g, '')
+  return def === undefined ? undefined : norm(def)
 }
 
 /**
