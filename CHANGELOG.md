@@ -4,6 +4,30 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.1] — 2026-11-12
+
+**跟进 DSH 0.2.2-rc.2**。上游在这一版重写了侧栏的行菜单触发方式，并给侧栏加了滚动手势交接；
+本插件同步跟上，界面与官方保持 1:1。
+
+### 变更
+
+- **行菜单改用官方的 `contextMenu.button` 工厂**。工作区行、会话行与**项目行**现在都由同一个
+  工厂渲染「⋯」按钮——外观、键盘与无障碍行为与官方一致。项目行原有的私有菜单管道随之删除。
+- **侧栏滚动交接**：会话列表区域绑定到侧栏视口，一次滚轮/触控板手势可以从导航区连续滚到列表。
+- **归档提示**支持上游新增的后续提示文案与语气（`workspace/archive-notice`）。
+- **「添加工作区」菜单**的锚点改用上游 rc.2 的 `anchorRef` API（rc.2 移除了旧的
+  `getAnchorRect`）——修复在 rc.2 上该菜单会失去定位的问题。
+
+### 依赖
+
+- `zod` 由 `4.4.3` 升至精确 `4.6.6`：DSH 0.2.2-rc.2 的 `dsh-storage-domain` 等包要求该版本，
+  而构建把 `zod` 外置、运行时由壳提供；停在旧版会出现两份 zod 的类型冲突。
+
+### 说明
+
+- **兼容区间不变**：`engines.dsh` 仍为 `>=0.2.2-rc.1 <0.2.3`，`0.2.2-rc.2` 在其内。
+- 无破坏性变更；从 0.4.0 升级只需换版本。
+
 ## [0.4.0] — 2026-11-05
 
 **跟进 DSH 0.2.2-rc.1**。这是本插件第一次**不收窄就装不上**的升级：`vendored` 树按上游
@@ -377,6 +401,7 @@
 - 新会话落点统一为「底层工作区」；
 - 搜索结果行显示所属**项目**。
 
+[0.4.1]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.2...v0.3.3

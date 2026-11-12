@@ -10,10 +10,33 @@ official UI 1:1.
 |---|---|
 | Upstream | `deepseek-ai/deepseek-harness` |
 | Path | `packages/client/ui-workspace/src/` |
-| Version | **0.2.2-rc.1** |
-| Commit | `dsh-v0.2.2-rc.1` |
-| Re-synced | 2026-11-05 (from `dsh-v0.2.1-rc.3` / `1f81c047fc`, itself from the rc.2/rc.1/rc.0 lines recorded in git history) |
-| Patch footprint | **11 files / 200 hunks / +4538 −198** against the upstream tag — of which **3 files are documentation-only** (see the table) — plus **three** files upstream does not have (`client/rows/AnimatedRows.tsx` + `.module.css`, `client/session-actions/BaseWorkspaceMissing.tsx`) |
+| Version | **0.2.2-rc.2** |
+| Commit | `dsh-v0.2.2-rc.2` (`ddac96760b`) |
+| Re-synced | 2026-11-12 (from `dsh-v0.2.2-rc.1`, itself from the rc.3 line recorded in git history) |
+| Patch footprint | **11 files / 197 hunks / +4496 −188** against the upstream tag — of which **3 files are documentation-only** (see the table) — plus **three** files upstream does not have (`client/rows/AnimatedRows.tsx` + `.module.css`, `client/session-actions/BaseWorkspaceMissing.tsx`) |
+
+### The 0.2.2-rc.1 → 0.2.2-rc.2 step
+
+Upstream changed **8 files** in this directory, +190 −189 — and all eight are files this
+tree patches, so the step was another three-way merge (12 conflicts). Three upstream
+changes drive the merge:
+
+- **Row menu triggers moved to the `contextMenu.button` Factory.** `WorkspaceBrowserInjected`
+  no longer carries `openWorkspaceMenu` / `openSessionMenu`; both row kinds call
+  `renderFactorySlot('contextMenu.button', { target, label, className })`. This tree's
+  **project row** follows the same factory now, which deleted its private
+  `openProjectMenu` plumbing entirely.
+- **The sidebar viewport hands scrolling to the section.** `sidebar.workspaces` gained a
+  `useSectionScroller` hook context; the browser binds `bindScrollerRef` to its list area,
+  so one wheel gesture crosses from the navigation into the session list.
+- **`Menu` lost `getAnchorRect`.** `WorkspacePicker` now anchors with `anchorRef`
+  (the `0.2.2-rc.2` `ui-primitives` API), not a rect callback.
+- **Archive notices gained an extension point.** `RowToast` carries optional `message` /
+  `tone`, fed by the `workspace/archive-notice` waterfall.
+
+The merge also caught one wiring loss that only a live probe could see: `assignSession`
+was not threaded into `SessionTree`, so a project row's ＋ created an unfiled Session.
+`probe-ungrouped-plus` failed until the prop was restored.
 
 ### The 0.2.1-rc.2 → 0.2.1-rc.3 step
 
@@ -46,8 +69,8 @@ Two upstream behaviour changes arrived with this step and are now live:
 Everything else in `ui-workspace/src` — 27 of the 28 files — is byte-identical to
 rc.2. That is why `Added` is unchanged at 4011 while `Removed` drops from 194 to 192:
 upstream's own edit removed two lines this tree had already deleted differently.
-(**Those are the `dsh-v0.2.1-rc.3` figures.** The 0.2.2-rc.1 re-sync re-measured the
-whole table, and `Added` is now 4538 / `Removed` 198 — see *Patches inside this
+(**Those are the `dsh-v0.2.1-rc.3` figures.** The 0.2.2-rc.2 re-sync re-measured the
+whole table, and `Added` is now 4496 / `Removed` 188 — see *Patches inside this
 directory* below. This paragraph is kept as the historical record of that step, not as
 the current baseline.)
 
@@ -352,15 +375,15 @@ Most adaptation still lives *outside* this directory:
 Kept minimal and listed here so a re-sync is mechanical. Each is marked in the
 source with a comment naming the seam.
 
-**Measured footprint after the 0.2.2-rc.1 re-sync** (diffed against `dsh-v0.2.2-rc.1`,
+**Measured footprint after the 0.2.2-rc.2 re-sync** (diffed against `dsh-v0.2.2-rc.2`,
 per file, with `git diff --no-index -U0`):
 
 | File | Hunks | Added | Removed | Kind |
 |---|---:|---:|---:|---|
-| `client/rows/WorkspaceBrowser.tsx` | 99 | 2349 | 119 | behavioural |
-| `client/index.ts` | 29 | 523 | 12 | behavioural |
-| `client/rows/Rows.tsx` | 13 | 321 | 10 | behavioural |
-| `client/contract/slots.ts` | 11 | 367 | 4 | behavioural |
+| `client/rows/WorkspaceBrowser.tsx` | 99 | 2345 | 114 | behavioural |
+| `client/index.ts` | 28 | 515 | 12 | behavioural |
+| `client/rows/Rows.tsx` | 12 | 306 | 5 | behavioural |
+| `client/contract/slots.ts` | 10 | 352 | 4 | behavioural |
 | `client/tree.ts` | 16 | 220 | 6 | behavioural |
 | `client/navigation.ts` | 15 | 275 | 32 | behavioural |
 | `client/rows/WorkspaceBrowser.module.css` | 4 | 426 | 0 | behavioural |
@@ -368,7 +391,7 @@ per file, with `git diff --no-index -U0`):
 | `client/session-actions/PinSession.tsx` | 6 | 28 | 9 | **comments only** |
 | `client/session-actions/ArchiveSession.tsx` | 2 | 12 | 4 | **comments only** |
 | `client/session-actions/RenameSession.tsx` | 1 | 6 | 1 | **comments only** |
-| **Total** | **200** | **4538** | **198** | |
+| **Total** | **197** | **4496** | **188** | |
 
 Plus the files with **no upstream counterpart**, which are not patches and must be
 reproduced by copying, not by diffing:
