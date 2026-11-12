@@ -108,7 +108,7 @@ See [`DESIGN.md` §26](DESIGN.md) (Chinese). The built-in spec is
 
 ## Install
 
-Requires DSH **`>=0.2.2-rc.1 <0.2.3`** (the 0.2.2 line). The plugin runs on the 0.2.2 shell with
+Requires DSH **`>=0.2.2-rc.2 <0.2.3`** (the 0.2.2 line). The plugin runs on the 0.2.2 shell with
 vendored source taken from **0.2.2-rc.2** (the upstream sync process is L4.5 in
 [`DESIGN.md` §5](DESIGN.md), Chinese).
 

@@ -4,10 +4,20 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [0.4.1] — 2026-11-12
+## [0.5.0] — 2026-11-12
 
 **跟进 DSH 0.2.2-rc.2**。上游在这一版重写了侧栏的行菜单触发方式，并给侧栏加了滚动手势交接；
 本插件同步跟上，界面与官方保持 1:1。
+
+### 破坏性变更
+
+- **最低 DSH 版本升至 `0.2.2-rc.2`**，兼容区间由 `>=0.2.2-rc.1 <0.2.3` 收紧为
+  `>=0.2.2-rc.2 <0.2.3`。**在 0.2.2-rc.1 上本版会被拒绝加载**。
+
+  **为什么**：rc.2 的代码依赖 rc.1 没有的两项能力——`ui-context-menu` 的
+  `contextMenu.button` 工厂，和 `ui-sidebar` 经 `sidebar.workspaces` 传入的
+  `useSectionScroller`。留着旧下限，rc.1 用户会「装上、加载、然后行菜单消失或直接报错」。
+  0.4.0 是 rc.1 上最后一个可用版本。
 
 ### 变更
 
@@ -22,11 +32,6 @@
 
 - `zod` 由 `4.4.3` 升至精确 `4.6.6`：DSH 0.2.2-rc.2 的 `dsh-storage-domain` 等包要求该版本，
   而构建把 `zod` 外置、运行时由壳提供；停在旧版会出现两份 zod 的类型冲突。
-
-### 说明
-
-- **兼容区间不变**：`engines.dsh` 仍为 `>=0.2.2-rc.1 <0.2.3`，`0.2.2-rc.2` 在其内。
-- 无破坏性变更；从 0.4.0 升级只需换版本。
 
 ## [0.4.0] — 2026-11-05
 
@@ -401,7 +406,7 @@
 - 新会话落点统一为「底层工作区」；
 - 搜索结果行显示所属**项目**。
 
-[0.4.1]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.4.0...v0.4.1
+[0.5.0]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.4...v0.4.0
 [0.3.4]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/ThinkofRain1213/dsh-project-groups/compare/v0.3.2...v0.3.3
