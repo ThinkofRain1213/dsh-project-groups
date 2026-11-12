@@ -201,7 +201,7 @@ Source layout:
 | `src/spec.ts` | Domain schema: the project record, global settings, the three state values |
 | `src/client/index.ts` | Browser entry: the grouping injection, the settings card, the dialogs |
 | `src/client/spec-picker.tsx` | The spec choose / upload / delete dialog |
-| `src/vendored/` | Copy of the official client source + **11 files / 197 hunks / +4496 −188** (see its [README](src/vendored/README.md)) |
+| `src/vendored/` | Copy of the official client source + **11 files / 197 hunks / +4497 −188** (see its [README](src/vendored/README.md)) |
 | `scripts/` | Probes and verification; `DESIGN.md` explains what each proves |
 | `scripts/lib/boot-dsh.mjs` | Shared starting point for the real-DSH probes: profile bootstrap + first-run overlay dismissal |
 | `CHANGELOG.md` | What changed in each release, as users see it |
@@ -281,7 +281,7 @@ check and `verify:release` itself, and `validate.yml` runs every remaining scrip
 
 `src/vendored/` **started** as a byte-identical copy of upstream
 `packages/client/ui-workspace/src/` at `dsh-v0.1.7-rc.2`, but is **no longer byte-identical**:
-project grouping needed a grouping seam, and there are now **11 files / 197 hunks / +4496 −188**
+project grouping needed a grouping seam, and there are now **11 files / 197 hunks / +4497 −188**
 (measured against the upstream tag; plus **three** files upstream does not have).
 The current source version is **0.2.2-rc.2**.
 

@@ -13,7 +13,7 @@ official UI 1:1.
 | Version | **0.2.2-rc.2** |
 | Commit | `dsh-v0.2.2-rc.2` (`ddac96760b`) |
 | Re-synced | 2026-11-12 (from `dsh-v0.2.2-rc.1`, itself from the rc.3 line recorded in git history) |
-| Patch footprint | **11 files / 197 hunks / +4496 −188** against the upstream tag — of which **3 files are documentation-only** (see the table) — plus **three** files upstream does not have (`client/rows/AnimatedRows.tsx` + `.module.css`, `client/session-actions/BaseWorkspaceMissing.tsx`) |
+| Patch footprint | **11 files / 197 hunks / +4497 −188** against the upstream tag — of which **3 files are documentation-only** (see the table) — plus **three** files upstream does not have (`client/rows/AnimatedRows.tsx` + `.module.css`, `client/session-actions/BaseWorkspaceMissing.tsx`) |
 
 ### The 0.2.2-rc.1 → 0.2.2-rc.2 step
 
@@ -71,7 +71,7 @@ Everything else in `ui-workspace/src` — 27 of the 28 files — is byte-identic
 `0.2.1-rc.2`. That is why `Added` is unchanged at 4011 while `Removed` drops from 194 to 192:
 upstream's own edit removed two lines this tree had already deleted differently.
 (**Those are the `dsh-v0.2.1-rc.3` figures.** The 0.2.2-rc.2 re-sync re-measured the
-whole table, and `Added` is now 4496 / `Removed` 188 — see *Patches inside this
+whole table, and `Added` is now 4497 / `Removed` 188 — see *Patches inside this
 directory* below. This paragraph is kept as the historical record of that step, not as
 the current baseline.)
 
@@ -381,7 +381,7 @@ per file, with `git diff --no-index -U0`):
 
 | File | Hunks | Added | Removed | Kind |
 |---|---:|---:|---:|---|
-| `client/rows/WorkspaceBrowser.tsx` | 99 | 2345 | 114 | behavioural |
+| `client/rows/WorkspaceBrowser.tsx` | 99 | 2346 | 114 | behavioural |
 | `client/index.ts` | 28 | 515 | 12 | behavioural |
 | `client/rows/Rows.tsx` | 12 | 306 | 5 | behavioural |
 | `client/contract/slots.ts` | 10 | 352 | 4 | behavioural |
@@ -392,7 +392,7 @@ per file, with `git diff --no-index -U0`):
 | `client/session-actions/PinSession.tsx` | 6 | 28 | 9 | **comments only** |
 | `client/session-actions/ArchiveSession.tsx` | 2 | 12 | 4 | **comments only** |
 | `client/session-actions/RenameSession.tsx` | 1 | 6 | 1 | **comments only** |
-| **Total** | **197** | **4496** | **188** | |
+| **Total** | **197** | **4497** | **188** | |
 
 Plus the files with **no upstream counterpart**, which are not patches and must be
 reproduced by copying, not by diffing:
@@ -440,7 +440,7 @@ reproduced by copying, not by diffing:
 > and re-applying a comment block, or can drop them entirely. They are listed apart
 > (the `Kind` column) so the next re-sync does not spend review time looking for a
 > behaviour it will not find. If they are dropped, the total becomes **188 hunks /
-> +4450 / −174 over 8 files** — that is the number to expect from a re-sync that
+> +4451 / −174 over 8 files** — that is the number to expect from a re-sync that
 > re-applies only behaviour.
 
 The count went from 108 to 200 hunks not because features were added but because
