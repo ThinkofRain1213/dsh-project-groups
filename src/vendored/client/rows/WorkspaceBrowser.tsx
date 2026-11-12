@@ -3422,6 +3422,7 @@ export function WorkspaceBrowser({
                 startSession={startSession}
                 open={guardedOpen}
                 insertWorkspaceBefore={insertWorkspaceBefore}
+                reorderProject={reorderProject}
                 assignSession={assignSession}
                 unassignSession={unassignSession}
                 orderBy={orderBy}
