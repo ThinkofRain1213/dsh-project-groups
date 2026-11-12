@@ -38,7 +38,7 @@
  */
 import type { ContextMenuTarget } from '@deepseek-ai/dsh-client-ui-context-menu/client'
 import type {
-  HostObservable, InjectFace, PropsHooks, PropsLocale, PropsRenderSlots, PropsRuntime, PropsStore, SlotHookFactory,
+  HostObservable, InjectFace, PropsHooks, PropsLocale, PropsRenderFactories, PropsRenderSlots, PropsRuntime, PropsStore, SlotHookFactory,
 } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pull the owner SlotMap merges into programs that resolve the
 // runtime shares below.
@@ -264,23 +264,6 @@ export type DirectoryPickingHooks = PropsHooks<DirectoryPickingInjected['hooks']
  * browsing region drives.
  */
 export type WorkspaceBrowserInjected = {
-  /** Open the registered Workspace actions without changing expansion or selection. */
-  openWorkspaceMenu: (workspaceId: WorkspaceId, path: string, displayTitle: string, point: { x: number; y: number }, mode?: 'toggle') => void
-  /**
-   * Open one project's `ctx.contextMenus` menu without changing expansion or selection.
-   *
-   * The project target family, contributed by this plugin rather than upstream — see
-   * `src/client/project-menu.ts`. `directories` rides on the captured target because a
-   * project may hold any number of them (including none), which is why the Workspace family
-   * cannot serve it.
-   */
-  openProjectMenu: (
-    projectId: string,
-    title: string,
-    directories: readonly string[],
-    point: { x: number; y: number },
-    mode?: 'toggle',
-  ) => void
   /** Dismiss the settled Workspace dialog. */
   settleWorkspaceAction: () => void
   /**
@@ -291,8 +274,6 @@ export type WorkspaceBrowserInjected = {
    * drove has closed — the same lifecycle as {@link settleWorkspaceAction}.
    */
   settleProjectMenu: () => void
-  /** Open actions for the clicked Session without selecting it. */
-  openSessionMenu: (sessionId: SessionId, displayTitle: string, point: { x: number; y: number }, mode?: 'toggle') => void
   hooks: DirectoryPickingInjected['hooks'] & {
     workspaceActionRequest: HostObservable<WorkspaceActionRequest | null>
     /**
@@ -592,8 +573,8 @@ export type SessionRowActionProps<Injected extends object = object> =
 
 /** One transient Workspace notice rendered by the overlay toast entry. */
 export type RowToast =
-  | { kind: 'archived'; sessionId: SessionId }
-  | { kind: 'stoppedAndArchived'; sessionId: SessionId }
+  | { kind: 'archived'; sessionId: SessionId; message?: string; tone?: 'success' | 'warning' }
+  | { kind: 'stoppedAndArchived'; sessionId: SessionId; message?: string; tone?: 'success' | 'warning' }
   | { kind: 'sessionIdCopied' }
   | { kind: 'sessionIdCopyFailed' }
   | { kind: 'pinFailed' }
@@ -861,6 +842,7 @@ export type RowToastProps =
 /** Full browser props: shell owner share + viewing store + injected actions + the locale seat. */
 export type WorkspaceBrowserProps =
   PropsRuntime<'sidebar.workspaces'>
+  & PropsRenderFactories
   & PropsRenderSlots<
     | 'sidebar.workspaces.directoryFlow'
     | 'sidebar.workspaces.session.row.action'

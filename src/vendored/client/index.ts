@@ -76,6 +76,37 @@ export type {
 } from './contract/slots.ts'
 export type { WorkspaceKey } from '../../client/locales-project.ts'
 
+/** Localized follow-up text for the existing archive notice. */
+export interface ArchiveNotice {
+  readonly text: string
+  readonly tone: 'success' | 'warning'
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * Replace the archive notice with a localized follow-up description.
+     * @param sessionId - Session whose archive has succeeded.
+     * @param next - fallback to the remaining notice providers.
+     * @mode waterfall
+     */
+    'workspace/archive-notice'(sessionId: SessionId, next: () => Promise<ArchiveNotice | undefined>): Promise<ArchiveNotice | undefined>
+    /**
+     * Replace the archive notice when an admitted background operation fails.
+     * @param sessionId - Session whose successful archive remains in effect.
+     * @param text - localized failure and recovery guidance.
+     * @mode emit
+     */
+    'workspace/archive-followup-failed'(sessionId: SessionId, text: string): void
+    /**
+     * Restore the plain archive notice when an announced follow-up ended without acting.
+     * @param sessionId - Session whose successful archive remains in effect.
+     * @mode emit
+     */
+    'workspace/archive-followup-settled'(sessionId: SessionId): void
+  }
+}
+
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface GlobalStandardProps {
     /** Selector hook over the pure Workspace Controller snapshot. */
@@ -584,6 +615,21 @@ export function apply(
       uiWorkspace.unpinSession(sessionId).catch(() => { notify({ kind: 'unpinFailed' }) })
     },
   })
+  ctx.on('workspace/archive-followup-failed', (sessionId, text) => {
+    if (archivedSet.getSnapshot().has(sessionId)) notify({ kind: 'archived', sessionId, message: text, tone: 'warning' })
+  })
+  ctx.on('workspace/archive-followup-settled', (sessionId) => {
+    if (archivedSet.getSnapshot().has(sessionId)) notify({ kind: 'archived', sessionId })
+  })
+  const archiveNotice = async (sessionId: SessionId, kind: 'archived' | 'stoppedAndArchived'): Promise<void> => {
+    let message: ArchiveNotice | undefined
+    try {
+      message = await ctx.waterfall('workspace/archive-notice', sessionId, () => Promise.resolve(undefined))
+    } catch (error) {
+      console.warn('session archive notice unavailable:', error)
+    }
+    notify({ kind, sessionId, ...message === undefined ? {} : { message: message.text, tone: message.tone } })
+  }
   const archiveInjected = (): ArchiveSessionInjected => ({
     hooks: { archived: archivedSet },
     // Archive preserves the log and the account position, so a quiet Session
@@ -591,9 +637,7 @@ export function apply(
     // The Host's refusal for running work is the one case that asks first:
     // the confirmation names that work and offers to stop it.
     archiveSession: (sessionId) => {
-      uiWorkspace.archiveSession(sessionId).then(() => {
-        notify({ kind: 'archived', sessionId })
-      }).catch((reason: unknown) => {
+      uiWorkspace.archiveSession(sessionId).then(() => archiveNotice(sessionId, 'archived')).catch((reason: unknown) => {
         const activity = activeSessionRefusal(reason)
         if (activity === undefined) {
           console.warn('session archive rejected:', reason)
@@ -613,7 +657,7 @@ export function apply(
     settleSessionArchive: () => { archiveRequest.set(null) },
     stopAndArchiveSession: async (sessionId) => {
       await uiWorkspace.archiveSession(sessionId, { stopActivity: true })
-      notify({ kind: 'stoppedAndArchived', sessionId })
+      await archiveNotice(sessionId, 'stoppedAndArchived')
     },
   })
   // `chooseBaseWorkspace` is wired by step 3a: it navigates to the settings card and asks that
@@ -715,26 +759,8 @@ export function apply(
         run: () => { requestWorkspaceAction(workspaceId, displayTitle, 'delete') } }] : [],
   }), 'workspace: delete menu action')
   const browserInjected = (): WorkspaceBrowserInjected => ({
-    openWorkspaceMenu: (workspaceId, path, displayTitle, point, mode) => {
-      const target = ctx.contextMenus.active.getSnapshot()
-      if (mode === 'toggle' && target?.kind === 'workspace' && target.value.workspaceId === workspaceId) ctx.contextMenus.close()
-      else ctx.contextMenus.open({ kind: 'workspace', value: { workspaceId, path, displayTitle } }, point)
-    },
     settleWorkspaceAction: () => { workspaceActionRequest.set(null) },
-    openProjectMenu: (projectId, title, directories, point, mode) => {
-      const target = ctx.contextMenus.active.getSnapshot()
-      if (mode === 'toggle' && target?.kind === 'project' && target.value.projectId === projectId) ctx.contextMenus.close()
-      // The directories are captured with the target, not looked up at resolve time: a menu
-      // that re-read them would disagree with the row the user right-clicked if a directory
-      // were added or removed while it was open.
-      else ctx.contextMenus.open({ kind: 'project', value: { projectId, title, directories } }, point)
-    },
     settleProjectMenu: () => { projectMenuRequest.set(null) },
-    openSessionMenu: (sessionId, displayTitle, point, mode) => {
-      const target = ctx.contextMenus.active.getSnapshot()
-      if (mode === 'toggle' && target?.kind === 'session' && target.value.sessionId === sessionId) ctx.contextMenus.close()
-      else ctx.contextMenus.open({ kind: 'session', value: { sessionId, displayTitle } }, point)
-    },
     // Explicit group actions keep their target; an unscoped New Session goes wherever the
     // caller's base-workspace setting points, falling back to the official default.
     // `beforeOpen` (this plugin's seam) and `options` (upstream's draft) travel together:

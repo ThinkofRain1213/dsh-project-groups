@@ -320,7 +320,8 @@ console.log('=== 8. 与 DSH 的兼容声明（Z-14） ===')
     // 无条件放行 **不** 等于兼容：`*` 会让一切版本通过，把这条断言变成永远成立。
     // 所以先否决它，再谈"覆盖了什么"。
     check('区间不是无条件放行（`*` 之类）', !/^\s*\*?\s*$/.test(range), range)
-    expectCompat('区间下限覆盖 DSH 0.2.2-rc.1（当前唯一验证过的运行时）', '0.2.2-rc.1', true)
+    expectCompat('区间下限覆盖 DSH 0.2.2-rc.2（当前唯一验证过的运行时）', '0.2.2-rc.2', true)
+expectCompat('区间拒绝 DSH 0.2.2-rc.1（缺 contextMenu.button / useSectionScroller）', '0.2.2-rc.1', false)
 
     // 矩阵：三条必须拒绝的边界。挂在断言里而不是注释里，因为区间被"顺手放宽一档"时，
     // 注释不会红，这三条会。

@@ -1261,8 +1261,7 @@ function DocSpecRow({
 
 type SessionTreeProps = Pick<
   WorkspaceBrowserProps,
-  'useSessionStatus' | 'startSession' | 'open' | 'openSessionMenu' | 'openWorkspaceMenu' | 'openProjectMenu'
-  | 'useContextMenuTarget' | 'useContextMenu'
+  'useSessionStatus' | 'startSession' | 'open' | 'renderFactorySlot' | 'useContextMenuTarget' | 'useContextMenu'
   | 'insertWorkspaceBefore' | 't' | 'usePanelInfo'
   | 'useRemoteAccess' | 'useSessionAccess' | 'useWorkspaceAccess'
 > & PropsRenderSlots<
@@ -1377,7 +1376,7 @@ function SessionTree({
   assignSession,
   unassignSession,
   orderBy,
-  renderSlot, openSessionMenu, openWorkspaceMenu, openProjectMenu, useContextMenuTarget, useContextMenu,
+  renderSlot, renderFactorySlot, useContextMenuTarget, useContextMenu,
   insertWorkspaceBefore,
   nestWorkspaces, groupExpansion, setGroupExpanded,
   projectExpansion, setProjectExpanded,
@@ -1975,7 +1974,7 @@ function SessionTree({
             directories={group.kind === 'project'
               ? groupingOverride?.find(source => source.key === group.key)?.directories
               : undefined}
-            openProjectMenu={openProjectMenu}
+            renderFactorySlot={renderFactorySlot}
             useContextMenuTarget={useContextMenuTarget}
             useContextMenu={useContextMenu}
           />
@@ -1983,8 +1982,7 @@ function SessionTree({
           <ProjectRowItem
             newShortcut={newShortcut}
             group={group}
-            openWorkspaceMenu={openWorkspaceMenu} useContextMenu={useContextMenu} useContextMenuTarget={useContextMenuTarget}
-            useRemoteAccess={useRemoteAccess}
+            renderFactorySlot={renderFactorySlot} useContextMenu={useContextMenu} useContextMenuTarget={useContextMenuTarget}
             useWorkspaceAccess={useWorkspaceAccess}
             containsCurrentDescendant={currentAncestors.has(group.key)}
             home={home}
@@ -2056,7 +2054,7 @@ function SessionTree({
               onOpen={open}
               onRenameRequest={onSessionRenameRequest}
               renderSlot={renderSlot}
-              openSessionMenu={openSessionMenu} useContextMenu={useContextMenu}
+              renderFactorySlot={renderFactorySlot} useContextMenu={useContextMenu}
               useContextMenuTarget={useContextMenuTarget}
               onReveal={node.id === revealSessionId && group.key === revealGroup
                 ? () => { onSessionRevealed(node.id) }
@@ -2114,7 +2112,6 @@ function SessionTree({
         )}
         {groupRows}
       </AnimatedRows>
-      <span className={css.fade} />
     </HoverCardGroup>
   )
 }
@@ -2123,7 +2120,7 @@ function SessionTree({
 function FlatList({
   list, sessionIds, rowState, onLeaveArchivedOnly, useSessionStatus, useSessionAccess, open, onSessionRenameRequest,
   usePanelInfo, setSessionOrder, workspaceReady, animationResetKey,
-  revealSessionId, onSessionRevealed, renderSlot, openSessionMenu, useContextMenuTarget, useContextMenu, home, t,
+  revealSessionId, onSessionRevealed, renderSlot, renderFactorySlot, useContextMenuTarget, useContextMenu, home, t,
   enteringKeys, onEnteringKeysDrawn,
 }: Pick<
   SessionTreeProps,
@@ -2132,7 +2129,7 @@ function FlatList({
   | 'open'
   | 'onSessionRenameRequest'
   | 'renderSlot'
-  | 'openSessionMenu' | 'useContextMenuTarget' | 'useContextMenu'
+  | 'renderFactorySlot' | 'useContextMenuTarget' | 'useContextMenu'
   | 'usePanelInfo'
   | 'setSessionOrder'
   | 'workspaceReady'
@@ -2197,7 +2194,7 @@ function FlatList({
               onOpen={open}
               onRenameRequest={onSessionRenameRequest}
               renderSlot={renderSlot}
-              openSessionMenu={openSessionMenu} useContextMenu={useContextMenu}
+              renderFactorySlot={renderFactorySlot} useContextMenu={useContextMenu}
               useContextMenuTarget={useContextMenuTarget}
               onReveal={node.id === revealSessionId
                 ? () => { onSessionRevealed(node.id) }
@@ -2230,7 +2227,6 @@ function FlatList({
           )
         })}
       </AnimatedRows>
-      <span className={css.fade} />
     </HoverCardGroup>
   )
 }
@@ -2337,7 +2333,6 @@ function SearchResults({
           </div>
         )}
       </div>
-      <span className={css.fade} />
     </div>
   )
 }
@@ -2351,6 +2346,7 @@ export function WorkspaceBrowser({
   wide,
   usePanelInfo,
   expandSidebar,
+  useSectionScroller,
   useSessions,
   useSessionStatus,
   useRemoteAccess,
@@ -2398,7 +2394,7 @@ export function WorkspaceBrowser({
   useInjectProjectDoc,
   useSpecs,
   useValidateLinks,
-  renderSlot, openSessionMenu, openWorkspaceMenu, openProjectMenu, useContextMenuTarget, useContextMenu,
+  renderSlot, renderFactorySlot, useContextMenuTarget, useContextMenu,
   t,
 }: WorkspaceBrowserProps) {
   const home = useHostInfo(info => info.home)
@@ -2692,6 +2688,12 @@ export function WorkspaceBrowser({
   })
   const searchRoot = useRef<HTMLDivElement | null>(null)
   const searchInput = useRef<HTMLInputElement | null>(null)
+  // The list area is this section's own vertical scroller; the sidebar hands wheel
+  // scrolling over its viewport to it once the navigation has moved away.
+  const { bindScrollerRef } = useSectionScroller()
+  const focusSearch = useCallback(() => {
+    searchInput.current?.focus({ preventScroll: true })
+  }, [])
   // The section-header ＋ opens the picker menu (same popover in wide and rail
   // states; the menu anchors on this button) — or the project dialog, which is
   // what "add" means under a project model. The shortcut sets the same request
@@ -2747,25 +2749,25 @@ export function WorkspaceBrowser({
   useEffect(() => {
     if (wide && searchOnExpand) {
       const timer = window.setTimeout(() => {
-        searchInput.current?.focus({ preventScroll: true })
+        focusSearch()
         setSearchOnExpand(false)
       }, EXPAND_SLIDE_MS)
       return () => { window.clearTimeout(timer) }
     }
-  }, [wide, searchOnExpand])
+  }, [wide, searchOnExpand, focusSearch])
   useEffect(() => {
     if (shortcutState.searchRequest === 0) return
     closeAddWorkspace()
     if (!wide || searchInput.current?.closest('[inert]')) {
       setSearchOnExpand(true)
       expandSidebar()
-    } else searchInput.current?.focus({ preventScroll: true })
-  }, [shortcutState.searchRequest])
+    } else focusSearch()
+  }, [shortcutState.searchRequest, focusSearch])
 
   useEffect(() => {
     if (!wide || !searchExpanded || searchOnExpand) return
-    searchInput.current?.focus({ preventScroll: true })
-  }, [wide, searchExpanded, searchOnExpand])
+    focusSearch()
+  }, [wide, searchExpanded, searchOnExpand, focusSearch])
 
   // Outside-click dismissal stays off while the rail gesture is in flight
   // (searchOnExpand): the rail click flips the shell wide and mounts this
@@ -3190,7 +3192,7 @@ export function WorkspaceBrowser({
 
   return (
     <div className={clsx(css.root, !wide && css.rail)}>
-      <div className={clsx(css.sectionHeader, wide && searchSpacingMotionEnabled && css.searchSpacingMotion)}>
+      <div className={clsx(css.sectionHeader, wide && searchSpacingMotionEnabled && css.searchSpacingMotion)} data-sidebar-workspace-header="">
         {wide && (
           <span className={clsx(css.sectionLabel, css.wide, searchExpanded && css.sectionLabelHidden)}>
             {groupBy === 'flat' ? t('section.sessions') : t('section.workspaces')}
@@ -3204,7 +3206,7 @@ export function WorkspaceBrowser({
               onClick={() => {
                 closeAddWorkspace()
                 changeSearchExpanded(true)
-                searchInput.current?.focus()
+                focusSearch()
               }}
             >
               <Tooltip label={t('search')} shortcutKeys={searchShortcut?.keys} side="bottom" delayMs={500} disabled={searchExpanded} portal>
@@ -3345,7 +3347,7 @@ export function WorkspaceBrowser({
 
       {/* Always-mounted seat keeps the region's flex slot while the list
           itself is wide-only. */}
-      <div className={css.listArea}>
+      <div ref={wide ? bindScrollerRef : undefined} className={css.listArea} data-sidebar-list-area="">
         {wide && (normalizedQuery !== ''
           ? (
             <SearchResults
@@ -3380,7 +3382,7 @@ export function WorkspaceBrowser({
                 open={guardedOpen}
                 onSessionRenameRequest={requestSessionRename}
                 renderSlot={renderSlot}
-                openSessionMenu={openSessionMenu} useContextMenu={useContextMenu}
+                renderFactorySlot={renderFactorySlot} useContextMenu={useContextMenu}
                 useContextMenuTarget={useContextMenuTarget}
                 setSessionOrder={saveSessionOrder}
                 revealSessionId={revealSessionId}
@@ -3402,11 +3404,7 @@ export function WorkspaceBrowser({
                 useSessionStatus={useSessionStatus}
                 onSessionRenameRequest={requestSessionRename}
                 renderSlot={renderSlot}
-                reorderProject={reorderProject}
-                assignSession={assignSession}
-                openSessionMenu={openSessionMenu} useContextMenu={useContextMenu}
-                openWorkspaceMenu={openWorkspaceMenu}
-                openProjectMenu={openProjectMenu}
+                renderFactorySlot={renderFactorySlot} useContextMenu={useContextMenu}
                 useContextMenuTarget={useContextMenuTarget}
                 workspaces={orderedWorkspaces}
                 groupingOverride={orderedProjects}
@@ -3424,6 +3422,8 @@ export function WorkspaceBrowser({
                 startSession={startSession}
                 open={guardedOpen}
                 insertWorkspaceBefore={insertWorkspaceBefore}
+                reorderProject={reorderProject}
+                assignSession={assignSession}
                 unassignSession={unassignSession}
                 orderBy={orderBy}
                 revealSessionId={revealSessionId}
